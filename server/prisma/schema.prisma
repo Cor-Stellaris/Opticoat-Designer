@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id               String   @id @default(cuid())
+  clerkId          String   @unique
+  email            String   @unique
+  tier             String   @default("free") // free, starter, professional, enterprise
+  stripeCustomerId String?  @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  designs         Design[]
+  customMaterials CustomMaterial[]
+  trackingRuns    TrackingRun[]
+  machines        Machine[]
+  apiKeys         ApiKey[]
+}
+
+model Design {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  data      Json     // Full layer stack + settings serialized
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model CustomMaterial {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  properties Json     // Dispersion model, stress, IAD, color, etc.
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Machine {
+  id             String        @id @default(cuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  toolingFactors Json          // { material: factor } mapping
+  trackingRuns   TrackingRun[]
+  createdAt      DateTime      @default(now())
+
+  @@index([userId])
+}
+
+model TrackingRun {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  machineId  String?
+  machine    Machine? @relation(fields: [machineId], references: [id], onDelete: SetNull)
+  recipeName String
+  placement  String   // INT, EXT, BACK
+  runNumber  String
+  data       Json     // Spectral data array
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([machineId])
+}
+
+model ApiKey {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String                        // User-friendly label (e.g. "Production Pipeline")
+  keyHash   String    @unique             // SHA-256 hash of the API key (never store plaintext)
+  prefix    String                        // First 8 chars of key for identification (e.g. "oc_live_")
+  lastUsed  DateTime?
+  expiresAt DateTime?
+  revoked   Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([keyHash])
+}

@@ -1,0 +1,28 @@
+{
+  "name": "opticoat-server",
+  "version": "1.0.0",
+  "description": "OptiCoat Designer Backend API",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "db:push": "npx prisma db push",
+    "db:generate": "npx prisma generate",
+    "db:studio": "npx prisma studio"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@clerk/express": "^1.7.76",
+    "@prisma/client": "^7.4.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "stripe": "^20.4.0"
+  },
+  "devDependencies": {
+    "prisma": "^7.4.2"
+  }
+}

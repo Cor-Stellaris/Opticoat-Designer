@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx craco build)",
+      "Bash(powershell -Command:*)",
+      "Bash(npm run build:*)",
+      "Bash(netstat -ano)",
+      "Read(//c/Users/beaut/Documents/opticoat-designer/server/**)"
+    ]
+  }
+}
