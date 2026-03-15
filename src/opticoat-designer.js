@@ -12426,6 +12426,7 @@ const ThinFilmDesigner = () => {
                                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                                 <XAxis dataKey="wavelength" tick={{ fontSize: 10 }} tickCount={8} label={{ value: 'Wavelength (nm)', position: 'insideBottom', offset: -10, style: { fontSize: '10px', fill: '#9ca3af' } }} />
                                 <YAxis tick={{ fontSize: 10 }} domain={mc.domain} unit={mc.unit} label={{ value: mc.label, angle: -90, position: 'insideLeft', offset: 5, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                <Tooltip />
                                 {visibleTraceIds.map(id => (
                                   <Line key={id} type="monotone" dataKey={id} stroke={getTeamTraceColor(id, submissions)} strokeWidth={id === teamActiveLayerView ? 2.5 : 1.5} dot={false}
                                     name={id === 'original' ? 'Original' : submissions.find(s => `sub_${s.id}` === id)?.submitter?.email || 'Submission'}
@@ -12448,7 +12449,7 @@ const ThinFilmDesigner = () => {
                             <div className="flex items-center gap-2 mb-2" style={{ fontSize: '10px' }}>
                               <span className="text-gray-500">Wavelengths:</span>
                               {teamAdmittanceWavelengths.map((wl, wi) => (
-                                <input key={wi} type="number" value={wl} onChange={e => { const nw = [...teamAdmittanceWavelengths]; nw[wi] = Number(e.target.value); setTeamAdmittanceWavelengths(nw); setTeamTraceCache({}); }}
+                                <input key={wi} type="number" value={wl} onChange={e => { const nw = [...teamAdmittanceWavelengths]; nw[wi] = Number(e.target.value); setTeamAdmittanceWavelengths(nw); }}
                                   className="border rounded px-1 py-0.5 text-center" style={{ width: '55px', fontSize: '10px' }} />
                               ))}
                               <span className="text-gray-400">nm</span>
@@ -12459,6 +12460,7 @@ const ThinFilmDesigner = () => {
                                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                                   <XAxis dataKey="re" type="number" tick={{ fontSize: 10 }} name="Re(Y)" label={{ value: 'Re(Y)', position: 'insideBottom', offset: -10, style: { fontSize: '10px', fill: '#9ca3af' } }} />
                                   <YAxis dataKey="im" type="number" tick={{ fontSize: 10 }} name="Im(Y)" label={{ value: 'Im(Y)', angle: -90, position: 'insideLeft', offset: 5, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                  <Tooltip />
                                   {admData.map((locus, li) => (
                                     <Scatter key={li} data={locus.points || locus} fill={['#4f46e5', '#dc2626', '#16a34a'][li % 3]} line={{ stroke: ['#4f46e5', '#dc2626', '#16a34a'][li % 3], strokeWidth: 1.5 }} lineType="joint"
                                       name={`${locus.wavelength || teamAdmittanceWavelengths[li]} nm`} shape="circle" legendType="circle" />
@@ -12484,7 +12486,7 @@ const ThinFilmDesigner = () => {
                             <div className="flex items-center gap-2 mb-2" style={{ fontSize: '10px' }}>
                               <span className="text-gray-500">Wavelengths:</span>
                               {teamEfieldWavelengths.map((wl, wi) => (
-                                <input key={wi} type="number" value={wl} onChange={e => { const nw = [...teamEfieldWavelengths]; nw[wi] = Number(e.target.value); setTeamEfieldWavelengths(nw); setTeamTraceCache({}); }}
+                                <input key={wi} type="number" value={wl} onChange={e => { const nw = [...teamEfieldWavelengths]; nw[wi] = Number(e.target.value); setTeamEfieldWavelengths(nw); }}
                                   className="border rounded px-1 py-0.5 text-center" style={{ width: '55px', fontSize: '10px' }} />
                               ))}
                               <span className="text-gray-400">nm</span>
@@ -12496,10 +12498,11 @@ const ThinFilmDesigner = () => {
                                   {efLayers.map((layer, li) => (
                                     <ReferenceArea key={li} x1={layer.x1} x2={layer.x2} fill={getMatColor(layer.material)} fillOpacity={0.15} />
                                   ))}
-                                  <XAxis dataKey="position" tick={{ fontSize: 10 }} label={{ value: 'Position (nm)', position: 'insideBottom', offset: -10, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                  <XAxis dataKey="depth" tick={{ fontSize: 10 }} label={{ value: 'Position (nm)', position: 'insideBottom', offset: -10, style: { fontSize: '10px', fill: '#9ca3af' } }} />
                                   <YAxis tick={{ fontSize: 10 }} label={{ value: '|E|^2', angle: -90, position: 'insideLeft', offset: 5, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                  <Tooltip />
                                   {efLines.map((line, li) => (
-                                    <Line key={li} type="monotone" dataKey={line.dataKey || line.key || `ef_${li}`} stroke={lineColors[li % 3]} strokeWidth={1.5} dot={false} name={`${line.wavelength || teamEfieldWavelengths[li]} nm`} />
+                                    <Line key={li} type="monotone" dataKey={`intensity_${line.wavelength}`} stroke={lineColors[li % 3]} strokeWidth={1.5} dot={false} name={`${line.wavelength} nm`} />
                                   ))}
                                 </LineChart>
                               </ResponsiveContainer>
@@ -12649,6 +12652,11 @@ const ThinFilmDesigner = () => {
                           onMouseEnter={e => e.currentTarget.style.background = '#4338ca'} onMouseLeave={e => e.currentTarget.style.background = '#4f46e5'}>
                           <Send size={12} /> Submit Changes
                         </button>
+                        <button onClick={() => { setTeamColorCompareSelected(Object.keys(teamVisibleTraces).filter(k => teamVisibleTraces[k])); setShowTeamColorCompare(true); }}
+                          className="px-2 py-1 text-xs border rounded flex items-center gap-1" style={{ cursor: 'pointer' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'} onMouseLeave={e => e.currentTarget.style.background = ''}>
+                          Compare Colors
+                        </button>
                       </div>
                     </div>
 
@@ -12659,7 +12667,7 @@ const ThinFilmDesigner = () => {
                       <div className="flex items-center gap-2 p-2 rounded mb-1"
                         style={{ cursor: 'pointer', border: teamActiveLayerView === 'original' ? '2px solid #818cf8' : '1px solid #e5e7eb', background: teamActiveLayerView === 'original' ? '#eef2ff' : '#fff' }}
                         onClick={() => setTeamActiveLayerView('original')}>
-                        <button onClick={e => { e.stopPropagation(); setTeamVisibleTraces(prev => ({ ...prev, original: !prev.original })); setTeamTraceCache({}); }}
+                        <button onClick={e => { e.stopPropagation(); setTeamVisibleTraces(prev => ({ ...prev, original: !prev.original })); }}
                           style={{ cursor: 'pointer', color: teamVisibleTraces.original ? '#4f46e5' : '#d1d5db', flexShrink: 0 }}>
                           {teamVisibleTraces.original ? <Eye size={14} /> : <EyeOff size={14} />}
                         </button>
@@ -12674,7 +12682,7 @@ const ThinFilmDesigner = () => {
                           <div key={sub.id} className="flex items-center gap-2 p-2 rounded mb-1"
                             style={{ cursor: 'pointer', border: teamActiveLayerView === tid ? '2px solid #818cf8' : '1px solid #e5e7eb', background: teamActiveLayerView === tid ? '#eef2ff' : '#fff' }}
                             onClick={() => setTeamActiveLayerView(tid)}>
-                            <button onClick={e => { e.stopPropagation(); setTeamVisibleTraces(prev => ({ ...prev, [tid]: !prev[tid] })); setTeamTraceCache({}); }}
+                            <button onClick={e => { e.stopPropagation(); setTeamVisibleTraces(prev => ({ ...prev, [tid]: !prev[tid] })); }}
                               style={{ cursor: 'pointer', color: teamVisibleTraces[tid] ? getTeamTraceColor(tid, submissions) : '#d1d5db', flexShrink: 0 }}>
                               {teamVisibleTraces[tid] ? <Eye size={14} /> : <EyeOff size={14} />}
                             </button>
@@ -12759,10 +12767,10 @@ const ThinFilmDesigner = () => {
                                       {stressLayer && (
                                         <tr>
                                           <td colSpan={5} className="px-1 pb-1" style={{ fontSize: '9px' }}>
-                                            <span className="text-gray-400">Stress: {stressLayer.intrinsicStress?.toFixed(0) || '—'} MPa | Force: {stressLayer.force?.toFixed(1) || '—'} MPa·nm</span>
-                                            {stressLayer.type && (
-                                              <span className="ml-1 px-1 py-0.5 rounded" style={{ fontSize: '8px', background: stressLayer.type === 'compressive' ? '#dbeafe' : '#fef3c7', color: stressLayer.type === 'compressive' ? '#1e40af' : '#92400e' }}>
-                                                {stressLayer.type}
+                                            <span className="text-gray-400">Stress: {stressLayer.intrinsicStress?.toFixed(0) || '—'} MPa | Force: {stressLayer.stressForce?.toFixed(1) || '—'} MPa·nm</span>
+                                            {stressLayer.stressType && (
+                                              <span className="ml-1 px-1 py-0.5 rounded" style={{ fontSize: '8px', background: stressLayer.stressType === 'Compressive' ? '#dbeafe' : '#fef3c7', color: stressLayer.stressType === 'Compressive' ? '#1e40af' : '#92400e' }}>
+                                                {stressLayer.stressType}
                                               </span>
                                             )}
                                           </td>
