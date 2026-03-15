@@ -40,10 +40,16 @@ import {
   Check,
   MessageCircle,
   Send,
+  Users,
+  Bell,
+  Copy,
+  XCircle,
+  UserPlus,
+  MessageSquare,
 } from "lucide-react";
 import { saveSession, loadSession, migrateFromLocalStorage, saveDesignLocally, getLocalDesigns, deleteLocalDesign } from './services/offlineStore';
 import syncManager from './services/syncManager';
-import { apiGet, apiPost, apiDelete, apiStream, setTokenProvider } from './services/apiClient';
+import { apiGet, apiPost, apiPut, apiDelete, apiStream, setTokenProvider } from './services/apiClient';
 import html2canvas from 'html2canvas';
 
 // Clerk — import hooks and components. They only work when wrapped in ClerkProvider (index.js).
@@ -83,6 +89,9 @@ const FREE_TIER_LIMITS = {
   trackingTrendView: true, trackingExportPng: true, trackingExportCsv: true,
   trackingRunComparison: true,
   aiChat: true,
+  teamCollaboration: true,
+  maxTeams: -1,
+  maxTeamSeats: -1,
 };
 
 const admittanceColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be185d", "#65a30d", "#7c3aed", "#d97706"];
@@ -455,6 +464,37 @@ const ThinFilmDesigner = () => {
   const chatEndRef = useRef(null);
   const chatAbortRef = useRef(null);
 
+  // Current user ID (set from tier fetch)
+  const [currentUserId, setCurrentUserId] = useState(null);
+
+  // Team collaboration state
+  const [teams, setTeams] = useState([]);
+  const [selectedTeamId, setSelectedTeamId] = useState(null);
+  const [selectedTeamDetail, setSelectedTeamDetail] = useState(null);
+  const [teamDesigns, setTeamDesigns] = useState([]);
+  const [selectedSharedDesign, setSelectedSharedDesign] = useState(null);
+  const [selectedSubmission, setSelectedSubmission] = useState(null);
+  const [teamView, setTeamView] = useState('list');
+  const [teamLoading, setTeamLoading] = useState(false);
+  const [pendingInvitations, setPendingInvitations] = useState([]);
+  const [showCreateTeamModal, setShowCreateTeamModal] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showShareToTeamModal, setShowShareToTeamModal] = useState(false);
+  const [showSubmitChangesModal, setShowSubmitChangesModal] = useState(false);
+  const [showApproveModal, setShowApproveModal] = useState(false);
+  const [showDenyModal, setShowDenyModal] = useState(false);
+  const [pendingSubmissionId, setPendingSubmissionId] = useState(null);
+  const [newTeamName, setNewTeamName] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [submissionNotes, setSubmissionNotes] = useState('');
+  const [selectedDesignForSubmission, setSelectedDesignForSubmission] = useState(null);
+  const [commentText, setCommentText] = useState('');
+  const [reviewNoteText, setReviewNoteText] = useState('');
+  const [shareDesignName, setShareDesignName] = useState('');
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
+
   // Refs to prevent useEffect interference during delete operations
   // and to track previous layers for comparison to avoid infinite loops
   const isDeletingRef = React.useRef(false);
@@ -521,6 +561,7 @@ const ThinFilmDesigner = () => {
         if (!cancelled) {
           setUserTier(data.tier || 'free');
           setTierLimits(data.limits || FREE_TIER_LIMITS);
+          if (data.userId) setCurrentUserId(data.userId);
         }
       } catch (e) {
         console.warn('Failed to fetch tier:', e);
@@ -531,6 +572,158 @@ const ThinFilmDesigner = () => {
     fetchTier();
     return () => { cancelled = true; };
   }, [isSignedIn]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Team collaboration helpers
+  const loadTeams = useCallback(async () => {
+    if (!isSignedIn) return;
+    try { const data = await apiGet('/api/teams'); setTeams(data); } catch (e) { console.warn('Failed to load teams:', e); }
+  }, [isSignedIn]);
+
+  const loadPendingInvitations = useCallback(async () => {
+    if (!isSignedIn) return;
+    try { const data = await apiGet('/api/invitations'); setPendingInvitations(data); } catch (e) { console.warn('Failed to load invitations:', e); }
+  }, [isSignedIn]);
+
+  const loadTeamDetail = useCallback(async (teamId) => {
+    try {
+      setTeamLoading(true);
+      const [detail, designs] = await Promise.all([apiGet(`/api/teams/${teamId}`), apiGet(`/api/teams/${teamId}/designs`)]);
+      setSelectedTeamDetail(detail);
+      setTeamDesigns(designs);
+    } catch (e) { console.warn('Failed to load team detail:', e); } finally { setTeamLoading(false); }
+  }, []);
+
+  const loadSharedDesignDetail = useCallback(async (teamId, designId) => {
+    try { setTeamLoading(true); const data = await apiGet(`/api/teams/${teamId}/designs/${designId}`); setSelectedSharedDesign(data); } catch (e) { console.warn('Failed to load shared design:', e); } finally { setTeamLoading(false); }
+  }, []);
+
+  const loadSubmissionDetail = useCallback(async (teamId, designId, subId) => {
+    try { setTeamLoading(true); const data = await apiGet(`/api/teams/${teamId}/designs/${designId}/submissions/${subId}`); setSelectedSubmission(data); } catch (e) { console.warn('Failed to load submission:', e); } finally { setTeamLoading(false); }
+  }, []);
+
+  const loadUnreadCount = useCallback(async () => {
+    if (!isSignedIn) return;
+    try { const data = await apiGet('/api/notifications/unread-count'); setUnreadNotificationCount(data.count); } catch (e) {}
+  }, [isSignedIn]);
+
+  const loadNotifications = useCallback(async () => {
+    try { const data = await apiGet('/api/notifications'); setNotifications(data.notifications || []); } catch (e) { console.warn('Failed to load notifications:', e); }
+  }, []);
+
+  const handleCreateTeam = useCallback(async () => {
+    if (!newTeamName.trim()) return;
+    try { await apiPost('/api/teams', { name: newTeamName.trim() }); setShowCreateTeamModal(false); setNewTeamName(''); loadTeams(); } catch (e) { alert('Failed to create team: ' + e.message); }
+  }, [newTeamName, loadTeams]);
+
+  const handleInviteMember = useCallback(async () => {
+    if (!inviteEmail.trim() || !selectedTeamId) return;
+    try { await apiPost(`/api/teams/${selectedTeamId}/invite`, { email: inviteEmail.trim() }); setInviteEmail(''); setShowInviteModal(false); loadTeamDetail(selectedTeamId); } catch (e) { alert('Failed to invite: ' + e.message); }
+  }, [inviteEmail, selectedTeamId, loadTeamDetail]);
+
+  const handleAcceptInvitation = useCallback(async (invitationId) => {
+    try { await apiPost(`/api/invitations/${invitationId}/accept`); loadPendingInvitations(); loadTeams(); } catch (e) { alert('Failed to accept: ' + e.message); }
+  }, [loadPendingInvitations, loadTeams]);
+
+  const handleDeclineInvitation = useCallback(async (invitationId) => {
+    try { await apiPost(`/api/invitations/${invitationId}/decline`); loadPendingInvitations(); } catch (e) { alert('Failed to decline: ' + e.message); }
+  }, [loadPendingInvitations]);
+
+  const handleShareToTeam = useCallback(async (teamId) => {
+    if (!shareDesignName.trim()) return;
+    try {
+      const designData = { layers, layerStacks, currentStackId, substrate, incident, wavelengthRange, displayMode, selectedIlluminant, customMaterials };
+      await apiPost(`/api/teams/${teamId}/designs`, { name: shareDesignName.trim(), data: designData });
+      setShowShareToTeamModal(false); setShareDesignName('');
+      if (selectedTeamId === teamId) loadTeamDetail(teamId);
+    } catch (e) { alert('Failed to share: ' + e.message); }
+  }, [shareDesignName, layers, layerStacks, currentStackId, substrate, incident, wavelengthRange, displayMode, selectedIlluminant, customMaterials, selectedTeamId, loadTeamDetail]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleCloneDesign = useCallback(async (teamId, designId) => {
+    try { const clone = await apiPost(`/api/teams/${teamId}/designs/${designId}/clone`); alert('Design cloned: ' + clone.name); } catch (e) { alert('Failed to clone: ' + e.message); }
+  }, []);
+
+  const handleSubmitChanges = useCallback(async () => {
+    if (!submissionNotes.trim() || !selectedDesignForSubmission) return;
+    try {
+      const design = await apiGet(`/api/designs/${selectedDesignForSubmission}`);
+      if (!design) { alert('Design not found'); return; }
+      await apiPost(`/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}/submissions`, { data: design.data, notes: submissionNotes.trim(), sourceDesignId: design.id });
+      setShowSubmitChangesModal(false); setSubmissionNotes(''); setSelectedDesignForSubmission(null);
+      loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
+    } catch (e) { alert('Failed to submit: ' + e.message); }
+  }, [submissionNotes, selectedDesignForSubmission, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
+
+  const handleApproveSubmission = useCallback(async () => {
+    if (!pendingSubmissionId) return;
+    try {
+      await apiPost(`/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}/submissions/${pendingSubmissionId}/approve`, { reviewNote: reviewNoteText || '' });
+      setShowApproveModal(false); setReviewNoteText(''); setPendingSubmissionId(null);
+      loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
+    } catch (e) { alert('Failed to approve: ' + e.message); }
+  }, [pendingSubmissionId, reviewNoteText, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
+
+  const handleDenySubmission = useCallback(async () => {
+    if (!pendingSubmissionId || !reviewNoteText.trim()) return;
+    try {
+      await apiPost(`/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}/submissions/${pendingSubmissionId}/deny`, { reviewNote: reviewNoteText.trim() });
+      setShowDenyModal(false); setReviewNoteText(''); setPendingSubmissionId(null);
+      loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
+    } catch (e) { alert('Failed to deny: ' + e.message); }
+  }, [pendingSubmissionId, reviewNoteText, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
+
+  const handleAddComment = useCallback(async (type, parentId) => {
+    if (!commentText.trim()) return;
+    try {
+      const basePath = `/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}`;
+      const path = type === 'design' ? `${basePath}/comments` : `${basePath}/submissions/${parentId}/comments`;
+      await apiPost(path, { content: commentText.trim() }); setCommentText('');
+      loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
+    } catch (e) { alert('Failed to add comment: ' + e.message); }
+  }, [commentText, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
+
+  const handleDeleteComment = useCallback(async (type, parentId, commentId) => {
+    try {
+      const basePath = `/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}`;
+      const path = type === 'design' ? `${basePath}/comments/${commentId}` : `${basePath}/submissions/${parentId}/comments/${commentId}`;
+      await apiDelete(path); loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
+    } catch (e) { alert('Failed to delete comment: ' + e.message); }
+  }, [selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
+
+  const handleUpdateDesignStatus = useCallback(async (designId, status) => {
+    try {
+      await apiPut(`/api/teams/${selectedTeamId}/designs/${designId}/status`, { status });
+      loadTeamDetail(selectedTeamId);
+      if (selectedSharedDesign?.id === designId) loadSharedDesignDetail(selectedTeamId, designId);
+    } catch (e) { alert('Failed to update status: ' + e.message); }
+  }, [selectedTeamId, selectedSharedDesign, loadTeamDetail, loadSharedDesignDetail]);
+
+  const handleMarkNotificationRead = useCallback(async (id) => {
+    try { await apiPut(`/api/notifications/${id}/read`); loadUnreadCount(); loadNotifications(); } catch (e) {}
+  }, [loadUnreadCount, loadNotifications]);
+
+  const handleMarkAllNotificationsRead = useCallback(async () => {
+    try { await apiPut('/api/notifications/read-all'); setUnreadNotificationCount(0); loadNotifications(); } catch (e) {}
+  }, [loadNotifications]);
+
+  const handleNotificationClick = useCallback((n) => {
+    handleMarkNotificationRead(n.id);
+    setShowNotificationDropdown(false);
+    if (n.data?.teamId) {
+      setActiveTab('team');
+      setSelectedTeamId(n.data.teamId);
+      setTeamView('detail');
+      loadTeamDetail(n.data.teamId);
+    }
+  }, [handleMarkNotificationRead, loadTeamDetail]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load teams and notifications when signed in with team access
+  useEffect(() => {
+    if (isSignedIn && tierLimits.teamCollaboration) {
+      loadTeams(); loadPendingInvitations(); loadUnreadCount();
+      const interval = setInterval(loadUnreadCount, 60000);
+      return () => clearInterval(interval);
+    }
+  }, [isSignedIn, tierLimits.teamCollaboration, loadTeams, loadPendingInvitations, loadUnreadCount]);
 
   // Save/Load designs state
   const [savedDesigns, setSavedDesigns] = useState([]);
@@ -6035,6 +6228,21 @@ const ThinFilmDesigner = () => {
             Design Assistant
           </button>
           <button
+            onClick={() => {
+              if (CLERK_ENABLED && !isSignedIn) { setUpgradeFeature('Team Collaboration'); setShowUpgradePrompt(true); return; }
+              if (!requireFeature('teamCollaboration', 'Team Collaboration')) return;
+              setActiveTab("team");
+            }}
+            className={`px-4 py-2 rounded-t font-semibold transition-colors flex items-center gap-2 ${
+              activeTab === "team"
+                ? "bg-white text-indigo-600 shadow"
+                : "bg-indigo-100 text-gray-600 hover:bg-indigo-200"
+            }`}
+          >
+            <Users size={16} />
+            Team
+          </button>
+          <button
             onClick={() => setActiveTab("tracking")}
             className={`px-4 py-2 rounded-t font-semibold transition-colors flex items-center gap-2 ${
               activeTab === "tracking"
@@ -6093,6 +6301,56 @@ const ThinFilmDesigner = () => {
                     <Crown size={12} />
                     <span className="capitalize">{userTier}</span>
                   </button>
+                  {tierLimits.teamCollaboration && (
+                    <div style={{ position: 'relative', display: 'inline-block' }}>
+                      <button
+                        onClick={() => { setShowNotificationDropdown(!showNotificationDropdown); if (!showNotificationDropdown) loadNotifications(); }}
+                        className="p-2 text-gray-600 hover:text-indigo-600"
+                        style={{ position: 'relative', cursor: 'pointer' }}
+                      >
+                        <Bell size={18} />
+                        {unreadNotificationCount > 0 && (
+                          <span style={{
+                            position: 'absolute', top: '2px', right: '2px', background: '#ef4444', color: 'white',
+                            borderRadius: '50%', width: '16px', height: '16px', fontSize: '10px',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+                          </span>
+                        )}
+                      </button>
+                      {showNotificationDropdown && (
+                        <div style={{
+                          position: 'absolute', right: 0, top: '100%', width: '320px', background: 'white',
+                          border: '1px solid #e5e7eb', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                          zIndex: 50, maxHeight: '400px', overflowY: 'auto',
+                        }}>
+                          <div className="flex items-center justify-between p-3 border-b">
+                            <span className="text-sm font-semibold">Notifications</span>
+                            <button onClick={handleMarkAllNotificationsRead} className="text-xs text-indigo-600" style={{ cursor: 'pointer' }}>Mark all read</button>
+                          </div>
+                          {notifications.length === 0 ? (
+                            <p className="text-sm text-gray-500 p-4 text-center">No notifications</p>
+                          ) : notifications.map(n => (
+                            <div key={n.id} onClick={() => handleNotificationClick(n)}
+                              style={{ padding: '10px 12px', borderBottom: '1px solid #f3f4f6', background: n.read ? 'white' : '#f0f4ff', cursor: 'pointer' }}>
+                              <p style={{ fontSize: '13px', color: '#374151', margin: 0 }}>
+                                {n.type === 'team_invite' && `You were invited to team "${n.data?.teamName}"`}
+                                {n.type === 'invite_accepted' && `${n.data?.memberEmail} joined "${n.data?.teamName}"`}
+                                {n.type === 'design_shared' && `${n.data?.ownerName} shared "${n.data?.designName}" in ${n.data?.teamName}`}
+                                {n.type === 'submission_new' && `${n.data?.submitterName} submitted changes to "${n.data?.designName}"`}
+                                {n.type === 'submission_approved' && `Your submission for "${n.data?.designName}" was approved`}
+                                {n.type === 'submission_denied' && `Your submission for "${n.data?.designName}" was denied`}
+                                {n.type === 'comment_design' && `${n.data?.authorName} commented on "${n.data?.designName}"`}
+                                {n.type === 'comment_submission' && `${n.data?.authorName} commented on submission for "${n.data?.designName}"`}
+                              </p>
+                              <p style={{ fontSize: '11px', color: '#9ca3af', margin: '2px 0 0' }}>{new Date(n.createdAt).toLocaleString()}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <UserButton afterSignOutUrl={window.location.href} />
                 </div>
               ) : (
@@ -11333,6 +11591,386 @@ const ThinFilmDesigner = () => {
             </details>
           </div>
         )}
+        {/* ========== TEAM TAB CONTENT ========== */}
+        {activeTab === "team" && (
+          <div className="flex-1 bg-white rounded-lg shadow-lg p-4 overflow-y-auto flex flex-col min-h-0">
+            {/* Back navigation */}
+            {teamView !== 'list' && (
+              <button
+                onClick={() => {
+                  if (teamView === 'submission') { setTeamView('design'); setSelectedSubmission(null); }
+                  else if (teamView === 'design') { setTeamView('detail'); setSelectedSharedDesign(null); }
+                  else { setTeamView('list'); setSelectedTeamId(null); setSelectedTeamDetail(null); setTeamDesigns([]); }
+                }}
+                className="mb-3 text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                style={{ cursor: 'pointer' }}
+              >
+                <span style={{ fontSize: '16px' }}>&larr;</span> Back
+              </button>
+            )}
+
+            {teamLoading && <div className="text-center text-gray-500 py-8">Loading...</div>}
+
+            {/* ---- TEAM LIST VIEW ---- */}
+            {!teamLoading && teamView === 'list' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2"><Users size={20} /> Teams</h2>
+                  <button onClick={() => setShowCreateTeamModal(true)} className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                    <Plus size={14} /> Create Team
+                  </button>
+                </div>
+
+                {/* Pending invitations banner */}
+                {pendingInvitations.length > 0 && (
+                  <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                    <p className="text-sm font-semibold text-amber-800 mb-2">Pending Invitations</p>
+                    {pendingInvitations.map(inv => (
+                      <div key={inv.id} className="flex items-center justify-between py-1.5">
+                        <span className="text-sm text-gray-700">Team: <strong>{inv.teamName || inv.team?.name || 'Unknown'}</strong></span>
+                        <div className="flex gap-2">
+                          <button onClick={() => handleAcceptInvitation(inv.id)} className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700" style={{ cursor: 'pointer' }}>Accept</button>
+                          <button onClick={() => handleDeclineInvitation(inv.id)} className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600" style={{ cursor: 'pointer' }}>Decline</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Teams grid */}
+                {teams.length === 0 ? (
+                  <div className="text-center py-16 text-gray-400">
+                    <Users size={48} className="mx-auto mb-3 text-gray-300" />
+                    <p className="text-lg font-medium">No teams yet</p>
+                    <p className="text-sm">Create a team to start collaborating on coating designs.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+                    {teams.map(team => (
+                      <div key={team.id} onClick={() => { setSelectedTeamId(team.id); setTeamView('detail'); loadTeamDetail(team.id); }}
+                        className="p-4 border rounded-lg hover:border-indigo-300 hover:shadow-md transition-all"
+                        style={{ cursor: 'pointer' }}>
+                        <h3 className="font-semibold text-gray-800">{team.name}</h3>
+                        <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                          <span>{team.memberCount || team._count?.members || 0} members</span>
+                          <span>{team.designCount || team._count?.sharedDesigns || 0} designs</span>
+                        </div>
+                        <span className="inline-block mt-2 px-2 py-0.5 text-xs rounded" style={{
+                          background: team.role === 'admin' ? '#dbeafe' : '#f3f4f6',
+                          color: team.role === 'admin' ? '#1e40af' : '#6b7280',
+                        }}>{team.role}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ---- TEAM DETAIL VIEW ---- */}
+            {!teamLoading && teamView === 'detail' && selectedTeamDetail && (
+              <div className="flex gap-4 flex-1 min-h-0">
+                {/* Left sidebar - members */}
+                <div style={{ width: '220px', flexShrink: 0 }} className="border-r pr-4 overflow-y-auto">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-bold text-gray-700">Members</h3>
+                    {(selectedTeamDetail.myRole === 'admin') && (
+                      <button onClick={() => setShowInviteModal(true)} className="text-indigo-600 hover:text-indigo-800" style={{ cursor: 'pointer' }} title="Invite member">
+                        <UserPlus size={16} />
+                      </button>
+                    )}
+                  </div>
+                  {(selectedTeamDetail.members || []).map(m => (
+                    <div key={m.id} className="flex items-center justify-between py-1.5 text-sm">
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-700">{m.user?.name || m.user?.email || m.email || 'Unknown'}</span>
+                        {m.role === 'admin' && <Crown size={12} className="text-amber-500" />}
+                      </div>
+                    </div>
+                  ))}
+                  {(selectedTeamDetail.pendingInvites || []).length > 0 && (
+                    <div className="mt-3 pt-3 border-t">
+                      <p className="text-xs font-semibold text-gray-500 mb-1">Pending</p>
+                      {selectedTeamDetail.pendingInvites.map(inv => (
+                        <div key={inv.id} className="text-xs text-gray-400 py-0.5">{inv.email}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right side - shared designs */}
+                <div className="flex-1 overflow-y-auto">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-lg font-bold text-gray-800">{selectedTeamDetail.name}</h3>
+                    <button onClick={() => setShowShareToTeamModal(true)} className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                      <Send size={14} /> Share Design
+                    </button>
+                  </div>
+
+                  {teamDesigns.length === 0 ? (
+                    <div className="text-center py-12 text-gray-400">
+                      <p className="text-sm">No shared designs yet. Share a design to start collaborating.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {teamDesigns.map(d => {
+                        const statusColors = {
+                          draft: { bg: '#f3f4f6', text: '#6b7280' },
+                          in_review: { bg: '#fef3c7', text: '#92400e' },
+                          approved: { bg: '#d1fae5', text: '#065f46' },
+                          production: { bg: '#dbeafe', text: '#1e40af' },
+                          archived: { bg: '#f3f4f6', text: '#9ca3af' },
+                        };
+                        const sc = statusColors[d.status] || statusColors.draft;
+                        return (
+                          <div key={d.id} onClick={() => { loadSharedDesignDetail(selectedTeamId, d.id); setTeamView('design'); }}
+                            className="p-3 border rounded-lg hover:border-indigo-300 hover:shadow transition-all flex items-center justify-between"
+                            style={{ cursor: 'pointer' }}>
+                            <div>
+                              <span className="font-medium text-gray-800">{d.name}</span>
+                              <span className="ml-2 text-xs text-gray-500">by {d.owner?.name || d.owner?.email || 'Unknown'}</span>
+                            </div>
+                            <span className="px-2 py-0.5 text-xs rounded" style={{ background: sc.bg, color: sc.text }}>
+                              {(d.status || 'draft').replace('_', ' ')}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ---- SHARED DESIGN DETAIL VIEW ---- */}
+            {!teamLoading && teamView === 'design' && selectedSharedDesign && (() => {
+              const myRole = selectedTeamDetail?.myRole;
+              const statusColors = {
+                draft: { bg: '#f3f4f6', text: '#6b7280' },
+                in_review: { bg: '#fef3c7', text: '#92400e' },
+                approved: { bg: '#d1fae5', text: '#065f46' },
+                production: { bg: '#dbeafe', text: '#1e40af' },
+                archived: { bg: '#f3f4f6', text: '#9ca3af' },
+              };
+              const subStatusColors = {
+                pending: { bg: '#fef3c7', text: '#92400e' },
+                approved: { bg: '#d1fae5', text: '#065f46' },
+                denied: { bg: '#fecaca', text: '#991b1b' },
+              };
+              const sc = statusColors[selectedSharedDesign.status] || statusColors.draft;
+              const designLayers = selectedSharedDesign.data?.layers || [];
+              return (
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-lg font-bold text-gray-800">{selectedSharedDesign.name}</h2>
+                      {myRole === 'admin' ? (
+                        <select value={selectedSharedDesign.status || 'draft'} onChange={e => handleUpdateDesignStatus(selectedSharedDesign.id, e.target.value)}
+                          className="text-xs border rounded px-2 py-1" style={{ cursor: 'pointer' }}>
+                          <option value="draft">Draft</option>
+                          <option value="in_review">In Review</option>
+                          <option value="approved">Approved</option>
+                          <option value="production">Production</option>
+                          <option value="archived">Archived</option>
+                        </select>
+                      ) : (
+                        <span className="px-2 py-0.5 text-xs rounded" style={{ background: sc.bg, color: sc.text }}>
+                          {(selectedSharedDesign.status || 'draft').replace('_', ' ')}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => handleCloneDesign(selectedTeamId, selectedSharedDesign.id)}
+                        className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                        <Copy size={14} /> Clone
+                      </button>
+                      <button onClick={() => { setShowSubmitChangesModal(true); }}
+                        className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                        <Send size={14} /> Submit Changes
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Layer stack preview */}
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                    <h4 className="text-sm font-semibold text-gray-700 mb-2">Layer Stack ({designLayers.length} layers)</h4>
+                    <div className="grid gap-1" style={{ gridTemplateColumns: 'auto 1fr', fontSize: '12px' }}>
+                      {designLayers.map((l, i) => (
+                        <React.Fragment key={i}>
+                          <span className="text-gray-500 pr-2">{i + 1}.</span>
+                          <span className="text-gray-700">{l.material} — {Number(l.thickness).toFixed(1)} nm</span>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Submissions */}
+                  <div className="mb-4">
+                    <h4 className="text-sm font-semibold text-gray-700 mb-2">Submissions</h4>
+                    {(selectedSharedDesign.submissions || []).length === 0 ? (
+                      <p className="text-sm text-gray-400">No submissions yet.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {(selectedSharedDesign.submissions || []).map(sub => {
+                          const ssc = subStatusColors[sub.status] || subStatusColors.pending;
+                          return (
+                            <div key={sub.id}
+                              onClick={() => { loadSubmissionDetail(selectedTeamId, selectedSharedDesign.id, sub.id); setTeamView('submission'); }}
+                              className="p-2.5 border rounded hover:border-indigo-300 flex items-center justify-between"
+                              style={{ cursor: 'pointer' }}>
+                              <div>
+                                <span className="text-sm text-gray-700">{sub.submitter?.name || sub.submitter?.email || 'Unknown'}</span>
+                                <span className="ml-2 text-xs text-gray-400">{new Date(sub.createdAt).toLocaleDateString()}</span>
+                              </div>
+                              <span className="px-2 py-0.5 text-xs rounded" style={{ background: ssc.bg, color: ssc.text }}>
+                                {sub.status}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Design discussion */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1"><MessageSquare size={14} /> Discussion</h4>
+                    {(selectedSharedDesign.comments || []).length === 0 && <p className="text-xs text-gray-400 mb-2">No comments yet.</p>}
+                    {(selectedSharedDesign.comments || []).map(c => (
+                      <div key={c.id} className="mb-2 p-2 bg-gray-50 rounded text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">{c.author?.name || c.author?.email || 'Unknown'}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400">{new Date(c.createdAt).toLocaleString()}</span>
+                            {(c.author?.id === currentUserId || myRole === 'admin') && (
+                              <button onClick={(e) => { e.stopPropagation(); handleDeleteComment('design', null, c.id); }} className="text-red-400 hover:text-red-600" style={{ cursor: 'pointer' }}>
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-gray-600 mt-1">{c.content}</p>
+                      </div>
+                    ))}
+                    <div className="flex gap-2 mt-2">
+                      <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleAddComment('design', null); }}
+                        placeholder="Add a comment..." className="flex-1 px-3 py-1.5 border rounded text-sm" />
+                      <button onClick={() => handleAddComment('design', null)} className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700" style={{ cursor: 'pointer' }}>
+                        <Send size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ---- SUBMISSION DETAIL VIEW ---- */}
+            {!teamLoading && teamView === 'submission' && selectedSubmission && (() => {
+              const myRole = selectedTeamDetail?.myRole;
+              const subStatusColors = {
+                pending: { bg: '#fef3c7', text: '#92400e' },
+                approved: { bg: '#d1fae5', text: '#065f46' },
+                denied: { bg: '#fecaca', text: '#991b1b' },
+              };
+              const ssc = subStatusColors[selectedSubmission.status] || subStatusColors.pending;
+              const subLayers = selectedSubmission.data?.layers || [];
+              return (
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-lg font-bold text-gray-800">Submission</h2>
+                      <span className="px-2 py-0.5 text-xs rounded" style={{ background: ssc.bg, color: ssc.text }}>
+                        {selectedSubmission.status}
+                      </span>
+                    </div>
+                    {myRole === 'admin' && selectedSubmission.status === 'pending' && (
+                      <div className="flex gap-2">
+                        <button onClick={() => { setPendingSubmissionId(selectedSubmission.id); setShowApproveModal(true); }}
+                          className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                          <Check size={14} /> Approve
+                        </button>
+                        <button onClick={() => { setPendingSubmissionId(selectedSubmission.id); setShowDenyModal(true); }}
+                          className="px-3 py-1.5 text-sm bg-red-500 text-white rounded hover:bg-red-600 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                          <XCircle size={14} /> Deny
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-sm text-gray-600 mb-3">
+                    Submitted by <strong>{selectedSubmission.submitter?.name || selectedSubmission.submitter?.email || 'Unknown'}</strong> on {new Date(selectedSubmission.createdAt).toLocaleString()}
+                  </div>
+
+                  {/* Change notes */}
+                  <div className="mb-4 p-3 rounded-lg" style={{ background: '#eef2ff' }}>
+                    <h4 className="text-sm font-semibold text-indigo-700 mb-1">Change Notes</h4>
+                    <p className="text-sm text-gray-700">{selectedSubmission.notes}</p>
+                  </div>
+
+                  {/* Review note if denied */}
+                  {selectedSubmission.reviewNote && selectedSubmission.status === 'denied' && (
+                    <div className="mb-4 p-3 rounded-lg" style={{ background: '#fef2f2' }}>
+                      <h4 className="text-sm font-semibold text-red-700 mb-1">Review Note</h4>
+                      <p className="text-sm text-gray-700">{selectedSubmission.reviewNote}</p>
+                    </div>
+                  )}
+
+                  {/* Review note if approved */}
+                  {selectedSubmission.reviewNote && selectedSubmission.status === 'approved' && (
+                    <div className="mb-4 p-3 rounded-lg" style={{ background: '#f0fdf4' }}>
+                      <h4 className="text-sm font-semibold text-green-700 mb-1">Review Note</h4>
+                      <p className="text-sm text-gray-700">{selectedSubmission.reviewNote}</p>
+                    </div>
+                  )}
+
+                  {/* Submitted layer stack */}
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                    <h4 className="text-sm font-semibold text-gray-700 mb-2">Submitted Layer Stack ({subLayers.length} layers)</h4>
+                    <div className="grid gap-1" style={{ gridTemplateColumns: 'auto 1fr', fontSize: '12px' }}>
+                      {subLayers.map((l, i) => (
+                        <React.Fragment key={i}>
+                          <span className="text-gray-500 pr-2">{i + 1}.</span>
+                          <span className="text-gray-700">{l.material} — {Number(l.thickness).toFixed(1)} nm</span>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Submission comments */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1"><MessageSquare size={14} /> Review Comments</h4>
+                    {(selectedSubmission.comments || []).length === 0 && <p className="text-xs text-gray-400 mb-2">No comments yet.</p>}
+                    {(selectedSubmission.comments || []).map(c => (
+                      <div key={c.id} className="mb-2 p-2 bg-gray-50 rounded text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-gray-700">{c.author?.name || c.author?.email || 'Unknown'}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400">{new Date(c.createdAt).toLocaleString()}</span>
+                            {(c.author?.id === currentUserId || myRole === 'admin') && (
+                              <button onClick={(e) => { e.stopPropagation(); handleDeleteComment('submission', selectedSubmission.id, c.id); }} className="text-red-400 hover:text-red-600" style={{ cursor: 'pointer' }}>
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-gray-600 mt-1">{c.content}</p>
+                      </div>
+                    ))}
+                    <div className="flex gap-2 mt-2">
+                      <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleAddComment('submission', selectedSubmission.id); }}
+                        placeholder="Add a review comment..." className="flex-1 px-3 py-1.5 border rounded text-sm" />
+                      <button onClick={() => handleAddComment('submission', selectedSubmission.id)} className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700" style={{ cursor: 'pointer' }}>
+                        <Send size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         {/* Pricing Tab - removed, now uses modal */}
       </div>
 
@@ -12085,6 +12723,172 @@ const ThinFilmDesigner = () => {
         </div>
       )}
       {/* ========== END STRESS MODAL ========== */}
+
+      {/* ========== CREATE TEAM MODAL ========== */}
+      {showCreateTeamModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Create Team</h3>
+            <input
+              type="text"
+              placeholder="Team name..."
+              value={newTeamName}
+              onChange={(e) => setNewTeamName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateTeam(); }}
+              className="w-full px-3 py-2 border rounded mb-4 text-sm"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowCreateTeamModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleCreateTeam} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700" style={{ cursor: 'pointer' }}>Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== INVITE MEMBER MODAL ========== */}
+      {showInviteModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Invite Team Member</h3>
+            <input
+              type="email"
+              placeholder="Email address..."
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleInviteMember(); }}
+              className="w-full px-3 py-2 border rounded mb-2 text-sm"
+              autoFocus
+            />
+            <p className="text-xs text-gray-500 mb-4">The invitee must have an Enterprise-tier OptiCoat account.</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowInviteModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleInviteMember} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                <UserPlus size={14} /> Send Invite
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== SHARE TO TEAM MODAL ========== */}
+      {showShareToTeamModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Share Design to Team</h3>
+            <input
+              type="text"
+              placeholder="Name for the shared design..."
+              value={shareDesignName}
+              onChange={(e) => setShareDesignName(e.target.value)}
+              className="w-full px-3 py-2 border rounded mb-4 text-sm"
+              autoFocus
+            />
+            {shareDesignName.trim() ? (
+              <div>
+                <p className="text-sm text-gray-600 mb-2">Share to:</p>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {teams.map(t => (
+                    <button key={t.id} onClick={() => handleShareToTeam(t.id)}
+                      className="w-full text-left px-3 py-2 border rounded hover:border-indigo-300 hover:bg-indigo-50 text-sm transition-colors"
+                      style={{ cursor: 'pointer' }}>
+                      {t.name}
+                    </button>
+                  ))}
+                </div>
+                {teams.length === 0 && <p className="text-xs text-gray-400">No teams available. Create a team first.</p>}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400">Enter a name to see available teams.</p>
+            )}
+            <div className="flex justify-end mt-4">
+              <button onClick={() => { setShowShareToTeamModal(false); setShareDesignName(''); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== SUBMIT CHANGES MODAL ========== */}
+      {showSubmitChangesModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Submit Changes for Review</h3>
+            <label className="block text-sm text-gray-700 mb-1">Select your saved design:</label>
+            <select
+              value={selectedDesignForSubmission || ''}
+              onChange={e => setSelectedDesignForSubmission(e.target.value || null)}
+              className="w-full px-3 py-2 border rounded mb-3 text-sm"
+            >
+              <option value="">-- Select a saved design --</option>
+              {savedDesigns.map(d => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+            <label className="block text-sm text-gray-700 mb-1">Change notes:</label>
+            <textarea
+              value={submissionNotes}
+              onChange={e => setSubmissionNotes(e.target.value)}
+              placeholder="Describe what you changed and why..."
+              className="w-full px-3 py-2 border rounded mb-4 text-sm"
+              rows={3}
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setShowSubmitChangesModal(false); setSubmissionNotes(''); setSelectedDesignForSubmission(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleSubmitChanges} disabled={!selectedDesignForSubmission || !submissionNotes.trim()}
+                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50" style={{ cursor: 'pointer' }}>
+                Submit for Review
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== APPROVE SUBMISSION MODAL ========== */}
+      {showApproveModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Approve Submission</h3>
+            <label className="block text-sm text-gray-700 mb-1">Review note (optional):</label>
+            <textarea
+              value={reviewNoteText}
+              onChange={e => setReviewNoteText(e.target.value)}
+              placeholder="Optional note for the submitter..."
+              className="w-full px-3 py-2 border rounded mb-4 text-sm"
+              rows={3}
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setShowApproveModal(false); setReviewNoteText(''); setPendingSubmissionId(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleApproveSubmission} className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                <Check size={14} /> Approve
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== DENY SUBMISSION MODAL ========== */}
+      {showDenyModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">Deny Submission</h3>
+            <label className="block text-sm text-gray-700 mb-1">Review note (required):</label>
+            <textarea
+              value={reviewNoteText}
+              onChange={e => setReviewNoteText(e.target.value)}
+              placeholder="Explain why this submission is being denied..."
+              className="w-full px-3 py-2 border rounded mb-4 text-sm"
+              rows={3}
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setShowDenyModal(false); setReviewNoteText(''); setPendingSubmissionId(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
+              <button onClick={handleDenySubmission} disabled={!reviewNoteText.trim()}
+                className="px-4 py-2 text-sm bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50 flex items-center gap-1" style={{ cursor: 'pointer' }}>
+                <XCircle size={14} /> Deny
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========== SAVE DESIGN MODAL ========== */}
       {showSaveModal && (
