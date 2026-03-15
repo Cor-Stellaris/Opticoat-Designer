@@ -1,14 +1,32 @@
 const { requireAuth } = require('@clerk/express');
 const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
+const { URL } = require('url');
 
-const prisma = new PrismaClient();
+// Parse DATABASE_URL into pg Pool config object
+function parseDbUrl(urlStr) {
+  const url = new URL(urlStr);
+  return {
+    host: url.hostname,
+    port: parseInt(url.port) || 5432,
+    database: url.pathname.slice(1),
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    ssl: { rejectUnauthorized: false },
+  };
+}
+
+const poolConfig = parseDbUrl(process.env.DATABASE_URL);
+const adapter = new PrismaPg(poolConfig);
+const prisma = new PrismaClient({ adapter });
 
 // Middleware: require authentication and attach user from DB
 const requireUser = [
   requireAuth(),
   async (req, res, next) => {
     try {
-      const clerkId = req.auth.userId;
+      const auth = typeof req.auth === 'function' ? req.auth() : req.auth;
+      const clerkId = auth.userId;
       if (!clerkId) {
         return res.status(401).json({ error: 'Not authenticated' });
       }
@@ -17,17 +35,18 @@ const requireUser = [
 
       if (!user) {
         // Auto-create user on first authenticated request
-        const clerkUser = req.auth;
         user = await prisma.user.create({
           data: {
             clerkId,
-            email: clerkUser.sessionClaims?.email || `${clerkId}@placeholder.com`,
+            email: auth.sessionClaims?.email || `${clerkId}@placeholder.com`,
             tier: 'free',
           },
         });
       }
 
       req.user = user;
+      // DEV OVERRIDE: Force enterprise tier for testing. Remove before production.
+      req.user = { ...req.user, tier: 'enterprise' };
       next();
     } catch (error) {
       console.error('Auth middleware error:', error);

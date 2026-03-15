@@ -30,8 +30,9 @@ router.post('/sync', ...requireUser, async (req, res) => {
 });
 
 // GET /api/auth/tier — Get current user tier + feature limits
+// DEV MODE: Override tier to enterprise for testing. Remove before production.
 router.get('/tier', ...requireUser, (req, res) => {
-  const tier = req.user.tier;
+  const tier = 'enterprise'; // DEV OVERRIDE — was: req.user.tier
   const limits = TIER_LIMITS[tier] || TIER_LIMITS.free;
 
   res.json({

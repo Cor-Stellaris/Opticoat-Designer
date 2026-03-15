@@ -130,20 +130,16 @@ router.post('/:subId/approve', ...requireUser, async (req, res) => {
 
     const { reviewNote } = req.body || {};
 
-    // In a transaction: approve submission + replace shared design data
-    const [updatedSubmission] = await prisma.$transaction([
-      prisma.designSubmission.update({
-        where: { id: req.params.subId },
-        data: {
-          status: 'approved',
-          reviewNote: reviewNote || null,
-        },
-      }),
-      prisma.sharedDesign.update({
-        where: { id: req.params.designId },
-        data: { data: submission.data },
-      }),
-    ]);
+    // Approve the submission without overwriting the shared design data.
+    // The original design is preserved — applying the submission's version
+    // to the shared design should be a separate explicit action.
+    const updatedSubmission = await prisma.designSubmission.update({
+      where: { id: req.params.subId },
+      data: {
+        status: 'approved',
+        reviewNote: reviewNote || null,
+      },
+    });
 
     // Notify submitter
     if (submission.submitterId !== req.user.id) {

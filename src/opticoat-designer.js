@@ -46,6 +46,9 @@ import {
   XCircle,
   UserPlus,
   MessageSquare,
+  Eye,
+  EyeOff,
+  ChevronLeft,
 } from "lucide-react";
 import { saveSession, loadSession, migrateFromLocalStorage, saveDesignLocally, getLocalDesigns, deleteLocalDesign } from './services/offlineStore';
 import syncManager from './services/syncManager';
@@ -228,6 +231,577 @@ const materialDispersion = {
     kDecay: 0.02,
   },
 };
+
+// Standalone reflectivity calculator for rendering mini-charts from design data JSON
+function computeReflectivityFromData(designData, customMats = {}) {
+  if (!designData) return [];
+  // Prefer layers from the current stack in layerStacks (authoritative source)
+  let layers = designData.layers || [];
+  if (designData.layerStacks && designData.currentStackId) {
+    const currentStack = designData.layerStacks.find(s => s.id === designData.currentStackId);
+    if (currentStack && currentStack.layers && currentStack.layers.length > 0) {
+      layers = currentStack.layers;
+    }
+  }
+  if (layers.length === 0) return [];
+
+  const wlRange = designData.wavelengthRange || { min: 380, max: 780, step: 5 };
+  const n0 = designData.incident?.n || 1.0;
+  const ns = designData.substrate?.n || 1.52;
+
+  const allMats = { ...materialDispersion, ...customMats };
+
+  function getN(material, wavelength) {
+    const data = allMats[material];
+    if (!data) return 1.5;
+    const lm = wavelength / 1000;
+    if (data.type === 'sellmeier') {
+      const { B1, B2, B3, C1, C2, C3 } = data;
+      const l2 = lm * lm;
+      return Math.sqrt(Math.abs(1 + (B1 * l2) / (l2 - C1) + (B2 * l2) / (l2 - C2) + (B3 * l2) / (l2 - C3)));
+    } else if (data.type === 'cauchy') {
+      return data.A + data.B / (lm * lm) + (data.C || 0) / (lm ** 4);
+    }
+    return data.n || 1.5;
+  }
+
+  const result = [];
+  const step = Math.max(wlRange.step || 5, 2);
+  for (let wl = wlRange.min; wl <= wlRange.max; wl += step) {
+    // Transfer matrix method — normal incidence
+    let M11r = 1, M11i = 0, M12r = 0, M12i = 0, M21r = 0, M21i = 0, M22r = 1, M22i = 0;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const n = getN(layers[i].material, wl);
+      const d = Number(layers[i].thickness) || 0;
+      const delta = (2 * Math.PI * n * d) / wl;
+      const cd = Math.cos(delta), sd = Math.sin(delta);
+      const a11r = cd, a12r = 0, a12i = sd / n, a21r = 0, a21i = n * sd, a22r = cd;
+      // Complex multiply M = A * M
+      const t11r = a11r * M11r - a12i * M21i;
+      const t11i = a11r * M11i + a12i * M21r;
+      const t12r = a11r * M12r - a12i * M22i;
+      const t12i = a11r * M12i + a12i * M22r;
+      const t21r = -a21i * M11i + a22r * M21r;
+      const t21i = a21i * M11r + a22r * M21i;
+      const t22r = -a21i * M12i + a22r * M22r;
+      const t22i = a21i * M12r + a22r * M22i;
+      M11r = t11r; M11i = t11i; M12r = t12r; M12i = t12i;
+      M21r = t21r; M21i = t21i; M22r = t22r; M22i = t22i;
+    }
+    // r = (n0*M11 + n0*ns*M12 - M21 - ns*M22) / (n0*M11 + n0*ns*M12 + M21 + ns*M22)
+    const numR = n0 * M11r + n0 * ns * M12r - M21r - ns * M22r;
+    const numI = n0 * M11i + n0 * ns * M12i - M21i - ns * M22i;
+    const denR = n0 * M11r + n0 * ns * M12r + M21r + ns * M22r;
+    const denI = n0 * M11i + n0 * ns * M12i + M21i + ns * M22i;
+    const denMag2 = denR * denR + denI * denI;
+    const rR = (numR * denR + numI * denI) / denMag2;
+    const rI = (numI * denR - numR * denI) / denMag2;
+    const R = (rR * rR + rI * rI) * 100;
+    result.push({ wavelength: wl, R: Math.min(R, 100) });
+  }
+  return result;
+}
+
+function getRefractiveIndexStandalone(material, wavelength, allMats, iadSettings = null, packingDensity = 1.0) {
+  const data = allMats[material];
+  if (!data) return 1.5;
+  const lambdaMicrons = wavelength / 1000;
+  let baseN;
+  if (data.type === 'sellmeier') {
+    const { B1, B2, B3, C1, C2, C3 } = data;
+    const lambda2 = lambdaMicrons * lambdaMicrons;
+    baseN = Math.sqrt(Math.abs(1 + (B1 * lambda2) / (lambda2 - C1) + (B2 * lambda2) / (lambda2 - C2) + (B3 * lambda2) / (lambda2 - C3)));
+  } else if (data.type === 'cauchy') {
+    baseN = data.A + data.B / (lambdaMicrons * lambdaMicrons) + (data.C || 0) / (lambdaMicrons ** 4);
+  } else {
+    baseN = data.n || 1.5;
+  }
+  if (iadSettings && iadSettings.enabled) {
+    baseN = baseN * (1 + iadSettings.riIncrease / 100);
+  }
+  if (packingDensity < 1.0) {
+    baseN = (packingDensity * baseN) + ((1 - packingDensity) * 1.0);
+  }
+  return baseN;
+}
+
+function getExtinctionCoefficientStandalone(material, wavelength, allMats) {
+  const data = allMats[material];
+  if (!data) return 0;
+  if (data.kType === 'none' || !data.kType) return 0;
+  if (data.kType === 'constant') return data.kValue || 0;
+  if (data.kType === 'urbach') {
+    const { k0, kEdge, kDecay } = data;
+    if (wavelength <= kEdge) return k0;
+    return k0 * Math.exp(-kDecay * (wavelength - kEdge));
+  }
+  return 0;
+}
+
+function computeFullSpectrumFromData(designData, customMats = {}) {
+  if (!designData) return [];
+  const allMats = { ...materialDispersion, ...customMats };
+
+  let layers = designData.layers || [];
+  if (designData.layerStacks && designData.currentStackId) {
+    const cs = designData.layerStacks.find(s => s.id === designData.currentStackId);
+    if (cs && cs.layers && cs.layers.length > 0) layers = cs.layers;
+  }
+  if (layers.length === 0) return [];
+
+  const wlRange = designData.wavelengthRange || { min: 380, max: 780, step: 5 };
+  const n0 = designData.incident?.n || 1.0;
+  const ns = designData.substrate?.n || 1.52;
+
+  const machine = (designData.machines || []).find(m => m.id === designData.currentMachineId) || designData.machines?.[0];
+  const toolingFactors = machine?.toolingFactors || {};
+
+  const result = [];
+  const step = Math.max(wlRange.step || 5, 2);
+
+  for (let wl = wlRange.min; wl <= wlRange.max; wl += step) {
+    let M11r = 1, M11i = 0, M12r = 0, M12i = 0;
+    let M21r = 0, M21i = 0, M22r = 1, M22i = 0;
+
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i];
+      const nr = getRefractiveIndexStandalone(layer.material, wl, allMats, layer.iad, layer.packingDensity || 1.0);
+      const ni = getExtinctionCoefficientStandalone(layer.material, wl, allMats);
+      const tf = toolingFactors[layer.material] || 1.0;
+      const d = (Number(layer.thickness) || 0) * tf;
+
+      const deltaR = (2 * Math.PI * nr * d) / wl;
+      const deltaI = -(2 * Math.PI * ni * d) / wl;
+
+      const cosR = Math.cos(deltaR) * Math.cosh(deltaI);
+      const cosI = Math.sin(deltaR) * Math.sinh(deltaI);
+      const sinR = Math.sin(deltaR) * Math.cosh(deltaI);
+      const sinI = -Math.cos(deltaR) * Math.sinh(deltaI);
+
+      const etaR = nr, etaI = -ni;
+      const etaMag2 = etaR * etaR + etaI * etaI;
+
+      const a12r = (-sinI * etaR - sinR * etaI) / etaMag2;
+      const a12i = (sinR * etaR - sinI * etaI) / etaMag2;
+      const a21r = -sinI * etaR + sinR * etaI;
+      const a21i = sinR * etaR + sinI * etaI;
+
+      const t11r = cosR * M11r - cosI * M11i + a12r * M21r - a12i * M21i;
+      const t11i = cosR * M11i + cosI * M11r + a12r * M21i + a12i * M21r;
+      const t12r = cosR * M12r - cosI * M12i + a12r * M22r - a12i * M22i;
+      const t12i = cosR * M12i + cosI * M12r + a12r * M22i + a12i * M22r;
+      const t21r = a21r * M11r - a21i * M11i + cosR * M21r - cosI * M21i;
+      const t21i = a21r * M11i + a21i * M11r + cosR * M21i + cosI * M21r;
+      const t22r = a21r * M12r - a21i * M12i + cosR * M22r - cosI * M22i;
+      const t22i = a21r * M12i + a21i * M12r + cosR * M22i + cosI * M22r;
+
+      M11r = t11r; M11i = t11i; M12r = t12r; M12i = t12i;
+      M21r = t21r; M21i = t21i; M22r = t22r; M22i = t22i;
+    }
+
+    const numR = n0 * M11r + n0 * ns * M12r - M21r - ns * M22r;
+    const numI = n0 * M11i + n0 * ns * M12i - M21i - ns * M22i;
+    const denR = n0 * M11r + n0 * ns * M12r + M21r + ns * M22r;
+    const denI = n0 * M11i + n0 * ns * M12i + M21i + ns * M22i;
+    const denMag2 = denR * denR + denI * denI;
+    const rR = (numR * denR + numI * denI) / denMag2;
+    const rI = (numI * denR - numR * denI) / denMag2;
+    const R = Math.min((rR * rR + rI * rI) * 100, 100);
+
+    let totalAbsorption = 0;
+    let remainingIntensity = 1 - R / 100;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const k = getExtinctionCoefficientStandalone(layers[i].material, wl, allMats);
+      if (k > 0) {
+        const tf = toolingFactors[layers[i].material] || 1.0;
+        const d = (Number(layers[i].thickness) || 0) * tf;
+        const alpha = (4 * Math.PI * k * d) / wl;
+        const layerAbsorption = remainingIntensity * (1 - Math.exp(-alpha));
+        totalAbsorption += layerAbsorption;
+        remainingIntensity -= layerAbsorption;
+      }
+    }
+    const T = Math.max(0, (1 - R / 100 - totalAbsorption) * 100);
+    const A = totalAbsorption * 100;
+    const phase = Math.atan2(rI, rR) * 180 / Math.PI;
+
+    result.push({ wavelength: wl, R, T, A, phase });
+  }
+  return result;
+}
+
+function computeStressFromData(designData, customMats = {}) {
+  const allMats = { ...materialDispersion, ...customMats };
+  let layers = designData?.layers || [];
+  if (designData?.layerStacks && designData.currentStackId) {
+    const cs = designData.layerStacks.find(s => s.id === designData.currentStackId);
+    if (cs && cs.layers && cs.layers.length > 0) layers = cs.layers;
+  }
+  if (layers.length === 0) return null;
+
+  const stressData = [];
+  let cumulativeStress = 0;
+  let totalCompressive = 0, totalTensile = 0;
+
+  layers.forEach((layer, idx) => {
+    const materialData = allMats[layer.material];
+    const intrinsicStress = materialData?.stress || 0;
+    const thickness = Number(layer.thickness) || 0;
+    const stressForce = intrinsicStress * thickness;
+    cumulativeStress += stressForce;
+    if (stressForce < 0) totalTensile += stressForce;
+    else if (stressForce > 0) totalCompressive += stressForce;
+
+    stressData.push({
+      layerNum: idx + 1, material: layer.material, thickness,
+      intrinsicStress, stressForce, cumulativeStress,
+      stressType: intrinsicStress > 0 ? 'Compressive' : intrinsicStress < 0 ? 'Tensile' : 'Neutral',
+    });
+  });
+
+  const totalStressMagnitude = Math.abs(cumulativeStress);
+  let riskLevel, riskColor, recommendation;
+  if (totalStressMagnitude < 50000) {
+    riskLevel = 'LOW'; riskColor = '#10b981';
+    recommendation = 'Safe for production. No annealing required.';
+  } else if (totalStressMagnitude < 150000) {
+    riskLevel = 'MEDIUM'; riskColor = '#f59e0b';
+    recommendation = 'Monitor adhesion. Consider post-deposition annealing at 150\u00b0C for 2 hours.';
+  } else {
+    riskLevel = 'HIGH'; riskColor = '#ef4444';
+    recommendation = 'High risk of delamination. REDESIGN RECOMMENDED.';
+  }
+
+  return {
+    layers: stressData, totalStress: cumulativeStress, totalStressMagnitude,
+    totalCompressive, totalTensile,
+    totalPhysicalThickness: layers.reduce((s, l) => s + (Number(l.thickness) || 0), 0),
+    riskLevel, riskColor, recommendation,
+  };
+}
+
+function computeAdmittanceFromData(designData, customMats = {}, wavelengths = [450, 550, 650]) {
+  const allMats = { ...materialDispersion, ...customMats };
+  let layers = designData?.layers || [];
+  if (designData?.layerStacks && designData.currentStackId) {
+    const cs = designData.layerStacks.find(s => s.id === designData.currentStackId);
+    if (cs && cs.layers && cs.layers.length > 0) layers = cs.layers;
+  }
+  if (layers.length === 0) return [];
+
+  const ns = designData.substrate?.n || 1.52;
+  const machine = (designData.machines || []).find(m => m.id === designData.currentMachineId) || designData.machines?.[0];
+  const toolingFactors = machine?.toolingFactors || {};
+  const admittanceColors = ['#2563eb', '#16a34a', '#dc2626', '#9333ea', '#ea580c'];
+  const stepsPerLayer = 15;
+
+  return wavelengths.map((lambda, wIdx) => {
+    const locusColor = admittanceColors[wIdx % admittanceColors.length];
+    const points = [];
+    let Yr = ns, Yi = 0;
+    points.push({ re: Yr, im: Yi, layerIndex: -1, t: 0, label: 'Substrate', isBoundary: true, material: 'Substrate', locusColor });
+
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i];
+      const nr = getRefractiveIndexStandalone(layer.material, lambda, allMats, layer.iad, layer.packingDensity || 1.0);
+      const ni = getExtinctionCoefficientStandalone(layer.material, lambda, allMats);
+      const tf = toolingFactors[layer.material] || 1.0;
+      const d = (Number(layer.thickness) || 0) * tf;
+      const etaR = nr, etaI = -ni;
+      const delta0 = (2 * Math.PI * d) / lambda;
+      const YstartR = Yr, YstartI = Yi;
+
+      for (let step = 1; step <= stepsPerLayer; step++) {
+        const frac = step / stepsPerLayer;
+        const dR = frac * delta0 * nr;
+        const dI = frac * delta0 * ni;
+        const cosA = Math.cos(dR), sinA = Math.sin(dR);
+        const coshB = Math.cosh(dI), sinhB = Math.sinh(dI);
+        const cosDr = cosA * coshB, cosDi = sinA * sinhB;
+        const sinDr = sinA * coshB, sinDi = -cosA * sinhB;
+        const sinYr = sinDr * YstartR - sinDi * YstartI;
+        const sinYi = sinDr * YstartI + sinDi * YstartR;
+        const etaMag2 = etaR * etaR + etaI * etaI;
+        const sYeR = (sinYr * etaR + sinYi * etaI) / etaMag2;
+        const sYeI = (sinYi * etaR - sinYr * etaI) / etaMag2;
+        const Br = cosDr - sYeI, Bi = cosDi + sYeR;
+        const eSr = etaR * sinDr - etaI * sinDi;
+        const eSi = etaR * sinDi + etaI * sinDr;
+        const ieSr = -eSi, ieSi = eSr;
+        const cYr = cosDr * YstartR - cosDi * YstartI;
+        const cYi = cosDr * YstartI + cosDi * YstartR;
+        const Cr = ieSr + cYr, Ci = ieSi + cYi;
+        const Bmag2 = Br * Br + Bi * Bi;
+        const YnR = (Cr * Br + Ci * Bi) / Bmag2;
+        const YnI = (Ci * Br - Cr * Bi) / Bmag2;
+        const isEnd = step === stepsPerLayer;
+        points.push({ re: YnR, im: YnI, layerIndex: layers.length - 1 - i, t: frac, label: isEnd ? layer.material : null, isBoundary: isEnd, material: layer.material, locusColor });
+        if (isEnd) { Yr = YnR; Yi = YnI; }
+      }
+    }
+    return { wavelength: lambda, color: locusColor, points };
+  });
+}
+
+function computeEfieldFromData(designData, customMats = {}, wavelengths = [450, 550, 650]) {
+  const allMats = { ...materialDispersion, ...customMats };
+  let layers = designData?.layers || [];
+  if (designData?.layerStacks && designData.currentStackId) {
+    const cs = designData.layerStacks.find(s => s.id === designData.currentStackId);
+    if (cs && cs.layers && cs.layers.length > 0) layers = cs.layers;
+  }
+  if (layers.length === 0) return { lines: [], layers: [], data: [] };
+
+  const n0 = designData.incident?.n || 1.0;
+  const ns = designData.substrate?.n || 1.52;
+  const machine = (designData.machines || []).find(m => m.id === designData.currentMachineId) || designData.machines?.[0];
+  const toolingFactors = machine?.toolingFactors || {};
+  const efieldColors = ['#2563eb', '#16a34a', '#dc2626', '#9333ea', '#ea580c'];
+  const stepsPerLayer = 40;
+
+  const layerRegions = [];
+  let depthAccum = 0;
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i];
+    const tf = toolingFactors[layer.material] || 1.0;
+    const d = (Number(layer.thickness) || 0) * tf;
+    const matColor = allMats[layer.material]?.color || '#888';
+    layerRegions.push({ x1: depthAccum, x2: depthAccum + d, material: layer.material, color: matColor });
+    depthAccum += d;
+  }
+
+  const depthPoints = [{ depth: 0, material: 'Substrate' }];
+  let zAccum = 0;
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const tf = toolingFactors[layers[i].material] || 1.0;
+    const d = (Number(layers[i].thickness) || 0) * tf;
+    for (let step = 1; step <= stepsPerLayer; step++) {
+      depthPoints.push({ depth: zAccum + (step / stepsPerLayer) * d, material: layers[i].material });
+    }
+    zAccum += d;
+  }
+
+  const allLines = wavelengths.map((lambda, wIdx) => {
+    // Pass 1: Full transfer matrix for transmission amplitude
+    let M11r = 1, M11i = 0, M12r = 0, M12i = 0;
+    let M21r = 0, M21i = 0, M22r = 1, M22i = 0;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const nr = getRefractiveIndexStandalone(layers[i].material, lambda, allMats, layers[i].iad, layers[i].packingDensity || 1.0);
+      const ni = getExtinctionCoefficientStandalone(layers[i].material, lambda, allMats);
+      const tf = toolingFactors[layers[i].material] || 1.0;
+      const d = (Number(layers[i].thickness) || 0) * tf;
+      const deltaR = (2 * Math.PI * nr * d) / lambda;
+      const deltaI = -(2 * Math.PI * ni * d) / lambda;
+      const cosR = Math.cos(deltaR) * Math.cosh(deltaI);
+      const cosI = Math.sin(deltaR) * Math.sinh(deltaI);
+      const sinR = Math.sin(deltaR) * Math.cosh(deltaI);
+      const sinI = -Math.cos(deltaR) * Math.sinh(deltaI);
+      const etaR = nr, etaI = -ni;
+      const etaMag2 = etaR * etaR + etaI * etaI;
+      const a12r = (-sinI * etaR - sinR * etaI) / etaMag2;
+      const a12i = (sinR * etaR - sinI * etaI) / etaMag2;
+      const a21r = -sinI * etaR + sinR * etaI;
+      const a21i = sinR * etaR + sinI * etaI;
+      const t11r = cosR * M11r - cosI * M11i + a12r * M21r - a12i * M21i;
+      const t11i = cosR * M11i + cosI * M11r + a12r * M21i + a12i * M21r;
+      const t12r = cosR * M12r - cosI * M12i + a12r * M22r - a12i * M22i;
+      const t12i = cosR * M12i + cosI * M12r + a12r * M22i + a12i * M22r;
+      const t21r = a21r * M11r - a21i * M11i + cosR * M21r - cosI * M21i;
+      const t21i = a21r * M11i + a21i * M11r + cosR * M21i + cosI * M21r;
+      const t22r = a21r * M12r - a21i * M12i + cosR * M22r - cosI * M22i;
+      const t22i = a21r * M12i + a21i * M12r + cosR * M22i + cosI * M22r;
+      M11r = t11r; M11i = t11i; M12r = t12r; M12i = t12i;
+      M21r = t21r; M21i = t21i; M22r = t22r; M22i = t22i;
+    }
+    const Br = M11r + ns * M12r, Bi = M11i + ns * M12i;
+    const Cr = M21r + ns * M22r, Ci = M21i + ns * M22i;
+    const denR = n0 * Br + Cr, denI = n0 * Bi + Ci;
+    const denMag2 = denR * denR + denI * denI;
+    const tR = (2 * n0 * denR) / denMag2;
+    const tI = -(2 * n0 * denI) / denMag2;
+    const tMag2 = tR * tR + tI * tI;
+
+    // Pass 2: Partial transfer matrices for E-field
+    let P11r = 1, P11i = 0, P12r = 0, P12i = 0;
+    let P21r = 0, P21i = 0, P22r = 1, P22i = 0;
+    const intensities = [tMag2]; // substrate point
+
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const nr = getRefractiveIndexStandalone(layers[i].material, lambda, allMats, layers[i].iad, layers[i].packingDensity || 1.0);
+      const ni = getExtinctionCoefficientStandalone(layers[i].material, lambda, allMats);
+      const tf = toolingFactors[layers[i].material] || 1.0;
+      const d = (Number(layers[i].thickness) || 0) * tf;
+
+      for (let step = 1; step <= stepsPerLayer; step++) {
+        const frac = step / stepsPerLayer;
+        const subD = frac * d;
+        const deltaR2 = (2 * Math.PI * nr * subD) / lambda;
+        const deltaI2 = -(2 * Math.PI * ni * subD) / lambda;
+        const cosR2 = Math.cos(deltaR2) * Math.cosh(deltaI2);
+        const cosI2 = Math.sin(deltaR2) * Math.sinh(deltaI2);
+        const sinR2 = Math.sin(deltaR2) * Math.cosh(deltaI2);
+        const sinI2 = -Math.cos(deltaR2) * Math.sinh(deltaI2);
+        const etaR2 = nr, etaI2 = -ni;
+        const etaMag2b = etaR2 * etaR2 + etaI2 * etaI2;
+        const s12r = (-sinI2 * etaR2 - sinR2 * etaI2) / etaMag2b;
+        const s12i = (sinR2 * etaR2 - sinI2 * etaI2) / etaMag2b;
+
+        const BzR = (cosR2 * P11r - cosI2 * P11i + s12r * P21r - s12i * P21i)
+                   + ns * (cosR2 * P12r - cosI2 * P12i + s12r * P22r - s12i * P22i);
+        const BzI = (cosR2 * P11i + cosI2 * P11r + s12r * P21i + s12i * P21r)
+                   + ns * (cosR2 * P12i + cosI2 * P12r + s12r * P22i + s12i * P22r);
+
+        intensities.push((BzR * BzR + BzI * BzI) * tMag2);
+      }
+
+      // Update P with full layer matrix
+      const deltaRf = (2 * Math.PI * nr * d) / lambda;
+      const deltaIf = -(2 * Math.PI * ni * d) / lambda;
+      const cosRf = Math.cos(deltaRf) * Math.cosh(deltaIf);
+      const cosIf = Math.sin(deltaRf) * Math.sinh(deltaIf);
+      const sinRf = Math.sin(deltaRf) * Math.cosh(deltaIf);
+      const sinIf = -Math.cos(deltaRf) * Math.sinh(deltaIf);
+      const etaRf = nr, etaIf = -ni;
+      const etaMag2f = etaRf * etaRf + etaIf * etaIf;
+      const f12r = (-sinIf * etaRf - sinRf * etaIf) / etaMag2f;
+      const f12i = (sinRf * etaRf - sinIf * etaIf) / etaMag2f;
+      const f21r = -sinIf * etaRf + sinRf * etaIf;
+      const f21i = sinRf * etaRf + sinIf * etaIf;
+      const np11r = cosRf * P11r - cosIf * P11i + f12r * P21r - f12i * P21i;
+      const np11i = cosRf * P11i + cosIf * P11r + f12r * P21i + f12i * P21r;
+      const np12r = cosRf * P12r - cosIf * P12i + f12r * P22r - f12i * P22i;
+      const np12i = cosRf * P12i + cosIf * P12r + f12r * P22i + f12i * P22r;
+      const np21r = f21r * P11r - f21i * P11i + cosRf * P21r - cosIf * P21i;
+      const np21i = f21r * P11i + f21i * P11r + cosRf * P21i + cosIf * P21r;
+      const np22r = f21r * P12r - f21i * P12i + cosRf * P22r - cosIf * P22i;
+      const np22i = f21r * P12i + f21i * P12r + cosRf * P22i + cosIf * P22r;
+      P11r = np11r; P11i = np11i; P12r = np12r; P12i = np12i;
+      P21r = np21r; P21i = np21i; P22r = np22r; P22i = np22i;
+    }
+
+    return { wavelength: lambda, color: efieldColors[wIdx % efieldColors.length], intensities };
+  });
+
+  const mergedData = depthPoints.map((pt, idx) => {
+    const row = { depth: parseFloat(pt.depth.toFixed(2)), material: pt.material };
+    allLines.forEach(line => { row[`intensity_${line.wavelength}`] = line.intensities[idx]; });
+    return row;
+  });
+
+  return {
+    lines: allLines.map(l => ({ wavelength: l.wavelength, color: l.color })),
+    layers: layerRegions,
+    data: mergedData,
+  };
+}
+
+function computeColorInfoFromSpectrum(spectrumData, illuminant = 'D65') {
+  if (!spectrumData || spectrumData.length === 0) return null;
+
+  // CIE 1931 2° Standard Observer (380-780nm, 5nm intervals)
+  const CIE_DATA = {
+    380:{x:0.0014,y:0.0000,z:0.0065},385:{x:0.0022,y:0.0001,z:0.0105},390:{x:0.0042,y:0.0001,z:0.0201},395:{x:0.0076,y:0.0002,z:0.0362},400:{x:0.0143,y:0.0004,z:0.0679},405:{x:0.0232,y:0.0006,z:0.1102},410:{x:0.0435,y:0.0012,z:0.2074},415:{x:0.0776,y:0.0022,z:0.3713},420:{x:0.1344,y:0.0040,z:0.6456},425:{x:0.2148,y:0.0073,z:1.0391},430:{x:0.2839,y:0.0116,z:1.3856},435:{x:0.3285,y:0.0168,z:1.6230},440:{x:0.3483,y:0.0230,z:1.7471},445:{x:0.3481,y:0.0298,z:1.7826},450:{x:0.3362,y:0.0380,z:1.7721},455:{x:0.3187,y:0.0480,z:1.7441},460:{x:0.2908,y:0.0600,z:1.6692},465:{x:0.2511,y:0.0739,z:1.5281},470:{x:0.1954,y:0.0910,z:1.2876},475:{x:0.1421,y:0.1126,z:1.0419},480:{x:0.0956,y:0.1390,z:0.8130},485:{x:0.0580,y:0.1693,z:0.6162},490:{x:0.0320,y:0.2080,z:0.4652},495:{x:0.0147,y:0.2586,z:0.3533},500:{x:0.0049,y:0.3230,z:0.2720},505:{x:0.0024,y:0.4073,z:0.2123},510:{x:0.0093,y:0.5030,z:0.1582},515:{x:0.0291,y:0.6082,z:0.1117},520:{x:0.0633,y:0.7100,z:0.0782},525:{x:0.1096,y:0.7932,z:0.0573},530:{x:0.1655,y:0.8620,z:0.0422},535:{x:0.2257,y:0.9149,z:0.0298},540:{x:0.2904,y:0.9540,z:0.0203},545:{x:0.3597,y:0.9803,z:0.0134},550:{x:0.4334,y:0.9950,z:0.0087},555:{x:0.5121,y:1.0002,z:0.0057},560:{x:0.5945,y:0.9950,z:0.0039},565:{x:0.6784,y:0.9786,z:0.0027},570:{x:0.7621,y:0.9520,z:0.0021},575:{x:0.8425,y:0.9154,z:0.0018},580:{x:0.9163,y:0.8700,z:0.0017},585:{x:0.9786,y:0.8163,z:0.0014},590:{x:1.0263,y:0.7570,z:0.0011},595:{x:1.0567,y:0.6949,z:0.0010},600:{x:1.0622,y:0.6310,z:0.0008},605:{x:1.0456,y:0.5668,z:0.0006},610:{x:1.0026,y:0.5030,z:0.0003},615:{x:0.9384,y:0.4412,z:0.0002},620:{x:0.8544,y:0.3810,z:0.0002},625:{x:0.7514,y:0.3210,z:0.0001},630:{x:0.6424,y:0.2650,z:0.0000},635:{x:0.5419,y:0.2170,z:0.0000},640:{x:0.4479,y:0.1750,z:0.0000},645:{x:0.3608,y:0.1382,z:0.0000},650:{x:0.2835,y:0.1070,z:0.0000},655:{x:0.2187,y:0.0816,z:0.0000},660:{x:0.1649,y:0.0610,z:0.0000},665:{x:0.1212,y:0.0446,z:0.0000},670:{x:0.0874,y:0.0320,z:0.0000},675:{x:0.0636,y:0.0232,z:0.0000},680:{x:0.0468,y:0.0170,z:0.0000},685:{x:0.0329,y:0.0119,z:0.0000},690:{x:0.0227,y:0.0082,z:0.0000},695:{x:0.0158,y:0.0057,z:0.0000},700:{x:0.0114,y:0.0041,z:0.0000},705:{x:0.0081,y:0.0029,z:0.0000},710:{x:0.0058,y:0.0021,z:0.0000},715:{x:0.0041,y:0.0015,z:0.0000},720:{x:0.0029,y:0.0010,z:0.0000},725:{x:0.0020,y:0.0007,z:0.0000},730:{x:0.0014,y:0.0005,z:0.0000},735:{x:0.0010,y:0.0004,z:0.0000},740:{x:0.0007,y:0.0002,z:0.0000},745:{x:0.0005,y:0.0002,z:0.0000},750:{x:0.0003,y:0.0001,z:0.0000},755:{x:0.0002,y:0.0001,z:0.0000},760:{x:0.0002,y:0.0001,z:0.0000},765:{x:0.0001,y:0.0000,z:0.0000},770:{x:0.0001,y:0.0000,z:0.0000},775:{x:0.0000,y:0.0000,z:0.0000},780:{x:0.0000,y:0.0000,z:0.0000}
+  };
+
+  // Standard Illuminant Spectral Power Distributions (380-780nm, 5nm intervals)
+  const ILLUMINANT_SPD = {
+    D65: {
+      380: 49.98, 385: 52.31, 390: 54.65, 395: 68.7, 400: 82.75, 405: 87.12, 410: 91.49, 415: 92.46, 420: 93.43, 425: 90.06, 430: 86.68, 435: 95.77, 440: 104.86, 445: 110.94, 450: 117.01, 455: 117.41, 460: 117.81, 465: 116.34, 470: 114.86, 475: 115.39, 480: 115.92, 485: 112.37, 490: 108.81, 495: 109.08, 500: 109.35, 505: 108.58, 510: 107.8, 515: 106.3, 520: 104.79, 525: 106.24, 530: 107.69, 535: 106.05, 540: 104.41, 545: 104.23, 550: 104.05, 555: 102.02, 560: 100.0, 565: 98.17, 570: 96.33, 575: 96.06, 580: 95.79, 585: 92.24, 590: 88.69, 595: 89.35, 600: 90.01, 605: 89.8, 610: 89.6, 615: 88.65, 620: 87.7, 625: 85.49, 630: 83.29, 635: 83.49, 640: 83.7, 645: 81.86, 650: 80.03, 655: 80.12, 660: 80.21, 665: 81.25, 670: 82.28, 675: 80.28, 680: 78.28, 685: 74.0, 690: 69.72, 695: 70.67, 700: 71.61, 705: 72.98, 710: 74.35, 715: 67.98, 720: 61.6, 725: 65.74, 730: 69.89, 735: 72.49, 740: 75.09, 745: 69.34, 750: 63.59, 755: 55.01, 760: 46.42, 765: 56.61, 770: 66.81, 775: 65.09, 780: 63.38,
+      whitePoint: { Xn: 0.95047, Yn: 1.0, Zn: 1.08883 },
+    },
+    D50: {
+      380: 24.49, 385: 27.18, 390: 29.87, 395: 39.59, 400: 49.31, 405: 52.91, 410: 56.51, 415: 58.27, 420: 60.03, 425: 58.93, 430: 57.82, 435: 66.32, 440: 74.82, 445: 81.04, 450: 87.25, 455: 88.93, 460: 90.61, 465: 90.99, 470: 91.37, 475: 93.24, 480: 95.11, 485: 93.54, 490: 91.96, 495: 93.84, 500: 95.72, 505: 96.17, 510: 96.61, 515: 96.87, 520: 97.13, 525: 99.61, 530: 102.1, 535: 101.43, 540: 100.75, 545: 101.54, 550: 102.32, 555: 101.16, 560: 100.0, 565: 98.87, 570: 97.74, 575: 98.33, 580: 98.92, 585: 96.21, 590: 93.5, 595: 95.59, 600: 97.69, 605: 98.48, 610: 99.27, 615: 99.16, 620: 99.04, 625: 97.38, 630: 95.72, 635: 97.29, 640: 98.86, 645: 97.26, 650: 95.67, 655: 96.93, 660: 98.19, 665: 100.6, 670: 103.0, 675: 101.07, 680: 99.13, 685: 93.26, 690: 87.38, 695: 89.49, 700: 91.6, 705: 92.25, 710: 92.89, 715: 84.87, 720: 76.85, 725: 81.68, 730: 86.51, 735: 89.55, 740: 92.58, 745: 85.4, 750: 78.23, 755: 67.96, 760: 57.69, 765: 70.31, 770: 82.92, 775: 80.6, 780: 78.27,
+      whitePoint: { Xn: 0.96422, Yn: 1.0, Zn: 0.82521 },
+    },
+    A: {
+      380: 9.8, 385: 10.9, 390: 12.09, 395: 13.35, 400: 14.71, 405: 16.15, 410: 17.68, 415: 19.29, 420: 20.99, 425: 22.79, 430: 24.67, 435: 26.64, 440: 28.7, 445: 30.85, 450: 33.09, 455: 35.41, 460: 37.81, 465: 40.3, 470: 42.87, 475: 45.52, 480: 48.24, 485: 51.04, 490: 53.91, 495: 56.85, 500: 59.86, 505: 62.93, 510: 66.06, 515: 69.25, 520: 72.5, 525: 75.79, 530: 79.13, 535: 82.52, 540: 85.95, 545: 89.41, 550: 92.91, 555: 96.44, 560: 100.0, 565: 103.58, 570: 107.18, 575: 110.8, 580: 114.44, 585: 118.08, 590: 121.73, 595: 125.39, 600: 129.04, 605: 132.7, 610: 136.35, 615: 139.99, 620: 143.62, 625: 147.24, 630: 150.84, 635: 154.42, 640: 157.98, 645: 161.52, 650: 165.03, 655: 168.51, 660: 171.96, 665: 175.38, 670: 178.77, 675: 182.12, 680: 185.43, 685: 188.7, 690: 191.93, 695: 195.12, 700: 198.26, 705: 201.36, 710: 204.41, 715: 207.41, 720: 210.36, 725: 213.27, 730: 216.12, 735: 218.92, 740: 221.67, 745: 224.36, 750: 227.0, 755: 229.59, 760: 232.12, 765: 234.59, 770: 237.01, 775: 239.37, 780: 241.68,
+      whitePoint: { Xn: 1.0985, Yn: 1.0, Zn: 0.35585 },
+    },
+    F2: {
+      380: 1.18, 385: 1.48, 390: 1.84, 395: 2.15, 400: 3.44, 405: 15.69, 410: 3.85, 415: 3.74, 420: 4.19, 425: 4.62, 430: 5.06, 435: 34.98, 440: 11.81, 445: 6.27, 450: 6.63, 455: 6.93, 460: 7.19, 465: 7.4, 470: 7.54, 475: 7.62, 480: 7.65, 485: 7.62, 490: 7.62, 495: 7.45, 500: 7.28, 505: 7.15, 510: 7.05, 515: 7.04, 520: 7.16, 525: 7.47, 530: 8.04, 535: 8.88, 540: 10.01, 545: 24.88, 550: 16.64, 555: 14.59, 560: 16.16, 565: 17.56, 570: 18.62, 575: 21.47, 580: 22.79, 585: 19.29, 590: 18.66, 595: 17.73, 600: 16.54, 605: 15.21, 610: 13.8, 615: 12.36, 620: 10.95, 625: 9.65, 630: 8.4, 635: 7.32, 640: 6.31, 645: 5.43, 650: 4.68, 655: 4.02, 660: 3.45, 665: 2.96, 670: 2.55, 675: 2.19, 680: 1.89, 685: 1.64, 690: 1.53, 695: 1.27, 700: 1.1, 705: 0.99, 710: 0.88, 715: 0.76, 720: 0.68, 725: 0.61, 730: 0.56, 735: 0.54, 740: 0.51, 745: 0.47, 750: 0.47, 755: 0.43, 760: 0.46, 765: 0.47, 770: 0.4, 775: 0.33, 780: 0.27,
+      whitePoint: { Xn: 0.99186, Yn: 1.0, Zn: 0.67393 },
+    },
+    F11: {
+      380: 0.91, 385: 0.63, 390: 0.46, 395: 0.37, 400: 1.29, 405: 12.68, 410: 1.59, 415: 1.79, 420: 2.46, 425: 3.33, 430: 4.49, 435: 30.78, 440: 5.29, 445: 4.72, 450: 4.56, 455: 4.47, 460: 4.4, 465: 4.35, 470: 4.32, 475: 4.3, 480: 4.3, 485: 4.31, 490: 4.34, 495: 4.41, 500: 4.51, 505: 4.67, 510: 4.89, 515: 5.2, 520: 5.63, 525: 6.24, 530: 7.07, 535: 8.21, 540: 9.77, 545: 72.35, 550: 13.4, 555: 12.55, 560: 12.72, 565: 13.04, 570: 13.44, 575: 13.88, 580: 14.36, 585: 59.66, 590: 16.75, 595: 17.43, 600: 18.0, 605: 18.37, 610: 18.49, 615: 18.33, 620: 17.89, 625: 17.22, 630: 16.36, 635: 15.37, 640: 14.29, 645: 13.18, 650: 12.07, 655: 11.0, 660: 9.98, 665: 9.02, 670: 8.12, 675: 7.3, 680: 6.55, 685: 5.86, 690: 5.23, 695: 4.67, 700: 4.16, 705: 3.72, 710: 3.25, 715: 2.83, 720: 2.49, 725: 2.19, 730: 1.94, 735: 1.72, 740: 1.52, 745: 1.35, 750: 1.2, 755: 1.06, 760: 0.94, 765: 0.84, 770: 0.74, 775: 0.66, 780: 0.58,
+      whitePoint: { Xn: 1.00962, Yn: 1.0, Zn: 0.6435 },
+    },
+  };
+
+  const getCIEData = (wavelength) => {
+    const rounded = Math.round(wavelength / 5) * 5;
+    if (CIE_DATA[rounded]) return CIE_DATA[rounded];
+    const lower = Math.floor(wavelength / 5) * 5;
+    const upper = lower + 5;
+    const dl = CIE_DATA[lower], du = CIE_DATA[upper];
+    if (!dl || !du) return CIE_DATA[rounded] || { x: 0, y: 0, z: 0 };
+    const frac = (wavelength - lower) / 5;
+    return { x: dl.x + frac * (du.x - dl.x), y: dl.y + frac * (du.y - dl.y), z: dl.z + frac * (du.z - dl.z) };
+  };
+
+  const illumData = ILLUMINANT_SPD[illuminant] || ILLUMINANT_SPD.D65;
+
+  let X = 0, Y = 0, Z = 0, normalization = 0;
+  spectrumData.forEach(d => {
+    if (d.wavelength < 380 || d.wavelength > 780) return;
+    const reflectance = d.R / 100;
+    const cie = getCIEData(d.wavelength);
+    const spd = illumData[Math.round(d.wavelength / 5) * 5] || 100;
+    X += reflectance * spd * cie.x;
+    Y += reflectance * spd * cie.y;
+    Z += reflectance * spd * cie.z;
+    normalization += spd * cie.y;
+  });
+  if (normalization === 0) return null;
+  X /= normalization; Y /= normalization; Z /= normalization;
+
+  const { Xn, Yn, Zn } = illumData.whitePoint;
+  const f = (t) => t > Math.pow(6/29, 3) ? Math.pow(t, 1/3) : t / (3 * Math.pow(6/29, 2)) + 4/29;
+  const fx = f(X / Xn), fy = f(Y / Yn), fz = f(Z / Zn);
+  const L = 116 * fy - 16;
+  const a = 500 * (fx - fy);
+  const b = 200 * (fy - fz);
+
+  const C = Math.sqrt(a * a + b * b);
+  let h = Math.atan2(b, a) * 180 / Math.PI;
+  if (h < 0) h += 360;
+
+  let Rl = X * 3.2406 + Y * -1.5372 + Z * -0.4986;
+  let Gl = X * -0.9689 + Y * 1.8758 + Z * 0.0415;
+  let Bl = X * 0.0557 + Y * -0.204 + Z * 1.057;
+  const gamma = (c) => c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1/2.4) - 0.055;
+  Rl = gamma(Rl); Gl = gamma(Gl); Bl = gamma(Bl);
+  const maxRGB = Math.max(Rl, Gl, Bl);
+  if (maxRGB > 1) { Rl /= maxRGB; Gl /= maxRGB; Bl /= maxRGB; }
+  const R8 = Math.max(0, Math.min(255, Math.round(Rl * 255)));
+  const G8 = Math.max(0, Math.min(255, Math.round(Gl * 255)));
+  const B8 = Math.max(0, Math.min(255, Math.round(Bl * 255)));
+
+  let maxR = 0, domWl = 0;
+  spectrumData.forEach(d => { if (d.wavelength >= 380 && d.wavelength <= 780 && d.R > maxR) { maxR = d.R; domWl = d.wavelength; } });
+  const visData = spectrumData.filter(d => d.wavelength >= 380 && d.wavelength <= 780);
+  const avgR = visData.length > 0 ? visData.reduce((s, d) => s + d.R, 0) / visData.length : 0;
+
+  let colorName = 'Neutral/Achromatic';
+  if (C > 10) {
+    if (h >= 0 && h < 30) colorName = 'Red';
+    else if (h < 60) colorName = 'Orange';
+    else if (h < 90) colorName = 'Yellow';
+    else if (h < 150) colorName = 'Yellow-Green';
+    else if (h < 210) colorName = 'Green-Cyan';
+    else if (h < 270) colorName = 'Cyan-Blue';
+    else if (h < 330) colorName = 'Blue-Magenta';
+    else colorName = 'Magenta-Red';
+  }
+
+  return {
+    rgb: `rgb(${R8}, ${G8}, ${B8})`,
+    hex: `#${R8.toString(16).padStart(2,'0')}${G8.toString(16).padStart(2,'0')}${B8.toString(16).padStart(2,'0')}`,
+    dominantWavelength: domWl, colorName, avgReflectivity: avgR.toFixed(1),
+    X: X.toFixed(4), Y: Y.toFixed(4), Z: Z.toFixed(4),
+    L: L.toFixed(1), a_star: a.toFixed(1), b_star: b.toFixed(1),
+    L_lch: L.toFixed(1), C: C.toFixed(1), h: h.toFixed(1),
+  };
+}
 
 const ThinFilmDesigner = () => {
   const [activeTab, setActiveTab] = useState("designer");
@@ -483,17 +1057,76 @@ const ThinFilmDesigner = () => {
   const [showSubmitChangesModal, setShowSubmitChangesModal] = useState(false);
   const [showApproveModal, setShowApproveModal] = useState(false);
   const [showDenyModal, setShowDenyModal] = useState(false);
+  const [showColorCompareModal, setShowColorCompareModal] = useState(false);
+  const [colorCompareSelected, setColorCompareSelected] = useState([]);
   const [pendingSubmissionId, setPendingSubmissionId] = useState(null);
   const [newTeamName, setNewTeamName] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
   const [submissionNotes, setSubmissionNotes] = useState('');
   const [selectedDesignForSubmission, setSelectedDesignForSubmission] = useState(null);
+  const [submissionPreviewData, setSubmissionPreviewData] = useState(null);
+  const [submissionPreviewLoading, setSubmissionPreviewLoading] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [reviewNoteText, setReviewNoteText] = useState('');
   const [shareDesignName, setShareDesignName] = useState('');
   const [notifications, setNotifications] = useState([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
+
+  // Team workspace state
+  const [teamVisibleTraces, setTeamVisibleTraces] = useState({ original: true });
+  const [teamTraceCache, setTeamTraceCache] = useState({});
+  const [teamDisplayMode, setTeamDisplayMode] = useState('reflectivity');
+  const [teamSelectedIlluminant, setTeamSelectedIlluminant] = useState('D65');
+  const [teamActiveLayerView, setTeamActiveLayerView] = useState('original');
+  const [showTeamColorCompare, setShowTeamColorCompare] = useState(false);
+  const [teamColorCompareSelected, setTeamColorCompareSelected] = useState([]);
+  const [teamAdmittanceWavelengths, setTeamAdmittanceWavelengths] = useState([450, 550, 650]);
+  const [teamEfieldWavelengths, setTeamEfieldWavelengths] = useState([450, 550, 650]);
+
+  // Toast notification state (replaces browser alert())
+  const [toasts, setToasts] = useState([]);
+  const toastIdRef = useRef(0);
+  const showToast = useCallback((message, type = 'info') => {
+    const id = ++toastIdRef.current;
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  }, []);
+
+  const TEAM_TRACE_PALETTE = ['#4f46e5', '#dc2626', '#16a34a', '#ea580c', '#7c3aed', '#0891b2', '#ca8a04', '#be185d', '#4338ca', '#15803d', '#9333ea', '#0d9488'];
+
+  const getTeamTraceColor = useCallback((traceId, submissions = []) => {
+    if (traceId === 'original') return TEAM_TRACE_PALETTE[0];
+    const sortedSubs = [...submissions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    const idx = sortedSubs.findIndex(s => `sub_${s.id}` === traceId);
+    return TEAM_TRACE_PALETTE[(idx + 1) % TEAM_TRACE_PALETTE.length];
+  }, []);
+
+  const getTeamTraceData = useCallback((traceId, designData, submissions = [], illuminant = 'D65') => {
+    if (teamTraceCache[traceId]) return teamTraceCache[traceId];
+    let data;
+    if (traceId === 'original') {
+      data = designData;
+    } else {
+      const sub = submissions.find(s => `sub_${s.id}` === traceId);
+      data = sub?.data;
+    }
+    if (!data) return null;
+    const customMats = data.customMaterials || {};
+    const spectrum = computeFullSpectrumFromData(data, customMats);
+    const colorInfo = computeColorInfoFromSpectrum(spectrum, illuminant);
+    const stress = computeStressFromData(data, customMats);
+    const result = { spectrum, colorInfo, stress, data };
+    setTeamTraceCache(prev => ({ ...prev, [traceId]: result }));
+    return result;
+  }, [teamTraceCache]);
+
+  // Helper: get display name for a stack, prefixed with machine number when multiple machines exist
+  const getStackDisplayName = useCallback((stack) => {
+    if (machines.length <= 1) return stack.name;
+    const machineIdx = machines.findIndex(m => m.id === stack.machineId);
+    return `${machineIdx + 1}–${stack.name}`;
+  }, [machines]);
 
   // Refs to prevent useEffect interference during delete operations
   // and to track previous layers for comparison to avoid infinite loops
@@ -548,19 +1181,24 @@ const ThinFilmDesigner = () => {
   const [userTier, setUserTier] = useState('free');
 
   // Fetch tier from server when signed in
+  // DEV OVERRIDE: Force enterprise tier for testing. Remove before production.
   useEffect(() => {
     if (!isSignedIn) {
       setTierLimits(FREE_TIER_LIMITS);
       setUserTier('free');
       return;
     }
+    // DEV OVERRIDE — force enterprise for all signed-in users during testing
+    setUserTier('enterprise');
+    setTierLimits(FREE_TIER_LIMITS); // FREE_TIER_LIMITS already has all features enabled in dev mode
     let cancelled = false;
     async function fetchTier() {
       try {
         const data = await apiGet('/api/auth/tier');
         if (!cancelled) {
-          setUserTier(data.tier || 'free');
-          setTierLimits(data.limits || FREE_TIER_LIMITS);
+          // DEV OVERRIDE: Always use enterprise regardless of backend response
+          setUserTier('enterprise');
+          setTierLimits(FREE_TIER_LIMITS);
           if (data.userId) setCurrentUserId(data.userId);
         }
       } catch (e) {
@@ -594,7 +1232,7 @@ const ThinFilmDesigner = () => {
   }, []);
 
   const loadSharedDesignDetail = useCallback(async (teamId, designId) => {
-    try { setTeamLoading(true); const data = await apiGet(`/api/teams/${teamId}/designs/${designId}`); setSelectedSharedDesign(data); } catch (e) { console.warn('Failed to load shared design:', e); } finally { setTeamLoading(false); }
+    try { setTeamLoading(true); const data = await apiGet(`/api/teams/${teamId}/designs/${designId}`); setSelectedSharedDesign(data); setTeamVisibleTraces({ original: true }); setTeamTraceCache({}); setTeamDisplayMode('reflectivity'); setTeamActiveLayerView('original'); } catch (e) { console.warn('Failed to load shared design:', e); } finally { setTeamLoading(false); }
   }, []);
 
   const loadSubmissionDetail = useCallback(async (teamId, designId, subId) => {
@@ -612,46 +1250,119 @@ const ThinFilmDesigner = () => {
 
   const handleCreateTeam = useCallback(async () => {
     if (!newTeamName.trim()) return;
-    try { await apiPost('/api/teams', { name: newTeamName.trim() }); setShowCreateTeamModal(false); setNewTeamName(''); loadTeams(); } catch (e) { alert('Failed to create team: ' + e.message); }
+    try { await apiPost('/api/teams', { name: newTeamName.trim() }); setShowCreateTeamModal(false); setNewTeamName(''); loadTeams(); } catch (e) { showToast('Failed to create team: ' + e.message, 'error'); }
   }, [newTeamName, loadTeams]);
 
   const handleInviteMember = useCallback(async () => {
     if (!inviteEmail.trim() || !selectedTeamId) return;
-    try { await apiPost(`/api/teams/${selectedTeamId}/invite`, { email: inviteEmail.trim() }); setInviteEmail(''); setShowInviteModal(false); loadTeamDetail(selectedTeamId); } catch (e) { alert('Failed to invite: ' + e.message); }
+    try { await apiPost(`/api/teams/${selectedTeamId}/invite`, { email: inviteEmail.trim() }); setInviteEmail(''); setShowInviteModal(false); loadTeamDetail(selectedTeamId); } catch (e) { showToast('Failed to invite: ' + e.message, 'error'); }
   }, [inviteEmail, selectedTeamId, loadTeamDetail]);
 
   const handleAcceptInvitation = useCallback(async (invitationId) => {
-    try { await apiPost(`/api/invitations/${invitationId}/accept`); loadPendingInvitations(); loadTeams(); } catch (e) { alert('Failed to accept: ' + e.message); }
+    try { await apiPost(`/api/invitations/${invitationId}/accept`); loadPendingInvitations(); loadTeams(); } catch (e) { showToast('Failed to accept invitation: ' + e.message, 'error'); }
   }, [loadPendingInvitations, loadTeams]);
 
   const handleDeclineInvitation = useCallback(async (invitationId) => {
-    try { await apiPost(`/api/invitations/${invitationId}/decline`); loadPendingInvitations(); } catch (e) { alert('Failed to decline: ' + e.message); }
+    try { await apiPost(`/api/invitations/${invitationId}/decline`); loadPendingInvitations(); } catch (e) { showToast('Failed to decline invitation: ' + e.message, 'error'); }
   }, [loadPendingInvitations]);
 
   const handleShareToTeam = useCallback(async (teamId) => {
     if (!shareDesignName.trim()) return;
     try {
-      const designData = { layers, layerStacks, currentStackId, substrate, incident, wavelengthRange, displayMode, selectedIlluminant, customMaterials };
+      const designData = {
+        layers, layerStacks, currentStackId, machines, currentMachineId,
+        substrate, incident, wavelengthRange, recipes, targets,
+        designPoints, designMaterials, designLayers, layerTemplate,
+        displayMode, selectedIlluminant, customMaterials,
+      };
       await apiPost(`/api/teams/${teamId}/designs`, { name: shareDesignName.trim(), data: designData });
       setShowShareToTeamModal(false); setShareDesignName('');
       if (selectedTeamId === teamId) loadTeamDetail(teamId);
-    } catch (e) { alert('Failed to share: ' + e.message); }
-  }, [shareDesignName, layers, layerStacks, currentStackId, substrate, incident, wavelengthRange, displayMode, selectedIlluminant, customMaterials, selectedTeamId, loadTeamDetail]); // eslint-disable-line react-hooks/exhaustive-deps
+      showToast('Design shared to team', 'success');
+    } catch (e) { showToast('Failed to share: ' + e.message, 'error'); }
+  }, [shareDesignName, layers, layerStacks, currentStackId, machines, currentMachineId, substrate, incident, wavelengthRange, recipes, targets, designPoints, designMaterials, designLayers, layerTemplate, displayMode, selectedIlluminant, customMaterials, selectedTeamId, loadTeamDetail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCloneDesign = useCallback(async (teamId, designId) => {
-    try { const clone = await apiPost(`/api/teams/${teamId}/designs/${designId}/clone`); alert('Design cloned: ' + clone.name); } catch (e) { alert('Failed to clone: ' + e.message); }
+    try { const clone = await apiPost(`/api/teams/${teamId}/designs/${designId}/clone`); showToast('Design cloned: ' + clone.name, 'success'); } catch (e) { showToast('Failed to clone: ' + e.message, 'error'); }
   }, []);
 
   const handleSubmitChanges = useCallback(async () => {
     if (!submissionNotes.trim() || !selectedDesignForSubmission) return;
     try {
       const design = await apiGet(`/api/designs/${selectedDesignForSubmission}`);
-      if (!design) { alert('Design not found'); return; }
+      if (!design) { showToast('Design not found', 'error'); return; }
       await apiPost(`/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}/submissions`, { data: design.data, notes: submissionNotes.trim(), sourceDesignId: design.id });
-      setShowSubmitChangesModal(false); setSubmissionNotes(''); setSelectedDesignForSubmission(null);
+      setShowSubmitChangesModal(false); setSubmissionNotes(''); setSelectedDesignForSubmission(null); setSubmissionPreviewData(null);
       loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
-    } catch (e) { alert('Failed to submit: ' + e.message); }
+    } catch (e) { showToast('Failed to submit: ' + e.message, 'error'); }
   }, [submissionNotes, selectedDesignForSubmission, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
+
+  // Load preview data when user selects a design for submission
+  useEffect(() => {
+    if (!selectedDesignForSubmission || !selectedSharedDesign) {
+      setSubmissionPreviewData(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        setSubmissionPreviewLoading(true);
+        const design = await apiGet(`/api/designs/${selectedDesignForSubmission}`);
+        if (cancelled || !design) return;
+        const personalData = design.data;
+        const originalData = selectedSharedDesign.data || {};
+
+        const personalCustomMats = personalData?.customMaterials || {};
+        const originalCustomMats = originalData?.customMaterials || {};
+
+        const personalSpectrum = computeFullSpectrumFromData(personalData, personalCustomMats);
+        const originalSpectrum = computeFullSpectrumFromData(originalData, originalCustomMats);
+
+        const personalColor = computeColorInfoFromSpectrum(personalSpectrum, 'D65');
+        const originalColor = computeColorInfoFromSpectrum(originalSpectrum, 'D65');
+
+        const personalStress = computeStressFromData(personalData, personalCustomMats);
+        const originalStress = computeStressFromData(originalData, originalCustomMats);
+
+        // Get layers
+        let personalLayers = personalData?.layers || [];
+        if (personalData?.layerStacks && personalData.currentStackId) {
+          const cs = personalData.layerStacks.find(s => s.id === personalData.currentStackId);
+          if (cs && cs.layers?.length > 0) personalLayers = cs.layers;
+        }
+        let originalLayers = originalData?.layers || [];
+        if (originalData?.layerStacks && originalData.currentStackId) {
+          const cs = originalData.layerStacks.find(s => s.id === originalData.currentStackId);
+          if (cs && cs.layers?.length > 0) originalLayers = cs.layers;
+        }
+
+        const personalThickness = personalLayers.reduce((s, l) => s + (Number(l.thickness) || 0), 0);
+        const originalThickness = originalLayers.reduce((s, l) => s + (Number(l.thickness) || 0), 0);
+
+        // Delta E between personal and original
+        let deltaE = null;
+        if (personalColor && originalColor) {
+          const dL = parseFloat(personalColor.L) - parseFloat(originalColor.L);
+          const da = parseFloat(personalColor.a_star) - parseFloat(originalColor.a_star);
+          const db = parseFloat(personalColor.b_star) - parseFloat(originalColor.b_star);
+          deltaE = Math.sqrt(dL * dL + da * da + db * db);
+        }
+
+        if (!cancelled) {
+          setSubmissionPreviewData({
+            personal: { color: personalColor, stress: personalStress, layerCount: personalLayers.length, totalThickness: personalThickness },
+            original: { color: originalColor, stress: originalStress, layerCount: originalLayers.length, totalThickness: originalThickness },
+            deltaE,
+          });
+        }
+      } catch (e) {
+        if (!cancelled) setSubmissionPreviewData(null);
+      } finally {
+        if (!cancelled) setSubmissionPreviewLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedDesignForSubmission, selectedSharedDesign]);
 
   const handleApproveSubmission = useCallback(async () => {
     if (!pendingSubmissionId) return;
@@ -659,7 +1370,7 @@ const ThinFilmDesigner = () => {
       await apiPost(`/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}/submissions/${pendingSubmissionId}/approve`, { reviewNote: reviewNoteText || '' });
       setShowApproveModal(false); setReviewNoteText(''); setPendingSubmissionId(null);
       loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
-    } catch (e) { alert('Failed to approve: ' + e.message); }
+    } catch (e) { showToast('Failed to approve: ' + e.message, 'error'); }
   }, [pendingSubmissionId, reviewNoteText, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
 
   const handleDenySubmission = useCallback(async () => {
@@ -668,7 +1379,7 @@ const ThinFilmDesigner = () => {
       await apiPost(`/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}/submissions/${pendingSubmissionId}/deny`, { reviewNote: reviewNoteText.trim() });
       setShowDenyModal(false); setReviewNoteText(''); setPendingSubmissionId(null);
       loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
-    } catch (e) { alert('Failed to deny: ' + e.message); }
+    } catch (e) { showToast('Failed to deny: ' + e.message, 'error'); }
   }, [pendingSubmissionId, reviewNoteText, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
 
   const handleAddComment = useCallback(async (type, parentId) => {
@@ -678,7 +1389,7 @@ const ThinFilmDesigner = () => {
       const path = type === 'design' ? `${basePath}/comments` : `${basePath}/submissions/${parentId}/comments`;
       await apiPost(path, { content: commentText.trim() }); setCommentText('');
       loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
-    } catch (e) { alert('Failed to add comment: ' + e.message); }
+    } catch (e) { showToast('Failed to add comment: ' + e.message, 'error'); }
   }, [commentText, selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
 
   const handleDeleteComment = useCallback(async (type, parentId, commentId) => {
@@ -686,7 +1397,7 @@ const ThinFilmDesigner = () => {
       const basePath = `/api/teams/${selectedTeamId}/designs/${selectedSharedDesign.id}`;
       const path = type === 'design' ? `${basePath}/comments/${commentId}` : `${basePath}/submissions/${parentId}/comments/${commentId}`;
       await apiDelete(path); loadSharedDesignDetail(selectedTeamId, selectedSharedDesign.id);
-    } catch (e) { alert('Failed to delete comment: ' + e.message); }
+    } catch (e) { showToast('Failed to delete comment: ' + e.message, 'error'); }
   }, [selectedTeamId, selectedSharedDesign, loadSharedDesignDetail]);
 
   const handleUpdateDesignStatus = useCallback(async (designId, status) => {
@@ -694,7 +1405,7 @@ const ThinFilmDesigner = () => {
       await apiPut(`/api/teams/${selectedTeamId}/designs/${designId}/status`, { status });
       loadTeamDetail(selectedTeamId);
       if (selectedSharedDesign?.id === designId) loadSharedDesignDetail(selectedTeamId, designId);
-    } catch (e) { alert('Failed to update status: ' + e.message); }
+    } catch (e) { showToast('Failed to update status: ' + e.message, 'error'); }
   }, [selectedTeamId, selectedSharedDesign, loadTeamDetail, loadSharedDesignDetail]);
 
   const handleMarkNotificationRead = useCallback(async (id) => {
@@ -2486,7 +3197,7 @@ const ThinFilmDesigner = () => {
             if (colorInfo) {
               newStackColorData[stack.id] = {
                 ...colorInfo,
-                stackName: stack.name,
+                stackName: getStackDisplayName(stack),
                 stackColor: stack.color,
               };
             }
@@ -2951,7 +3662,7 @@ const ThinFilmDesigner = () => {
 
     // Validate selections
     if (!selectedMachineForTracking || !selectedRecipeForTracking) {
-      alert("Please select a machine and recipe before uploading data.");
+      showToast("Please select a machine and recipe before uploading data.", 'error');
       e.target.value = "";
       return;
     }
@@ -3137,7 +3848,7 @@ const ThinFilmDesigner = () => {
 
   const saveTrackingData = () => {
     if (trackingRuns.length === 0) {
-      alert("No data to save");
+      showToast("No data to save", 'error');
       return;
     }
 
@@ -3313,7 +4024,7 @@ const ThinFilmDesigner = () => {
       }, 'image/png');
     }).catch(() => {
       document.body.removeChild(exportWrapper);
-      alert('PNG export failed.');
+      showToast('PNG export failed.', 'error');
     });
   };
 
@@ -3441,9 +4152,7 @@ const ThinFilmDesigner = () => {
   // Monte Carlo Simulation Function
   const runMonteCarloSimulation = async () => {
     if (targets.length === 0) {
-      alert(
-        "Please define at least one target specification before running Monte Carlo simulation."
-      );
+      showToast("Please define at least one target specification before running Monte Carlo simulation.", 'error');
       return;
     }
 
@@ -3927,35 +4636,78 @@ const ThinFilmDesigner = () => {
       loadDesignsList();
     } catch (e) {
       console.warn('Failed to save design:', e);
-      alert('Failed to save: ' + e.message);
+      showToast('Failed to save: ' + e.message, 'error');
     }
   }, [isSignedIn, layers, layerStacks, currentStackId, machines, currentMachineId,
       substrate, incident, wavelengthRange, recipes, targets, designPoints,
       designMaterials, designLayers, layerTemplate, displayMode, selectedIlluminant,
       customMaterials, loadDesignsList, checkLimit, savedDesigns, trackingRuns]);
 
-  const handleLoadDesign = useCallback((design) => {
-    const d = design.data;
-    if (d.layers?.length > 0) setLayers(d.layers);
-    if (d.layerStacks?.length > 0) setLayerStacks(d.layerStacks);
-    if (d.currentStackId != null) setCurrentStackId(d.currentStackId);
-    if (d.machines?.length > 0) setMachines(d.machines);
-    if (d.currentMachineId != null) setCurrentMachineId(d.currentMachineId);
-    if (d.substrate) setSubstrate(d.substrate);
-    if (d.incident) setIncident(d.incident);
-    if (d.wavelengthRange) setWavelengthRange(d.wavelengthRange);
-    if (d.recipes?.length > 0) setRecipes(d.recipes);
-    if (d.targets) setTargets(d.targets);
-    if (d.trackingRuns) setTrackingRuns(d.trackingRuns);
-    if (d.designPoints) setDesignPoints(d.designPoints);
-    if (d.designMaterials) setDesignMaterials(d.designMaterials);
-    if (d.designLayers) setDesignLayers(d.designLayers);
-    if (d.layerTemplate) setLayerTemplate(d.layerTemplate);
-    if (d.displayMode) setDisplayMode(d.displayMode);
-    if (d.selectedIlluminant) setSelectedIlluminant(d.selectedIlluminant);
-    if (d.customMaterials) setCustomMaterials(d.customMaterials);
-    setShowLoadModal(false);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const handleLoadDesign = useCallback(async (design) => {
+    try {
+      // If data isn't included (list endpoint omits it), fetch the full design
+      let d = design.data;
+      if (!d) {
+        const full = await apiGet(`/api/designs/${design.id}`);
+        d = full.data;
+      }
+      if (!d) { showToast('Design data is empty', 'error'); return; }
+
+      const designName = design.name || 'Loaded Design';
+
+      // Add the loaded design's layers as a NEW stack instead of replacing existing stacks
+      const loadedLayers = d.layers || (d.layerStacks?.length > 0
+        ? d.layerStacks.find(s => s.id === d.currentStackId)?.layers || d.layerStacks[0].layers
+        : [{ id: 1, material: "SiO2", thickness: 100, iad: null }]);
+
+      const newStackId = Math.max(...layerStacks.map(s => s.id), 0) + 1;
+      const newStack = {
+        id: newStackId,
+        machineId: currentMachineId,
+        name: designName,
+        layers: loadedLayers,
+        visible: true,
+        color: `hsl(${(newStackId * 60) % 360}, 70%, 50%)`,
+      };
+
+      // Use isUpdatingStackRef to prevent the layers→layerStacks sync useEffect from interfering
+      isUpdatingStackRef.current = true;
+
+      setLayerStacks(prev => [...prev, newStack]);
+      setCurrentStackId(newStackId);
+      setLayers(loadedLayers);
+      prevLayersRef.current = JSON.stringify(loadedLayers);
+
+      // Merge custom materials from loaded design (doesn't overwrite existing)
+      if (d.customMaterials) {
+        setCustomMaterials(prev => ({ ...prev, ...d.customMaterials }));
+      }
+
+      // Restore design settings if present
+      if (d.substrate) setSubstrate(d.substrate);
+      if (d.incident) setIncident(d.incident);
+      if (d.wavelengthRange) setWavelengthRange(d.wavelengthRange);
+      if (d.selectedIlluminant) setSelectedIlluminant(d.selectedIlluminant);
+      if (d.targets) setTargets(d.targets);
+      if (d.machines?.length > 0) {
+        const sourceMachine = d.machines[0];
+        if (sourceMachine.toolingFactors) {
+          setMachines(prev => prev.map(m =>
+            m.id === currentMachineId ? { ...m, toolingFactors: { ...m.toolingFactors, ...sourceMachine.toolingFactors } } : m
+          ));
+        }
+      }
+
+      // Release the guard after state updates flush
+      Promise.resolve().then(() => { isUpdatingStackRef.current = false; });
+
+      setShowLoadModal(false);
+      setActiveTab('designer');
+      showToast(`"${designName}" added as new stack — settings restored`, 'success');
+    } catch (e) {
+      showToast('Failed to load design: ' + e.message, 'error');
+    }
+  }, [showToast, layerStacks, currentMachineId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDeleteDesign = useCallback(async (designId) => {
     try {
@@ -3977,7 +4729,7 @@ const ThinFilmDesigner = () => {
       const data = await apiPost('/api/billing/checkout', { tier, interval });
       if (data.url) window.location.href = data.url;
     } catch (e) {
-      alert('Failed to start checkout: ' + e.message);
+      showToast('Failed to start checkout: ' + e.message, 'error');
     }
   }, []);
 
@@ -3986,7 +4738,7 @@ const ThinFilmDesigner = () => {
       const data = await apiPost('/api/billing/portal', {});
       if (data.url) window.location.href = data.url;
     } catch (e) {
-      alert('Failed to open billing portal: ' + e.message);
+      showToast('Failed to open billing portal: ' + e.message, 'error');
     }
   }, []);
 
@@ -4255,7 +5007,7 @@ const ThinFilmDesigner = () => {
 
   const deleteMachine = (id) => {
     if (machines.length === 1) {
-      alert("Cannot delete the last machine");
+      showToast("Cannot delete the last machine", 'error');
       return;
     }
 
@@ -4406,10 +5158,10 @@ const ThinFilmDesigner = () => {
   const addCustomMaterial = () => {
     if (!checkLimit('maxCustomMaterials', Object.keys(customMaterials).length, 'Custom Materials')) return;
     const trimmedName = newMaterialForm.name.trim();
-    if (!trimmedName) { alert('Please enter a material name.'); return; }
-    if (materialDispersion[trimmedName]) { alert('A built-in material with this name already exists.'); return; }
-    if (customMaterials[trimmedName]) { alert('A custom material with this name already exists.'); return; }
-    if (/\s/.test(trimmedName)) { alert('Material name cannot contain spaces. Use underscores or CamelCase.'); return; }
+    if (!trimmedName) { showToast('Please enter a material name.', 'error'); return; }
+    if (materialDispersion[trimmedName]) { showToast('A built-in material with this name already exists.', 'error'); return; }
+    if (customMaterials[trimmedName]) { showToast('A custom material with this name already exists.', 'error'); return; }
+    if (/\s/.test(trimmedName)) { showToast('Material name cannot contain spaces. Use underscores or CamelCase.', 'error'); return; }
 
     let materialData;
     if (newMaterialForm.mode === 'simple') {
@@ -4470,7 +5222,7 @@ const ThinFilmDesigner = () => {
       stack.layers.some((layer) => layer.material === name)
     );
     if (inUse) {
-      alert(`Cannot delete "${name}" because it is currently used in a layer stack. Remove it from all layers first.`);
+      showToast(`Cannot delete "${name}" because it is currently used in a layer stack. Remove it from all layers first.`, 'error');
       return;
     }
     setCustomMaterials((prev) => {
@@ -4612,7 +5364,7 @@ const ThinFilmDesigner = () => {
   const applyFactorToLayers = () => {
     const factor = parseFloat(layerFactor);
     if (isNaN(factor) || factor <= 0) {
-      alert("Please enter a valid positive number for the factor");
+      showToast("Please enter a valid positive number for the factor", 'error');
       return;
     }
 
@@ -4830,7 +5582,7 @@ const ThinFilmDesigner = () => {
   const applyShift = () => {
     const shift = parseFloat(shiftValue);
     if (isNaN(shift) || shift === 0) {
-      alert("Please enter a non-zero shift value");
+      showToast("Please enter a non-zero shift value", 'error');
       return;
     }
 
@@ -4867,9 +5619,7 @@ const ThinFilmDesigner = () => {
         setShiftValue(0); // Reset shift value after applying
       }
     } else {
-      alert(
-        "Up/Down shift cannot be directly applied to layer thicknesses. This mode is for visualization only."
-      );
+      showToast("Up/Down shift cannot be directly applied to layer thicknesses. This mode is for visualization only.", 'info');
     }
   };
 
@@ -5011,7 +5761,7 @@ const ThinFilmDesigner = () => {
     // Check if there's anything to undo
     const hasLastThickness = layers.some((l) => l.lastThickness !== undefined);
     if (!hasLastThickness) {
-      alert("No changes to undo");
+      showToast("No changes to undo", 'info');
       return;
     }
 
@@ -5169,14 +5919,12 @@ const ThinFilmDesigner = () => {
   const optimizeDesign = async () => {
     // Validation
     if (!reverseEngineerMode && !colorTargetMode && designPoints.length === 0) {
-      alert(
-        "Please add at least one target point, upload a CSV file for reverse engineering, or use Color Target Mode"
-      );
+      showToast("Please add at least one target point, upload a CSV file for reverse engineering, or use Color Target Mode", 'error');
       return;
     }
 
     if (reverseEngineerMode && !reverseEngineerData) {
-      alert("Please upload a CSV file for reverse engineering");
+      showToast("Please upload a CSV file for reverse engineering", 'error');
       return;
     }
 
@@ -5208,9 +5956,7 @@ const ThinFilmDesigner = () => {
 
     // Ensure we have both types (only needed when not using template)
     if (!useLayerTemplate && (lowIndexMaterials.length === 0 || highIndexMaterials.length === 0)) {
-      alert(
-        "Please select both low-index (n<1.8) and high-index (n>1.8) materials for alternating structure"
-      );
+      showToast("Please select both low-index (n<1.8) and high-index (n>1.8) materials for alternating structure", 'error');
       setOptimizing(false);
       return;
     }
@@ -5772,9 +6518,7 @@ const ThinFilmDesigner = () => {
       // No solutions meet the criteria
       const bestError =
         foundSolutions.length > 0 ? foundSolutions[0].error.toFixed(2) : "N/A";
-      alert(
-        `No solutions found with error <${maxErrorThreshold}%. Best error achieved: ${bestError}%. Try:\n- Increasing the Max Error threshold\n- Increasing number of layers\n- Widening thickness ranges\n- Using different materials\n- Adjusting target points\n- Running optimization again (results vary)`
-      );
+      showToast(`No solutions found with error <${maxErrorThreshold}%. Best error: ${bestError}%. Try increasing Max Error threshold, adding layers, widening thickness ranges, or using different materials.`, 'error');
       setOptimizing(false);
       setOptimizationProgress(0);
       setOptimizationStage("");
@@ -6203,6 +6947,29 @@ const ThinFilmDesigner = () => {
 
   return (
     <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-2 overflow-hidden">
+      {/* Toast notifications */}
+      {toasts.length > 0 && (
+        <div style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '0.5rem', maxWidth: '420px' }}>
+          {toasts.map(toast => (
+            <div key={toast.id} style={{
+              padding: '12px 16px',
+              borderRadius: '8px',
+              color: '#fff',
+              fontSize: '14px',
+              lineHeight: '1.4',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              animation: 'fadeIn 0.2s ease-out',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '8px',
+              background: toast.type === 'error' ? '#dc2626' : toast.type === 'success' ? '#16a34a' : '#2563eb',
+            }}>
+              <span style={{ flex: 1 }}>{toast.message}</span>
+              <button onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '16px', lineHeight: 1, opacity: 0.7, padding: 0 }}>&times;</button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="h-full flex flex-col">
         {/* Tabs */}
         <div className="flex gap-1 mb-2 flex-shrink-0">
@@ -6479,6 +7246,27 @@ const ThinFilmDesigner = () => {
                     <span className="text-xs">Auto</span>
                   </label>
                 </div>
+                <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
+                  <span className="text-gray-600">Mode:</span>
+                  <select
+                    value={displayMode}
+                    onChange={(e) => {
+                      if (tierLimits.allowedDisplayModes.includes(e.target.value)) {
+                        setDisplayMode(e.target.value);
+                      } else {
+                        setUpgradeFeature(e.target.value + ' display mode');
+                        setShowUpgradePrompt(true);
+                      }
+                    }}
+                    className="px-1 border rounded text-xs bg-white cursor-pointer"
+                  >
+                    <option value="reflectivity">Reflectivity</option>
+                    <option value="transmission">Transmission</option>
+                    <option value="absorption" disabled={!tierLimits.allowedDisplayModes.includes('absorption')}>Absorption{!tierLimits.allowedDisplayModes.includes('absorption') ? ' 🔒' : ''}</option>
+                    <option value="admittance" disabled={!tierLimits.allowedDisplayModes.includes('admittance')}>Admittance{!tierLimits.allowedDisplayModes.includes('admittance') ? ' 🔒' : ''}</option>
+                    <option value="efield" disabled={!tierLimits.allowedDisplayModes.includes('efield')}>E-Field{!tierLimits.allowedDisplayModes.includes('efield') ? ' 🔒' : ''}</option>
+                  </select>
+                </div>
                 <button
                   onClick={() => setShowTargetsModal(true)}
                   className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center gap-1 flex-shrink-0"
@@ -6533,41 +7321,21 @@ const ThinFilmDesigner = () => {
               {/* In horizontal mode: Layers first (left side) */}
               {layoutMode === "horizontal" && (
                 <div
-                  style={{ width: `${100 - chartWidth}%`, height: "100%", paddingRight: 4 }}
+                  style={{ width: `${100 - chartWidth}%`, height: "100%", paddingRight: 8 }}
                   className="flex flex-col overflow-hidden min-h-0 min-w-0"
                 >
-                  <div className="flex justify-between items-center mb-1 flex-shrink-0">
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-sm font-semibold text-gray-700">
-                        Layer Stacks
-                      </h2>
-                      <button
-                        onClick={addLayerStack}
-                        className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"
-                      >
-                        <Plus size={10} /> New Stack
-                      </button>
-                    </div>
-                    <button
-                      onClick={addLayer}
-                      className="px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs flex items-center gap-1"
-                    >
-                      <Plus size={12} /> Add Layer
-                    </button>
+                  <div className="flex items-center gap-2 mb-1 flex-shrink-0">
+                    <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
+                    <button onClick={addLayerStack} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"><Plus size={10} /> New Stack</button>
+                    <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"><Trash2 size={10} /> Delete Stack</button>
                   </div>
 
                   {/* Stack Tabs */}
-                  <div
-                    className="flex gap-1 mb-1 overflow-x-auto pb-1 flex-shrink-0"
-                    style={{ maxHeight: "30px" }}
-                  >
+                  <div className="flex flex-wrap gap-1 mb-1 overflow-x-auto pt-0.5 pb-1 flex-shrink-0">
                     {layerStacks
                       .filter((s) => s.machineId === currentMachineId)
                       .map((stack) => (
-                        <div
-                          key={stack.id}
-                          className="flex items-center gap-1 flex-shrink-0"
-                        >
+                        <div key={stack.id} className="flex items-center gap-1 flex-shrink-0">
                           <button
                             onClick={() => switchLayerStack(stack.id)}
                             className={`px-2 py-0.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${
@@ -6576,19 +7344,12 @@ const ThinFilmDesigner = () => {
                                 : "bg-gray-200 text-gray-700 hover:bg-gray-300"
                             }`}
                           >
-                            <div
-                              className="w-2 h-2 rounded-full"
-                              style={{ backgroundColor: stack.color }}
-                            ></div>
-                            {stack.name}
+                            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: stack.color }}></div>
+                            {getStackDisplayName(stack)}
                           </button>
                           <button
                             onClick={() => toggleStackVisibility(stack.id)}
-                            className={`p-0.5 rounded text-xs ${
-                              stack.visible
-                                ? "bg-green-100 text-green-700"
-                                : "bg-gray-100 text-gray-400"
-                            }`}
+                            className={`p-0.5 rounded text-xs ${stack.visible ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-400"}`}
                             title={stack.visible ? "Hide" : "Show"}
                           >
                             {stack.visible ? "👁" : "👁‍🗨"}
@@ -6597,38 +7358,22 @@ const ThinFilmDesigner = () => {
                       ))}
                   </div>
 
-                  {/* Machine and Stack Management - Compact for horizontal */}
+                  {/* Machine and Stack Management */}
                   <div className="mb-1 p-1 bg-gray-50 rounded border flex flex-col gap-1 flex-shrink-0">
-                    <div className="flex gap-2 items-center">
-                      <select
-                        value={currentMachineId}
-                        onChange={(e) => switchMachine(parseInt(e.target.value))}
-                        className="flex-1 px-2 py-0.5 border rounded text-xs"
-                      >
-                        {machines.map((machine) => (
-                          <option key={machine.id} value={machine.id}>
-                            {machine.name}
-                          </option>
-                        ))}
+                    <div className="flex gap-1 items-center">
+                      <select value={currentMachineId} onChange={(e) => switchMachine(parseInt(e.target.value))} className="flex-1 px-2 py-0.5 border rounded text-xs">
+                        {machines.map((machine) => (<option key={machine.id} value={machine.id}>{machine.name}</option>))}
                       </select>
-                      <button
-                        onClick={() => setShowToolingModal(true)}
-                        className="px-2 py-0.5 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs flex items-center gap-1"
-                        title="Configure tooling factors"
-                      >
-                        <Settings size={10} />
-                      </button>
-                      <button
-                        onClick={() => {
-                          calculateCoatingStress();
-                          setShowStressModal(true);
-                        }}
-                        disabled={layers.length === 0}
-                        className="px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-xs disabled:bg-gray-300"
-                        title="Calculate stress"
-                      >
-                        <Zap size={10} />
-                      </button>
+                      <button onClick={addMachine} className="px-1.5 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs" title="Add machine"><Plus size={10} /></button>
+                      <button onClick={() => deleteMachine(currentMachineId)} disabled={machines.length === 1} className="px-1.5 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed" title="Delete machine"><Trash2 size={10} /></button>
+                    </div>
+                    <div className="flex gap-1 items-center">
+                      <input type="text" value={machines.find((m) => m.id === currentMachineId)?.name || ""} onChange={(e) => renameMachine(currentMachineId, e.target.value)} className="flex-1 px-2 py-0.5 border rounded text-xs" placeholder="Machine name" />
+                      <input type="text" value={layerStacks.find((s) => s.id === currentStackId)?.name || ""} onChange={(e) => renameLayerStack(currentStackId, e.target.value)} className="flex-1 px-2 py-0.5 border rounded text-xs" placeholder="Stack name" />
+                    </div>
+                    <div className="flex gap-1 items-center">
+                      <button onClick={() => setShowToolingModal(true)} className="px-2 py-0.5 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs flex items-center gap-1" title="Configure tooling factors"><Settings size={10} />Tooling</button>
+                      <button onClick={() => { calculateCoatingStress(); setShowStressModal(true); }} disabled={layers.length === 0} className="px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1" title="Calculate stress"><Zap size={10} />Stress</button>
                     </div>
                   </div>
 
@@ -7091,7 +7836,7 @@ const ThinFilmDesigner = () => {
                               stroke={stack.color}
                               strokeWidth={stack.id === currentStackId ? 3 : 2}
                               dot={false}
-                              name={stack.name}
+                              name={getStackDisplayName(stack)}
                               isAnimationActive={false}
                             />
                           );
@@ -7231,7 +7976,7 @@ const ThinFilmDesigner = () => {
                           strokeDasharray="6 3"
                           strokeOpacity={0.6}
                           dot={false}
-                          name={`${stack.name} Phase`}
+                          name={`${getStackDisplayName(stack)} Phase`}
                           isAnimationActive={false}
                         />
                       ))}
@@ -7340,13 +8085,38 @@ const ThinFilmDesigner = () => {
                     </div>
                   )}
 
+                  {/* Illuminant Selector */}
+                  <div className="mb-3 pb-3 border-b border-gray-300">
+                    <div className="text-[10px] font-semibold text-gray-700 mb-1">
+                      Illuminant
+                    </div>
+                    <select
+                      value={selectedIlluminant}
+                      onChange={(e) => {
+                        if (tierLimits.allowedIlluminants.includes(e.target.value)) {
+                          setSelectedIlluminant(e.target.value);
+                        } else {
+                          setUpgradeFeature('additional illuminants');
+                          setShowUpgradePrompt(true);
+                        }
+                      }}
+                      className="w-full px-1.5 py-1 border rounded text-[10px] bg-white cursor-pointer"
+                    >
+                      <option value="D65">D65 - Daylight 6500K</option>
+                      <option value="D50" disabled={!tierLimits.allowedIlluminants.includes('D50')}>D50 - Daylight 5000K{!tierLimits.allowedIlluminants.includes('D50') ? ' 🔒' : ''}</option>
+                      <option value="A" disabled={!tierLimits.allowedIlluminants.includes('A')}>A - Incandescent 2856K{!tierLimits.allowedIlluminants.includes('A') ? ' 🔒' : ''}</option>
+                      <option value="F2" disabled={!tierLimits.allowedIlluminants.includes('F2')}>F2 - Cool White Fluorescent{!tierLimits.allowedIlluminants.includes('F2') ? ' 🔒' : ''}</option>
+                      <option value="F11" disabled={!tierLimits.allowedIlluminants.includes('F11')}>F11 - Tri-phosphor Fluorescent{!tierLimits.allowedIlluminants.includes('F11') ? ' 🔒' : ''}</option>
+                    </select>
+                  </div>
+
                   {/* All Visible Stacks Colors - Compact */}
                   {Object.keys(stackColorData).length > 0 && (
-                    <div className="mb-3 pb-3 border-b border-gray-300">
-                      <div className="text-[10px] text-gray-600 font-semibold mb-1.5">
-                        All Visible Stacks
-                      </div>
-                      <div className="space-y-2">
+                    <details className="mb-3 pb-3 border-b border-gray-300">
+                      <summary className="text-[10px] text-gray-600 font-semibold mb-1.5 cursor-pointer select-none hover:text-gray-800">
+                        All Visible Stacks ({Object.keys(stackColorData).length})
+                      </summary>
+                      <div className="space-y-2 mt-1.5">
                         {Object.entries(stackColorData).map(
                           ([stackId, color]) => (
                             <div key={stackId} className="text-[9px]">
@@ -7385,7 +8155,7 @@ const ThinFilmDesigner = () => {
                           )
                         )}
                       </div>
-                    </div>
+                    </details>
                   )}
 
                   {/* Experimental Data Color */}
@@ -7421,170 +8191,55 @@ const ThinFilmDesigner = () => {
                     </div>
                   )}
 
-                  {/* ΔE* Color Difference Comparison */}
-                  {(experimentalColorData ||
-                    Object.keys(stackColorData).length > 1) && (
+                  {/* ΔE* Color Difference — Current Stack */}
+                  {colorData && experimentalColorData && (
                     <div className="mb-3 pb-3 border-b border-gray-300">
                       <div className="text-[10px] text-gray-600 font-semibold mb-1.5">
-                        ΔE* Color Difference
+                        ΔE* vs Experimental
                       </div>
-                      <div className="space-y-1.5">
-                        {/* Current Stack vs Experimental */}
-                        {colorData && experimentalColorData && (
-                          <div className="p-1.5 bg-red-50 rounded border border-red-200">
-                            <div className="text-[9px] text-gray-600 mb-0.5">
-                              Current vs Experimental
+                      <div className="p-1.5 bg-red-50 rounded border border-red-200">
+                        {(() => {
+                          const dL = parseFloat(colorData.L) - parseFloat(experimentalColorData.L);
+                          const da = parseFloat(colorData.a_star) - parseFloat(experimentalColorData.a_star);
+                          const db = parseFloat(colorData.b_star) - parseFloat(experimentalColorData.b_star);
+                          const deltaE = Math.sqrt(dL * dL + da * da + db * db);
+                          return (
+                            <div className={`text-sm font-bold ${deltaE < 1 ? "text-green-600" : deltaE < 2 ? "text-yellow-600" : deltaE < 3 ? "text-orange-600" : "text-red-600"}`}>
+                              ΔE* = {deltaE.toFixed(2)}
+                              <span className="text-[8px] font-normal text-gray-500 ml-1">
+                                {deltaE < 0.5 ? "(Imperceptible)" : deltaE < 1 ? "(Slight)" : deltaE < 2 ? "(Noticeable)" : deltaE < 3 ? "(Visible)" : deltaE < 5 ? "(Significant)" : "(Large)"}
+                              </span>
                             </div>
-                            {(() => {
-                              const dL =
-                                parseFloat(colorData.L) -
-                                parseFloat(experimentalColorData.L);
-                              const da =
-                                parseFloat(colorData.a_star) -
-                                parseFloat(experimentalColorData.a_star);
-                              const db =
-                                parseFloat(colorData.b_star) -
-                                parseFloat(experimentalColorData.b_star);
-                              const deltaE = Math.sqrt(
-                                dL * dL + da * da + db * db
-                              );
-                              return (
-                                <div
-                                  className={`text-sm font-bold ${
-                                    deltaE < 1
-                                      ? "text-green-600"
-                                      : deltaE < 2
-                                      ? "text-yellow-600"
-                                      : deltaE < 3
-                                      ? "text-orange-600"
-                                      : "text-red-600"
-                                  }`}
-                                >
-                                  ΔE* = {deltaE.toFixed(2)}
-                                  <span className="text-[8px] font-normal text-gray-500 ml-1">
-                                    {deltaE < 0.5
-                                      ? "(Imperceptible)"
-                                      : deltaE < 1
-                                      ? "(Slight)"
-                                      : deltaE < 2
-                                      ? "(Noticeable)"
-                                      : deltaE < 3
-                                      ? "(Visible)"
-                                      : deltaE < 5
-                                      ? "(Significant)"
-                                      : "(Large)"}
-                                  </span>
-                                </div>
-                              );
-                            })()}
-                          </div>
-                        )}
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
 
-                        {/* Stack vs Stack Comparisons */}
-                        {Object.keys(stackColorData).length > 1 && (
-                          <>
-                            {(() => {
-                              const stackIds = Object.keys(stackColorData);
-                              const comparisons = [];
-                              for (let i = 0; i < stackIds.length; i++) {
-                                for (let j = i + 1; j < stackIds.length; j++) {
-                                  const color1 = stackColorData[stackIds[i]];
-                                  const color2 = stackColorData[stackIds[j]];
-                                  const dL =
-                                    parseFloat(color1.L) - parseFloat(color2.L);
-                                  const da =
-                                    parseFloat(color1.a_star) -
-                                    parseFloat(color2.a_star);
-                                  const db =
-                                    parseFloat(color1.b_star) -
-                                    parseFloat(color2.b_star);
-                                  const deltaE = Math.sqrt(
-                                    dL * dL + da * da + db * db
-                                  );
-                                  comparisons.push({
-                                    name1: color1.stackName,
-                                    name2: color2.stackName,
-                                    color1: color1.stackColor,
-                                    color2: color2.stackColor,
-                                    deltaE: deltaE,
-                                  });
-                                }
-                              }
-                              return comparisons.map((comp, idx) => (
-                                <div
-                                  key={idx}
-                                  className="p-1.5 bg-blue-50 rounded border border-blue-200"
-                                >
-                                  <div className="text-[9px] text-gray-600 mb-0.5 flex items-center gap-1">
-                                    <span
-                                      className="w-2 h-2 rounded-full"
-                                      style={{ backgroundColor: comp.color1 }}
-                                    ></span>
-                                    <span className="truncate max-w-[45px]">
-                                      {comp.name1}
-                                    </span>
-                                    <span>vs</span>
-                                    <span
-                                      className="w-2 h-2 rounded-full"
-                                      style={{ backgroundColor: comp.color2 }}
-                                    ></span>
-                                    <span className="truncate max-w-[45px]">
-                                      {comp.name2}
-                                    </span>
-                                  </div>
-                                  <div
-                                    className={`text-sm font-bold ${
-                                      comp.deltaE < 1
-                                        ? "text-green-600"
-                                        : comp.deltaE < 2
-                                        ? "text-yellow-600"
-                                        : comp.deltaE < 3
-                                        ? "text-orange-600"
-                                        : "text-red-600"
-                                    }`}
-                                  >
-                                    ΔE* = {comp.deltaE.toFixed(2)}
-                                    <span className="text-[8px] font-normal text-gray-500 ml-1">
-                                      {comp.deltaE < 0.5
-                                        ? "(Imperceptible)"
-                                        : comp.deltaE < 1
-                                        ? "(Slight)"
-                                        : comp.deltaE < 2
-                                        ? "(Noticeable)"
-                                        : comp.deltaE < 3
-                                        ? "(Visible)"
-                                        : comp.deltaE < 5
-                                        ? "(Significant)"
-                                        : "(Large)"}
-                                    </span>
-                                  </div>
-                                </div>
-                              ));
-                            })()}
-                          </>
-                        )}
-
-                        {/* Legend */}
-                        <div className="text-[8px] text-gray-500 pt-1 border-t border-gray-200">
-                          <div className="font-semibold mb-0.5">ΔE* Guide:</div>
-                          <div>&lt;1: Expert eye only</div>
-                          <div>1-2: Careful observation</div>
-                          <div>2-3: Casual observation</div>
-                          <div>&gt;3: Obviously different</div>
-                        </div>
+                  {/* Compare Colors Button */}
+                  {Object.keys(stackColorData).length > 1 && (
+                    <div className="mb-3 pb-3 border-b border-gray-300">
+                      <button
+                        onClick={() => { setColorCompareSelected(Object.keys(stackColorData)); setShowColorCompareModal(true); }}
+                        className="w-full px-2 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-[10px] font-semibold flex items-center justify-center gap-1"
+                      >
+                        Compare Stack Colors
+                      </button>
+                      <div className="text-[8px] text-gray-500 mt-1 text-center">
+                        ΔE* comparison across all visible stacks
                       </div>
                     </div>
                   )}
 
                   {/* Angle-Dependent Color Analysis */}
                   {angleColorData && angleColorData.length > 0 && (
-                    <div className="mb-3 pb-3 border-b border-gray-300">
-                      <div className="text-[10px] text-gray-600 font-semibold mb-1.5">
+                    <details className="mb-3 pb-3 border-b border-gray-300">
+                      <summary className="text-[10px] text-gray-600 font-semibold mb-1.5 cursor-pointer select-none hover:text-gray-800">
                         Color vs Viewing Angle
-                      </div>
+                      </summary>
 
                       {/* Color swatches row */}
-                      <div className="flex gap-0.5 mb-2">
+                      <div className="flex gap-0.5 mb-2 mt-1.5">
                         {angleColorData.map((data) => (
                           <div key={data.angle} className="flex-1 text-center">
                             <div
@@ -7669,15 +8324,15 @@ const ThinFilmDesigner = () => {
                         <div>ΔE* 2-3: Noticeable</div>
                         <div>ΔE* &gt; 3: Obvious shift ⚠</div>
                       </div>
-                    </div>
+                    </details>
                   )}
 
                   {/* Multi-Angle Selector */}
-                  <div className="mb-3 pb-3 border-t border-gray-300 pt-2">
-                    <div className="text-[10px] font-semibold text-gray-700 mb-1.5">
+                  <details className="mb-3 pb-3 border-t border-gray-300 pt-2">
+                    <summary className="text-[10px] font-semibold text-gray-700 mb-1.5 cursor-pointer select-none hover:text-gray-800">
                       Multi-Angle Display
-                    </div>
-                    <div className="space-y-1">
+                    </summary>
+                    <div className="space-y-1 mt-1.5">
                       {[
                         { key: "angle_0", label: "0° (Normal)", angle: 0 },
                         { key: "angle_15", label: "15°", angle: 15 },
@@ -7711,67 +8366,18 @@ const ThinFilmDesigner = () => {
                     <div className="mt-2 text-[9px] text-gray-500">
                       Toggle to show/hide angle curves on chart
                     </div>
-                  </div>
+                  </details>
 
-                  {/* Illuminant Selector */}
-                  <div className="mb-3 pb-3 border-t border-gray-300 pt-2">
-                    <div className="text-[10px] font-semibold text-gray-700 mb-1">
-                      Illuminant
-                    </div>
-                    <select
-                      value={selectedIlluminant}
-                      onChange={(e) => {
-                        if (tierLimits.allowedIlluminants.includes(e.target.value)) {
-                          setSelectedIlluminant(e.target.value);
-                        } else {
-                          setUpgradeFeature('additional illuminants');
-                          setShowUpgradePrompt(true);
-                        }
-                      }}
-                      className="w-full px-1.5 py-1 border rounded text-[10px] bg-white cursor-pointer"
-                    >
-                      <option value="D65">D65 - Daylight 6500K</option>
-                      <option value="D50" disabled={!tierLimits.allowedIlluminants.includes('D50')}>D50 - Daylight 5000K{!tierLimits.allowedIlluminants.includes('D50') ? ' 🔒' : ''}</option>
-                      <option value="A" disabled={!tierLimits.allowedIlluminants.includes('A')}>A - Incandescent 2856K{!tierLimits.allowedIlluminants.includes('A') ? ' 🔒' : ''}</option>
-                      <option value="F2" disabled={!tierLimits.allowedIlluminants.includes('F2')}>F2 - Cool White Fluorescent{!tierLimits.allowedIlluminants.includes('F2') ? ' 🔒' : ''}</option>
-                      <option value="F11" disabled={!tierLimits.allowedIlluminants.includes('F11')}>F11 - Tri-phosphor Fluorescent{!tierLimits.allowedIlluminants.includes('F11') ? ' 🔒' : ''}</option>
-                    </select>
-                    <div className="text-[9px] text-gray-500 mt-1">
-                      Light source for color calculation
-                    </div>
-                  </div>
-
-                  {/* Display Mode Selector */}
+                  {/* Mode-specific options */}
                   <div className="mt-auto pt-2 border-t border-gray-300">
-                    <div className="text-[10px] font-semibold text-gray-700 mb-1">
-                      Display Mode
-                    </div>
-                    <select
-                      value={displayMode}
-                      onChange={(e) => {
-                        if (tierLimits.allowedDisplayModes.includes(e.target.value)) {
-                          setDisplayMode(e.target.value);
-                        } else {
-                          setUpgradeFeature(e.target.value + ' display mode');
-                          setShowUpgradePrompt(true);
-                        }
-                      }}
-                      className="w-full px-1.5 py-1 border rounded text-[10px] bg-white cursor-pointer"
-                    >
-                      <option value="reflectivity">Reflectivity</option>
-                      <option value="transmission">Transmission</option>
-                      <option value="absorption" disabled={!tierLimits.allowedDisplayModes.includes('absorption')}>Absorption{!tierLimits.allowedDisplayModes.includes('absorption') ? ' 🔒' : ''}</option>
-                      <option value="admittance" disabled={!tierLimits.allowedDisplayModes.includes('admittance')}>Admittance Diagram{!tierLimits.allowedDisplayModes.includes('admittance') ? ' 🔒' : ''}</option>
-                      <option value="efield" disabled={!tierLimits.allowedDisplayModes.includes('efield')}>E-Field Distribution{!tierLimits.allowedDisplayModes.includes('efield') ? ' 🔒' : ''}</option>
-                    </select>
                     {(displayMode === "reflectivity" || displayMode === "transmission" || displayMode === "absorption") && (
-                      <label className="flex items-center gap-1 text-[10px] cursor-pointer mt-2">
+                      <label className="flex items-center gap-1 text-[10px] cursor-pointer">
                         <input type="checkbox" checked={showPhase} onChange={(e) => setShowPhase(e.target.checked)} className="cursor-pointer" />
                         <span>Phase shift overlay ({"\u00B0"})</span>
                       </label>
                     )}
                     {displayMode === "admittance" && (
-                      <div className="mt-2">
+                      <div>
                         <div className="text-[10px] font-semibold text-gray-700 mb-1">Wavelengths (nm)</div>
                         <div className="space-y-1">
                           {admittanceWavelengths.map((wl, idx) => (
@@ -7791,7 +8397,7 @@ const ThinFilmDesigner = () => {
                       </div>
                     )}
                     {displayMode === "efield" && (
-                      <div className="mt-2">
+                      <div>
                         <div className="text-[10px] font-semibold text-gray-700 mb-1">Wavelengths (nm)</div>
                         <div className="space-y-1">
                           {efieldWavelengths.map((wl, idx) => (
@@ -7868,7 +8474,7 @@ const ThinFilmDesigner = () => {
                           })}
                           {layerStacks.filter((s) => s.visible).map((stack) => {
                             const dataKey = displayMode === "transmission" ? `stack_${stack.id}_transmission` : displayMode === "absorption" ? `stack_${stack.id}_absorption` : `stack_${stack.id}`;
-                            return (<Line key={stack.id} yAxisId="left" type="monotone" dataKey={dataKey} stroke={stack.color} strokeWidth={stack.id === currentStackId ? 3 : 2} dot={false} name={stack.name} isAnimationActive={false} />);
+                            return (<Line key={stack.id} yAxisId="left" type="monotone" dataKey={dataKey} stroke={stack.color} strokeWidth={stack.id === currentStackId ? 3 : 2} dot={false} name={getStackDisplayName(stack)} isAnimationActive={false} />);
                           })}
                           {showFactorPreview && factorPreviewData.length > 0 && (
                             <Line yAxisId="left" type="monotone" data={factorPreviewData} dataKey={displayMode === "transmission" ? "preview_transmission" : "preview"} stroke={layerStacks.find((s) => s.id === currentStackId)?.color || "#4f46e5"} strokeWidth={2} strokeOpacity={0.4} strokeDasharray="5 5" dot={false} name="Factor Preview" isAnimationActive={false} />
@@ -7900,7 +8506,7 @@ const ThinFilmDesigner = () => {
                           })}
                           {/* Phase Shift Overlay Lines */}
                           {showPhase && layerStacks.filter((s) => s.visible).map((stack) => (
-                            <Line key={`phase-${stack.id}`} yAxisId="right" type="monotone" dataKey={`stack_${stack.id}_phase`} stroke={stack.color} strokeWidth={1.5} strokeDasharray="6 3" strokeOpacity={0.6} dot={false} name={`${stack.name} Phase`} isAnimationActive={false} />
+                            <Line key={`phase-${stack.id}`} yAxisId="right" type="monotone" dataKey={`stack_${stack.id}_phase`} stroke={stack.color} strokeWidth={1.5} strokeDasharray="6 3" strokeOpacity={0.6} dot={false} name={`${getStackDisplayName(stack)} Phase`} isAnimationActive={false} />
                           ))}
                         </LineChart>
                       </ResponsiveContainer>
@@ -7917,8 +8523,8 @@ const ThinFilmDesigner = () => {
                         <div className="flex items-center gap-2">
                           <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
                           <button onClick={addLayerStack} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"><Plus size={10} /> New Stack</button>
+                          <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"><Trash2 size={10} /> Delete Stack</button>
                         </div>
-                        <button onClick={addLayer} className="px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs flex items-center gap-1"><Plus size={12} /> Add Layer</button>
                       </div>
 
                       <div className="flex gap-1 mb-1 overflow-x-auto pb-1 flex-shrink-0" style={{ maxHeight: "30px" }}>
@@ -7926,7 +8532,7 @@ const ThinFilmDesigner = () => {
                           <div key={stack.id} className="flex items-center gap-1 flex-shrink-0">
                             <button onClick={() => switchLayerStack(stack.id)} className={`px-2 py-0.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${currentStackId === stack.id ? "bg-indigo-600 text-white font-semibold" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}>
                               <div className="w-2 h-2 rounded-full" style={{ backgroundColor: stack.color }}></div>
-                              {stack.name}
+                              {getStackDisplayName(stack)}
                             </button>
                             <button onClick={() => toggleStackVisibility(stack.id)} className={`p-0.5 rounded text-xs ${stack.visible ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-400"}`} title={stack.visible ? "Hide" : "Show"}>{stack.visible ? "👁" : "👁‍🗨"}</button>
                           </div>
@@ -7946,7 +8552,6 @@ const ThinFilmDesigner = () => {
                           <input type="text" value={layerStacks.find((s) => s.id === currentStackId)?.name || ""} onChange={(e) => renameLayerStack(currentStackId, e.target.value)} className="flex-1 px-2 py-0.5 border rounded text-xs" placeholder="Stack name" />
                           <button onClick={() => setShowToolingModal(true)} className="px-2 py-0.5 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs flex items-center gap-1" title="Configure tooling factors"><Settings size={10} />Tooling</button>
                           <button onClick={() => { calculateCoatingStress(); setShowStressModal(true); }} disabled={layers.length === 0} className="px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1" title="Calculate coating stress"><Zap size={10} />Stress</button>
-                          <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed">Delete Stack</button>
                         </div>
                       </div>
 
@@ -8143,11 +8748,32 @@ const ThinFilmDesigner = () => {
                       </div>
                     )}
 
+                    {/* Illuminant Selector */}
+                    <div className="mb-3 pb-3 border-b border-gray-300">
+                      <div className="text-[10px] font-semibold text-gray-700 mb-1">Illuminant</div>
+                      <select value={selectedIlluminant} onChange={(e) => {
+                        if (tierLimits.allowedIlluminants.includes(e.target.value)) {
+                          setSelectedIlluminant(e.target.value);
+                        } else {
+                          setUpgradeFeature('additional illuminants');
+                          setShowUpgradePrompt(true);
+                        }
+                      }} className="w-full px-1.5 py-1 border rounded text-[10px] bg-white cursor-pointer">
+                        <option value="D65">D65 - Daylight 6500K</option>
+                        <option value="D50" disabled={!tierLimits.allowedIlluminants.includes('D50')}>D50 - Daylight 5000K{!tierLimits.allowedIlluminants.includes('D50') ? ' 🔒' : ''}</option>
+                        <option value="A" disabled={!tierLimits.allowedIlluminants.includes('A')}>A - Incandescent 2856K{!tierLimits.allowedIlluminants.includes('A') ? ' 🔒' : ''}</option>
+                        <option value="F2" disabled={!tierLimits.allowedIlluminants.includes('F2')}>F2 - Cool White Fluorescent{!tierLimits.allowedIlluminants.includes('F2') ? ' 🔒' : ''}</option>
+                        <option value="F11" disabled={!tierLimits.allowedIlluminants.includes('F11')}>F11 - Tri-phosphor Fluorescent{!tierLimits.allowedIlluminants.includes('F11') ? ' 🔒' : ''}</option>
+                      </select>
+                    </div>
+
                     {/* All Visible Stacks Colors */}
                     {Object.keys(stackColorData).length > 0 && (
-                      <div className="mb-3 pb-3 border-b border-gray-300">
-                        <div className="text-[10px] text-gray-600 font-semibold mb-1.5">All Visible Stacks</div>
-                        <div className="space-y-2">
+                      <details className="mb-3 pb-3 border-b border-gray-300">
+                        <summary className="text-[10px] text-gray-600 font-semibold mb-1.5 cursor-pointer select-none hover:text-gray-800">
+                          All Visible Stacks ({Object.keys(stackColorData).length})
+                        </summary>
+                        <div className="space-y-2 mt-1.5">
                           {Object.entries(stackColorData).map(([stackId, color]) => (
                             <div key={stackId} className="text-[9px]">
                               <div className="flex items-center gap-1 mb-0.5">
@@ -8164,7 +8790,7 @@ const ThinFilmDesigner = () => {
                             </div>
                           ))}
                         </div>
-                      </div>
+                      </details>
                     )}
 
                     {/* Experimental Data Color */}
@@ -8183,82 +8809,49 @@ const ThinFilmDesigner = () => {
                       </div>
                     )}
 
-                    {/* ΔE* Color Difference Comparison */}
-                    {(experimentalColorData || Object.keys(stackColorData).length > 1) && (
+                    {/* ΔE* vs Experimental — Current Stack */}
+                    {colorData && experimentalColorData && (
                       <div className="mb-3 pb-3 border-b border-gray-300">
-                        <div className="text-[10px] text-gray-600 font-semibold mb-1.5">ΔE* Color Difference</div>
-                        <div className="space-y-1.5">
-                          {colorData && experimentalColorData && (
-                            <div className="p-1.5 bg-red-50 rounded border border-red-200">
-                              <div className="text-[9px] text-gray-600 mb-0.5">Current vs Experimental</div>
-                              {(() => {
-                                const dL = parseFloat(colorData.L) - parseFloat(experimentalColorData.L);
-                                const da = parseFloat(colorData.a_star) - parseFloat(experimentalColorData.a_star);
-                                const db = parseFloat(colorData.b_star) - parseFloat(experimentalColorData.b_star);
-                                const deltaE = Math.sqrt(dL * dL + da * da + db * db);
-                                return (
-                                  <div className={`text-sm font-bold ${deltaE < 1 ? "text-green-600" : deltaE < 2 ? "text-yellow-600" : deltaE < 3 ? "text-orange-600" : "text-red-600"}`}>
-                                    ΔE* = {deltaE.toFixed(2)}
-                                    <span className="text-[8px] font-normal text-gray-500 ml-1">
-                                      {deltaE < 0.5 ? "(Imperceptible)" : deltaE < 1 ? "(Slight)" : deltaE < 2 ? "(Noticeable)" : deltaE < 3 ? "(Visible)" : deltaE < 5 ? "(Significant)" : "(Large)"}
-                                    </span>
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          )}
-                          {Object.keys(stackColorData).length > 1 && (
-                            <>
-                              {(() => {
-                                const stackIds = Object.keys(stackColorData);
-                                const comparisons = [];
-                                for (let i = 0; i < stackIds.length; i++) {
-                                  for (let j = i + 1; j < stackIds.length; j++) {
-                                    const color1 = stackColorData[stackIds[i]];
-                                    const color2 = stackColorData[stackIds[j]];
-                                    const dL = parseFloat(color1.L) - parseFloat(color2.L);
-                                    const da = parseFloat(color1.a_star) - parseFloat(color2.a_star);
-                                    const db = parseFloat(color1.b_star) - parseFloat(color2.b_star);
-                                    const deltaE = Math.sqrt(dL * dL + da * da + db * db);
-                                    comparisons.push({ name1: color1.stackName, name2: color2.stackName, color1: color1.stackColor, color2: color2.stackColor, deltaE: deltaE });
-                                  }
-                                }
-                                return comparisons.map((comp, idx) => (
-                                  <div key={idx} className="p-1.5 bg-blue-50 rounded border border-blue-200">
-                                    <div className="text-[9px] text-gray-600 mb-0.5 flex items-center gap-1">
-                                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: comp.color1 }}></span>
-                                      <span className="truncate max-w-[45px]">{comp.name1}</span>
-                                      <span>vs</span>
-                                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: comp.color2 }}></span>
-                                      <span className="truncate max-w-[45px]">{comp.name2}</span>
-                                    </div>
-                                    <div className={`text-sm font-bold ${comp.deltaE < 1 ? "text-green-600" : comp.deltaE < 2 ? "text-yellow-600" : comp.deltaE < 3 ? "text-orange-600" : "text-red-600"}`}>
-                                      ΔE* = {comp.deltaE.toFixed(2)}
-                                      <span className="text-[8px] font-normal text-gray-500 ml-1">
-                                        {comp.deltaE < 0.5 ? "(Imperceptible)" : comp.deltaE < 1 ? "(Slight)" : comp.deltaE < 2 ? "(Noticeable)" : comp.deltaE < 3 ? "(Visible)" : comp.deltaE < 5 ? "(Significant)" : "(Large)"}
-                                      </span>
-                                    </div>
-                                  </div>
-                                ));
-                              })()}
-                            </>
-                          )}
-                          <div className="text-[8px] text-gray-500 pt-1 border-t border-gray-200">
-                            <div className="font-semibold mb-0.5">ΔE* Guide:</div>
-                            <div>&lt;1: Expert eye only</div>
-                            <div>1-2: Careful observation</div>
-                            <div>2-3: Casual observation</div>
-                            <div>&gt;3: Obviously different</div>
-                          </div>
+                        <div className="text-[10px] text-gray-600 font-semibold mb-1.5">ΔE* vs Experimental</div>
+                        <div className="p-1.5 bg-red-50 rounded border border-red-200">
+                          {(() => {
+                            const dL = parseFloat(colorData.L) - parseFloat(experimentalColorData.L);
+                            const da = parseFloat(colorData.a_star) - parseFloat(experimentalColorData.a_star);
+                            const db = parseFloat(colorData.b_star) - parseFloat(experimentalColorData.b_star);
+                            const deltaE = Math.sqrt(dL * dL + da * da + db * db);
+                            return (
+                              <div className={`text-sm font-bold ${deltaE < 1 ? "text-green-600" : deltaE < 2 ? "text-yellow-600" : deltaE < 3 ? "text-orange-600" : "text-red-600"}`}>
+                                ΔE* = {deltaE.toFixed(2)}
+                                <span className="text-[8px] font-normal text-gray-500 ml-1">
+                                  {deltaE < 0.5 ? "(Imperceptible)" : deltaE < 1 ? "(Slight)" : deltaE < 2 ? "(Noticeable)" : deltaE < 3 ? "(Visible)" : deltaE < 5 ? "(Significant)" : "(Large)"}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Compare Colors Button */}
+                    {Object.keys(stackColorData).length > 1 && (
+                      <div className="mb-3 pb-3 border-b border-gray-300">
+                        <button
+                          onClick={() => { setColorCompareSelected(Object.keys(stackColorData)); setShowColorCompareModal(true); }}
+                          className="w-full px-2 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-[10px] font-semibold flex items-center justify-center gap-1"
+                        >
+                          Compare Stack Colors
+                        </button>
+                        <div className="text-[8px] text-gray-500 mt-1 text-center">
+                          ΔE* comparison across all visible stacks
                         </div>
                       </div>
                     )}
 
                     {/* Angle-Dependent Color Analysis */}
                     {angleColorData && angleColorData.length > 0 && (
-                      <div className="mb-3 pb-3 border-b border-gray-300">
-                        <div className="text-[10px] text-gray-600 font-semibold mb-1.5">Color vs Viewing Angle</div>
-                        <div className="flex gap-0.5 mb-2">
+                      <details className="mb-3 pb-3 border-b border-gray-300">
+                        <summary className="text-[10px] text-gray-600 font-semibold mb-1.5 cursor-pointer select-none hover:text-gray-800">Color vs Viewing Angle</summary>
+                        <div className="flex gap-0.5 mb-2 mt-1.5">
                           {angleColorData.map((data) => (
                             <div key={data.angle} className="flex-1 text-center">
                               <div className="w-full h-6 rounded border border-gray-300" style={{ backgroundColor: data.rgb }} title={`${data.angle}°: L*=${data.L.toFixed(1)}, a*=${data.a.toFixed(1)}, b*=${data.b.toFixed(1)}`}></div>
@@ -8294,13 +8887,13 @@ const ThinFilmDesigner = () => {
                           <div>ΔE* 2-3: Noticeable</div>
                           <div>ΔE* &gt; 3: Obvious shift ⚠</div>
                         </div>
-                      </div>
+                      </details>
                     )}
 
                     {/* Multi-Angle Selector */}
-                    <div className="mb-3 pb-3 border-t border-gray-300 pt-2">
-                      <div className="text-[10px] font-semibold text-gray-700 mb-1.5">Multi-Angle Display</div>
-                      <div className="space-y-1">
+                    <details className="mb-3 pb-3 border-t border-gray-300 pt-2">
+                      <summary className="text-[10px] font-semibold text-gray-700 mb-1.5 cursor-pointer select-none hover:text-gray-800">Multi-Angle Display</summary>
+                      <div className="space-y-1 mt-1.5">
                         {[
                           { key: "angle_0", label: "0° (Normal)", angle: 0 },
                           { key: "angle_15", label: "15°", angle: 15 },
@@ -8315,39 +8908,18 @@ const ThinFilmDesigner = () => {
                         ))}
                       </div>
                       <div className="mt-2 text-[9px] text-gray-500">Toggle to show/hide angle curves on chart</div>
-                    </div>
+                    </details>
 
-                    {/* Illuminant Selector */}
-                    <div className="mb-3 pb-3 border-t border-gray-300 pt-2">
-                      <div className="text-[10px] font-semibold text-gray-700 mb-1">Illuminant</div>
-                      <select value={selectedIlluminant} onChange={(e) => setSelectedIlluminant(e.target.value)} className="w-full px-1.5 py-1 border rounded text-[10px] bg-white cursor-pointer">
-                        <option value="D65">D65 - Daylight 6500K</option>
-                        <option value="D50">D50 - Daylight 5000K</option>
-                        <option value="A">A - Incandescent 2856K</option>
-                        <option value="F2">F2 - Cool White Fluorescent</option>
-                        <option value="F11">F11 - Tri-phosphor Fluorescent</option>
-                      </select>
-                      <div className="text-[9px] text-gray-500 mt-1">Light source for color calculation</div>
-                    </div>
-
-                    {/* Display Mode Selector */}
+                    {/* Mode-specific options */}
                     <div className="mt-auto pt-2 border-t border-gray-300">
-                      <div className="text-[10px] font-semibold text-gray-700 mb-1">Display Mode</div>
-                      <select value={displayMode} onChange={(e) => setDisplayMode(e.target.value)} className="w-full px-1.5 py-1 border rounded text-[10px] bg-white cursor-pointer">
-                        <option value="reflectivity">Reflectivity</option>
-                        <option value="transmission">Transmission</option>
-                        <option value="absorption">Absorption</option>
-                        <option value="admittance">Admittance Diagram</option>
-                        <option value="efield">E-Field Distribution</option>
-                      </select>
                       {(displayMode === "reflectivity" || displayMode === "transmission" || displayMode === "absorption") && (
-                        <label className="flex items-center gap-1 text-[10px] cursor-pointer mt-2">
+                        <label className="flex items-center gap-1 text-[10px] cursor-pointer">
                           <input type="checkbox" checked={showPhase} onChange={(e) => setShowPhase(e.target.checked)} className="cursor-pointer" />
                           <span>Phase shift overlay ({"\u00B0"})</span>
                         </label>
                       )}
                       {displayMode === "admittance" && (
-                        <div className="mt-2">
+                        <div>
                           <div className="text-[10px] font-semibold text-gray-700 mb-1">Wavelengths (nm)</div>
                           <div className="space-y-1">
                             {admittanceWavelengths.map((wl, idx) => (
@@ -8367,7 +8939,7 @@ const ThinFilmDesigner = () => {
                         </div>
                       )}
                       {displayMode === "efield" && (
-                        <div className="mt-2">
+                        <div>
                           <div className="text-[10px] font-semibold text-gray-700 mb-1">Wavelengths (nm)</div>
                           <div className="space-y-1">
                             {efieldWavelengths.map((wl, idx) => (
@@ -10178,7 +10750,7 @@ const ThinFilmDesigner = () => {
                     <button
                       onClick={() => {
                         if (!requireFeature('trackingRunComparison', 'Run Comparison')) return;
-                        if (trackingCompareRunIds.length !== 2) { alert('Select exactly 2 runs to compare (use checkboxes in the runs list).'); return; }
+                        if (trackingCompareRunIds.length !== 2) { showToast('Select exactly 2 runs to compare (use checkboxes in the runs list).', 'info'); return; }
                         setTrackingTrendView('difference');
                       }}
                       className={`px-2 py-0.5 text-xs rounded ${trackingTrendView === 'difference' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'} ${trackingCompareRunIds.length !== 2 ? 'opacity-50' : ''}`}
@@ -10502,7 +11074,7 @@ const ThinFilmDesigner = () => {
                       >
                         <option value="">Select stack...</option>
                         {layerStacks.map(stack => (
-                          <option key={stack.id} value={stack.id}>{stack.name}</option>
+                          <option key={stack.id} value={stack.id}>{getStackDisplayName(stack)}</option>
                         ))}
                       </select>
                     )}
@@ -11598,8 +12170,7 @@ const ThinFilmDesigner = () => {
             {teamView !== 'list' && (
               <button
                 onClick={() => {
-                  if (teamView === 'submission') { setTeamView('design'); setSelectedSubmission(null); }
-                  else if (teamView === 'design') { setTeamView('detail'); setSelectedSharedDesign(null); }
+                  if (teamView === 'design') { setTeamView('detail'); setSelectedSharedDesign(null); }
                   else { setTeamView('list'); setSelectedTeamId(null); setSelectedTeamDetail(null); setTeamDesigns([]); }
                 }}
                 className="mb-3 text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
@@ -11757,217 +12328,538 @@ const ThinFilmDesigner = () => {
                 denied: { bg: '#fecaca', text: '#991b1b' },
               };
               const sc = statusColors[selectedSharedDesign.status] || statusColors.draft;
-              const designLayers = selectedSharedDesign.data?.layers || [];
+              const submissions = selectedSharedDesign.submissions || [];
+              const designData = selectedSharedDesign.data || {};
+              const getMatColor = (mat) => materialDispersion[mat]?.color || designData.customMaterials?.[mat]?.color || '#ccc';
+
+              // Build trace IDs
+              const allTraceIds = ['original', ...submissions.map(s => `sub_${s.id}`)];
+              const visibleTraceIds = allTraceIds.filter(id => teamVisibleTraces[id]);
+
+              // Compute trace data for all visible traces
+              const traceDataMap = {};
+              for (const tid of allTraceIds) {
+                traceDataMap[tid] = getTeamTraceData(tid, designData, submissions, teamSelectedIlluminant);
+              }
+
+              // Build merged chart data for R/T/A/phase modes
+              const buildMergedChartData = (mode) => {
+                const dataByWl = {};
+                for (const tid of visibleTraceIds) {
+                  const td = traceDataMap[tid];
+                  if (!td || !td.spectrum) continue;
+                  for (const pt of td.spectrum) {
+                    if (!dataByWl[pt.wavelength]) dataByWl[pt.wavelength] = { wavelength: pt.wavelength };
+                    if (mode === 'reflectivity') dataByWl[pt.wavelength][tid] = pt.R;
+                    else if (mode === 'transmission') dataByWl[pt.wavelength][tid] = pt.T;
+                    else if (mode === 'absorption') dataByWl[pt.wavelength][tid] = pt.A;
+                    else if (mode === 'phaseShift') dataByWl[pt.wavelength][tid] = pt.phase;
+                  }
+                }
+                return Object.values(dataByWl).sort((a, b) => a.wavelength - b.wavelength);
+              };
+
+              // Resolve layers for a trace
+              const resolveTraceLayers = (traceId) => {
+                const td = traceDataMap[traceId];
+                if (!td || !td.data) return [];
+                const d = td.data;
+                let resolved = d.layers || [];
+                if (d.layerStacks && d.currentStackId) {
+                  const cs = d.layerStacks.find(s => s.id === d.currentStackId);
+                  if (cs && cs.layers && cs.layers.length > 0) resolved = cs.layers;
+                }
+                return resolved;
+              };
+
+              const focusedLayers = resolveTraceLayers(teamActiveLayerView);
+              const focusedTraceData = traceDataMap[teamActiveLayerView];
+
+              // Y-axis config per mode
+              const modeConfig = {
+                reflectivity: { unit: '%', domain: [0, 100], label: 'Reflectivity' },
+                transmission: { unit: '%', domain: [0, 100], label: 'Transmission' },
+                absorption: { unit: '%', domain: [0, 100], label: 'Absorption' },
+                phaseShift: { unit: '\u00B0', domain: ['auto', 'auto'], label: 'Phase Shift' },
+              };
+
               return (
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <h2 className="text-lg font-bold text-gray-800">{selectedSharedDesign.name}</h2>
-                      {myRole === 'admin' ? (
-                        <select value={selectedSharedDesign.status || 'draft'} onChange={e => handleUpdateDesignStatus(selectedSharedDesign.id, e.target.value)}
-                          className="text-xs border rounded px-2 py-1" style={{ cursor: 'pointer' }}>
-                          <option value="draft">Draft</option>
-                          <option value="in_review">In Review</option>
-                          <option value="approved">Approved</option>
-                          <option value="production">Production</option>
-                          <option value="archived">Archived</option>
-                        </select>
-                      ) : (
-                        <span className="px-2 py-0.5 text-xs rounded" style={{ background: sc.bg, color: sc.text }}>
-                          {(selectedSharedDesign.status || 'draft').replace('_', ' ')}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => handleCloneDesign(selectedTeamId, selectedSharedDesign.id)}
-                        className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50 flex items-center gap-1" style={{ cursor: 'pointer' }}>
-                        <Copy size={14} /> Clone
+                <div style={{ display: 'flex', gap: '12px', minHeight: '600px' }}>
+                  {/* LEFT PANEL — Chart + Color */}
+                  <div style={{ flex: '1 1 70%', minWidth: 0 }}>
+                    {/* Header bar */}
+                    <div className="flex items-center gap-2 mb-3" style={{ flexWrap: 'wrap' }}>
+                      <button onClick={() => setTeamView('detail')} className="text-gray-500" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                        onMouseEnter={e => e.currentTarget.style.color = '#4f46e5'} onMouseLeave={e => e.currentTarget.style.color = '#6b7280'}>
+                        <ChevronLeft size={18} />
                       </button>
-                      <button onClick={() => { setShowSubmitChangesModal(true); }}
-                        className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
-                        <Send size={14} /> Submit Changes
-                      </button>
+                      <h2 className="text-lg font-bold text-gray-800" style={{ marginRight: 'auto' }}>{selectedSharedDesign.name}</h2>
+                      <select value={teamDisplayMode} onChange={e => setTeamDisplayMode(e.target.value)}
+                        className="text-xs border rounded px-2 py-1" style={{ cursor: 'pointer' }}>
+                        <option value="reflectivity">Reflectivity</option>
+                        <option value="transmission">Transmission</option>
+                        <option value="absorption">Absorption</option>
+                        <option value="admittance">Admittance</option>
+                        <option value="efield">E-Field</option>
+                        <option value="phaseShift">Phase Shift</option>
+                      </select>
+                      <select value={teamSelectedIlluminant} onChange={e => { setTeamSelectedIlluminant(e.target.value); setTeamTraceCache({}); }}
+                        className="text-xs border rounded px-2 py-1" style={{ cursor: 'pointer' }}>
+                        <option value="D65">D65</option>
+                        <option value="D50">D50</option>
+                        <option value="A">A</option>
+                        <option value="F2">F2</option>
+                        <option value="F11">F11</option>
+                      </select>
                     </div>
-                  </div>
 
-                  {/* Layer stack preview */}
-                  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-                    <h4 className="text-sm font-semibold text-gray-700 mb-2">Layer Stack ({designLayers.length} layers)</h4>
-                    <div className="grid gap-1" style={{ gridTemplateColumns: 'auto 1fr', fontSize: '12px' }}>
-                      {designLayers.map((l, i) => (
-                        <React.Fragment key={i}>
-                          <span className="text-gray-500 pr-2">{i + 1}.</span>
-                          <span className="text-gray-700">{l.material} — {Number(l.thickness).toFixed(1)} nm</span>
-                        </React.Fragment>
-                      ))}
+                    {/* Chart area */}
+                    <div className="mb-3 p-3 border rounded-lg">
+                      {/* R/T/A/Phase chart */}
+                      {['reflectivity', 'transmission', 'absorption', 'phaseShift'].includes(teamDisplayMode) && (() => {
+                        const chartData = buildMergedChartData(teamDisplayMode);
+                        const mc = modeConfig[teamDisplayMode];
+                        return (
+                          <div style={{ width: '100%', height: '350px' }}>
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={chartData} margin={{ top: 5, right: 15, bottom: 20, left: 15 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                <XAxis dataKey="wavelength" tick={{ fontSize: 10 }} tickCount={8} label={{ value: 'Wavelength (nm)', position: 'insideBottom', offset: -10, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                <YAxis tick={{ fontSize: 10 }} domain={mc.domain} unit={mc.unit} label={{ value: mc.label, angle: -90, position: 'insideLeft', offset: 5, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                {visibleTraceIds.map(id => (
+                                  <Line key={id} type="monotone" dataKey={id} stroke={getTeamTraceColor(id, submissions)} strokeWidth={id === teamActiveLayerView ? 2.5 : 1.5} dot={false}
+                                    name={id === 'original' ? 'Original' : submissions.find(s => `sub_${s.id}` === id)?.submitter?.email || 'Submission'}
+                                    strokeDasharray={id === 'original' ? undefined : '5 3'} />
+                                ))}
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Admittance chart */}
+                      {teamDisplayMode === 'admittance' && (() => {
+                        const td = traceDataMap[teamActiveLayerView];
+                        if (!td || !td.data) return <div className="text-sm text-gray-400 p-4 text-center">No data for focused trace</div>;
+                        const admData = computeAdmittanceFromData(td.data, td.data.customMaterials || {}, teamAdmittanceWavelengths);
+                        if (!admData || admData.length === 0) return <div className="text-sm text-gray-400 p-4 text-center">No admittance data</div>;
+                        return (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2" style={{ fontSize: '10px' }}>
+                              <span className="text-gray-500">Wavelengths:</span>
+                              {teamAdmittanceWavelengths.map((wl, wi) => (
+                                <input key={wi} type="number" value={wl} onChange={e => { const nw = [...teamAdmittanceWavelengths]; nw[wi] = Number(e.target.value); setTeamAdmittanceWavelengths(nw); setTeamTraceCache({}); }}
+                                  className="border rounded px-1 py-0.5 text-center" style={{ width: '55px', fontSize: '10px' }} />
+                              ))}
+                              <span className="text-gray-400">nm</span>
+                            </div>
+                            <div style={{ width: '100%', height: '320px' }}>
+                              <ResponsiveContainer width="100%" height="100%">
+                                <ScatterChart margin={{ top: 5, right: 15, bottom: 20, left: 15 }}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                  <XAxis dataKey="re" type="number" tick={{ fontSize: 10 }} name="Re(Y)" label={{ value: 'Re(Y)', position: 'insideBottom', offset: -10, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                  <YAxis dataKey="im" type="number" tick={{ fontSize: 10 }} name="Im(Y)" label={{ value: 'Im(Y)', angle: -90, position: 'insideLeft', offset: 5, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                  {admData.map((locus, li) => (
+                                    <Scatter key={li} data={locus.points || locus} fill={['#4f46e5', '#dc2626', '#16a34a'][li % 3]} line={{ stroke: ['#4f46e5', '#dc2626', '#16a34a'][li % 3], strokeWidth: 1.5 }} lineType="joint"
+                                      name={`${locus.wavelength || teamAdmittanceWavelengths[li]} nm`} shape="circle" legendType="circle" />
+                                  ))}
+                                </ScatterChart>
+                              </ResponsiveContainer>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* E-field chart */}
+                      {teamDisplayMode === 'efield' && (() => {
+                        const td = traceDataMap[teamActiveLayerView];
+                        if (!td || !td.data) return <div className="text-sm text-gray-400 p-4 text-center">No data for focused trace</div>;
+                        const efResult = computeEfieldFromData(td.data, td.data.customMaterials || {}, teamEfieldWavelengths);
+                        if (!efResult || !efResult.data || efResult.data.length === 0) return <div className="text-sm text-gray-400 p-4 text-center">No E-field data</div>;
+                        const efLayers = efResult.layers || [];
+                        const efLines = efResult.lines || [];
+                        const lineColors = ['#4f46e5', '#dc2626', '#16a34a'];
+                        return (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2" style={{ fontSize: '10px' }}>
+                              <span className="text-gray-500">Wavelengths:</span>
+                              {teamEfieldWavelengths.map((wl, wi) => (
+                                <input key={wi} type="number" value={wl} onChange={e => { const nw = [...teamEfieldWavelengths]; nw[wi] = Number(e.target.value); setTeamEfieldWavelengths(nw); setTeamTraceCache({}); }}
+                                  className="border rounded px-1 py-0.5 text-center" style={{ width: '55px', fontSize: '10px' }} />
+                              ))}
+                              <span className="text-gray-400">nm</span>
+                            </div>
+                            <div style={{ width: '100%', height: '320px' }}>
+                              <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={efResult.data} margin={{ top: 5, right: 15, bottom: 20, left: 15 }}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                  {efLayers.map((layer, li) => (
+                                    <ReferenceArea key={li} x1={layer.x1} x2={layer.x2} fill={getMatColor(layer.material)} fillOpacity={0.15} />
+                                  ))}
+                                  <XAxis dataKey="position" tick={{ fontSize: 10 }} label={{ value: 'Position (nm)', position: 'insideBottom', offset: -10, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                  <YAxis tick={{ fontSize: 10 }} label={{ value: '|E|^2', angle: -90, position: 'insideLeft', offset: 5, style: { fontSize: '10px', fill: '#9ca3af' } }} />
+                                  {efLines.map((line, li) => (
+                                    <Line key={li} type="monotone" dataKey={line.dataKey || line.key || `ef_${li}`} stroke={lineColors[li % 3]} strokeWidth={1.5} dot={false} name={`${line.wavelength || teamEfieldWavelengths[li]} nm`} />
+                                  ))}
+                                </LineChart>
+                              </ResponsiveContainer>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
-                  </div>
 
-                  {/* Submissions */}
-                  <div className="mb-4">
-                    <h4 className="text-sm font-semibold text-gray-700 mb-2">Submissions</h4>
-                    {(selectedSharedDesign.submissions || []).length === 0 ? (
-                      <p className="text-sm text-gray-400">No submissions yet.</p>
-                    ) : (
-                      <div className="space-y-1.5">
-                        {(selectedSharedDesign.submissions || []).map(sub => {
-                          const ssc = subStatusColors[sub.status] || subStatusColors.pending;
+                    {/* Color analysis section */}
+                    <div className="p-3 border rounded-lg mb-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span style={{ fontSize: '12px' }} className="font-semibold text-gray-700">Color Analysis</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                        {visibleTraceIds.map(tid => {
+                          const td = traceDataMap[tid];
+                          const ci = td?.colorInfo;
+                          const traceName = tid === 'original' ? 'Original' : (submissions.find(s => `sub_${s.id}` === tid)?.submitter?.name || submissions.find(s => `sub_${s.id}` === tid)?.submitter?.email || 'Submission');
                           return (
-                            <div key={sub.id}
-                              onClick={() => { loadSubmissionDetail(selectedTeamId, selectedSharedDesign.id, sub.id); setTeamView('submission'); }}
-                              className="p-2.5 border rounded hover:border-indigo-300 flex items-center justify-between"
-                              style={{ cursor: 'pointer' }}>
-                              <div>
-                                <span className="text-sm text-gray-700">{sub.submitter?.name || sub.submitter?.email || 'Unknown'}</span>
-                                <span className="ml-2 text-xs text-gray-400">{new Date(sub.createdAt).toLocaleDateString()}</span>
+                            <div key={tid} className="flex items-center gap-3 p-2 rounded" style={{ background: '#fafafa', border: tid === teamActiveLayerView ? '2px solid #818cf8' : '1px solid #e5e7eb', minWidth: '200px' }}>
+                              <div style={{ width: '48px', height: '48px', borderRadius: '8px', backgroundColor: ci?.hex || ci?.rgb || '#ccc', border: '2px solid rgba(0,0,0,0.1)', flexShrink: 0 }} />
+                              <div style={{ fontSize: '10px' }}>
+                                <div className="font-semibold text-gray-700" style={{ fontSize: '11px' }}>{traceName}</div>
+                                {ci && (
+                                  <>
+                                    <div className="text-gray-500">{ci.colorName || '—'}</div>
+                                    <div className="text-gray-400">L*={ci.L} a*={ci.a_star} b*={ci.b_star}</div>
+                                    <div className="text-gray-400">C={ci.C} h={ci.h}</div>
+                                    <div className="text-gray-400">Dom. {ci.dominantWavelength || '—'} nm | Avg R {typeof ci.avgReflectivity === 'number' ? ci.avgReflectivity.toFixed(1) : ci.avgReflectivity}%</div>
+                                  </>
+                                )}
                               </div>
-                              <span className="px-2 py-0.5 text-xs rounded" style={{ background: ssc.bg, color: ssc.text }}>
-                                {sub.status}
-                              </span>
                             </div>
                           );
                         })}
                       </div>
-                    )}
-                  </div>
+                    </div>
 
-                  {/* Design discussion */}
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1"><MessageSquare size={14} /> Discussion</h4>
-                    {(selectedSharedDesign.comments || []).length === 0 && <p className="text-xs text-gray-400 mb-2">No comments yet.</p>}
-                    {(selectedSharedDesign.comments || []).map(c => (
-                      <div key={c.id} className="mb-2 p-2 bg-gray-50 rounded text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-gray-700">{c.author?.name || c.author?.email || 'Unknown'}</span>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-400">{new Date(c.createdAt).toLocaleString()}</span>
-                            {(c.author?.id === currentUserId || myRole === 'admin') && (
-                              <button onClick={(e) => { e.stopPropagation(); handleDeleteComment('design', null, c.id); }} className="text-red-400 hover:text-red-600" style={{ cursor: 'pointer' }}>
-                                <Trash2 size={12} />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        <p className="text-gray-600 mt-1">{c.content}</p>
+                    {/* Metrics Comparison Table */}
+                    <details open className="mb-3 border rounded-lg">
+                      <summary className="p-2 font-semibold text-gray-700" style={{ fontSize: '12px', cursor: 'pointer' }}>Metrics Comparison</summary>
+                      <div style={{ overflowX: 'auto', padding: '0 8px 8px' }}>
+                        <table className="w-full" style={{ fontSize: '10px', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr className="bg-gray-50 text-gray-400">
+                              <th className="text-left px-2 py-1 font-medium">Name</th>
+                              <th className="text-right px-2 py-1 font-medium">Avg R%</th>
+                              <th className="text-right px-2 py-1 font-medium">Avg T%</th>
+                              <th className="text-right px-2 py-1 font-medium">Thickness</th>
+                              <th className="text-right px-2 py-1 font-medium">Layers</th>
+                              <th className="text-center px-2 py-1 font-medium">Color</th>
+                              <th className="text-right px-2 py-1 font-medium">{'\u0394'}E vs Orig</th>
+                              <th className="text-right px-2 py-1 font-medium">Stress</th>
+                              <th className="text-center px-2 py-1 font-medium">Risk</th>
+                              <th className="text-center px-2 py-1 font-medium">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {allTraceIds.map(tid => {
+                              const td = traceDataMap[tid];
+                              if (!td) return null;
+                              const ci = td.colorInfo;
+                              const st = td.stress;
+                              const layers = resolveTraceLayers(tid);
+                              const totalThick = layers.reduce((sum, l) => sum + Number(l.thickness || 0), 0);
+                              const spectrum = td.spectrum || [];
+                              const visSpectrum = spectrum.filter(p => p.wavelength >= 380 && p.wavelength <= 780);
+                              const avgR = visSpectrum.length > 0 ? visSpectrum.reduce((s, p) => s + p.R, 0) / visSpectrum.length : 0;
+                              const avgT = visSpectrum.length > 0 ? visSpectrum.reduce((s, p) => s + (p.T || 0), 0) / visSpectrum.length : 0;
+                              // Delta E vs original
+                              let deltaE = null;
+                              if (tid !== 'original' && traceDataMap['original']?.colorInfo && ci) {
+                                const oc = traceDataMap['original'].colorInfo;
+                                const dL = parseFloat(oc.L) - parseFloat(ci.L);
+                                const da = parseFloat(oc.a_star) - parseFloat(ci.a_star);
+                                const db = parseFloat(oc.b_star) - parseFloat(ci.b_star);
+                                deltaE = Math.sqrt(dL * dL + da * da + db * db);
+                              }
+                              const sub = tid !== 'original' ? submissions.find(s => `sub_${s.id}` === tid) : null;
+                              const traceName = tid === 'original' ? 'Original' : (sub?.submitter?.name || sub?.submitter?.email || 'Submission');
+                              const traceStatus = tid === 'original' ? (selectedSharedDesign.status || 'draft') : (sub?.status || 'pending');
+                              const tsc = tid === 'original' ? (statusColors[traceStatus] || statusColors.draft) : (subStatusColors[traceStatus] || subStatusColors.pending);
+                              return (
+                                <tr key={tid} style={{ borderTop: '1px solid #f3f4f6', background: tid === teamActiveLayerView ? '#eef2ff' : undefined }}>
+                                  <td className="px-2 py-1 text-gray-700 font-medium">
+                                    <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: getTeamTraceColor(tid, submissions), marginRight: '5px', verticalAlign: 'middle' }} />
+                                    {traceName}
+                                  </td>
+                                  <td className="px-2 py-1 text-gray-700 text-right">{avgR.toFixed(1)}</td>
+                                  <td className="px-2 py-1 text-gray-700 text-right">{avgT.toFixed(1)}</td>
+                                  <td className="px-2 py-1 text-gray-700 text-right">{totalThick.toFixed(1)} nm</td>
+                                  <td className="px-2 py-1 text-gray-700 text-right">{layers.length}</td>
+                                  <td className="px-2 py-1 text-center">
+                                    <span style={{ display: 'inline-block', width: '14px', height: '14px', borderRadius: '3px', background: ci?.hex || ci?.rgb || '#ccc', border: '1px solid rgba(0,0,0,0.1)', verticalAlign: 'middle' }} />
+                                  </td>
+                                  <td className="px-2 py-1 text-gray-700 text-right">{deltaE != null ? deltaE.toFixed(2) : '—'}</td>
+                                  <td className="px-2 py-1 text-gray-700 text-right">{st?.totalStressMagnitude != null ? st.totalStressMagnitude.toFixed(1) : '—'} MPa</td>
+                                  <td className="px-2 py-1 text-center">
+                                    {st?.riskLevel && <span className="px-1.5 py-0.5 rounded text-xs" style={{ background: st.riskColor || '#f3f4f6', color: '#fff', fontSize: '9px' }}>{st.riskLevel}</span>}
+                                  </td>
+                                  <td className="px-2 py-1 text-center">
+                                    <span className="px-1.5 py-0.5 rounded text-xs" style={{ background: tsc.bg, color: tsc.text, fontSize: '9px' }}>{traceStatus.replace('_', ' ')}</span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
-                    ))}
-                    <div className="flex gap-2 mt-2">
-                      <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') handleAddComment('design', null); }}
-                        placeholder="Add a comment..." className="flex-1 px-3 py-1.5 border rounded text-sm" />
-                      <button onClick={() => handleAddComment('design', null)} className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700" style={{ cursor: 'pointer' }}>
-                        <Send size={14} />
-                      </button>
-                    </div>
+                    </details>
                   </div>
-                </div>
-              );
-            })()}
 
-            {/* ---- SUBMISSION DETAIL VIEW ---- */}
-            {!teamLoading && teamView === 'submission' && selectedSubmission && (() => {
-              const myRole = selectedTeamDetail?.myRole;
-              const subStatusColors = {
-                pending: { bg: '#fef3c7', text: '#92400e' },
-                approved: { bg: '#d1fae5', text: '#065f46' },
-                denied: { bg: '#fecaca', text: '#991b1b' },
-              };
-              const ssc = subStatusColors[selectedSubmission.status] || subStatusColors.pending;
-              const subLayers = selectedSubmission.data?.layers || [];
-              return (
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <h2 className="text-lg font-bold text-gray-800">Submission</h2>
-                      <span className="px-2 py-0.5 text-xs rounded" style={{ background: ssc.bg, color: ssc.text }}>
-                        {selectedSubmission.status}
-                      </span>
-                    </div>
-                    {myRole === 'admin' && selectedSubmission.status === 'pending' && (
+                  {/* RIGHT PANEL — Team Context */}
+                  <div style={{ flex: '0 0 30%', minWidth: '280px' }}>
+                    {/* Design Header */}
+                    <div className="p-3 border rounded-lg mb-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="font-semibold text-gray-800" style={{ fontSize: '13px' }}>{selectedSharedDesign.name}</span>
+                        {myRole === 'admin' ? (
+                          <select value={selectedSharedDesign.status || 'draft'} onChange={e => handleUpdateDesignStatus(selectedSharedDesign.id, e.target.value)}
+                            className="text-xs border rounded px-2 py-1" style={{ cursor: 'pointer', marginLeft: 'auto' }}>
+                            <option value="draft">Draft</option>
+                            <option value="in_review">In Review</option>
+                            <option value="approved">Approved</option>
+                            <option value="production">Production</option>
+                            <option value="archived">Archived</option>
+                          </select>
+                        ) : (
+                          <span className="px-2 py-0.5 text-xs rounded" style={{ background: sc.bg, color: sc.text, marginLeft: 'auto' }}>
+                            {(selectedSharedDesign.status || 'draft').replace('_', ' ')}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '10px' }} className="text-gray-500 mb-2">
+                        <div>Shared by: <span className="text-gray-700 font-medium">{selectedSharedDesign.owner?.email || 'Unknown'}</span></div>
+                        <div>Date: <span className="text-gray-700 font-medium">{new Date(selectedSharedDesign.createdAt).toLocaleDateString()}</span></div>
+                      </div>
                       <div className="flex gap-2">
-                        <button onClick={() => { setPendingSubmissionId(selectedSubmission.id); setShowApproveModal(true); }}
-                          className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1" style={{ cursor: 'pointer' }}>
-                          <Check size={14} /> Approve
+                        <button onClick={() => handleCloneDesign(selectedTeamId, selectedSharedDesign.id)}
+                          className="px-2 py-1 text-xs border rounded flex items-center gap-1" style={{ cursor: 'pointer' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'} onMouseLeave={e => e.currentTarget.style.background = ''}>
+                          <Copy size={12} /> Clone
                         </button>
-                        <button onClick={() => { setPendingSubmissionId(selectedSubmission.id); setShowDenyModal(true); }}
-                          className="px-3 py-1.5 text-sm bg-red-500 text-white rounded hover:bg-red-600 flex items-center gap-1" style={{ cursor: 'pointer' }}>
-                          <XCircle size={14} /> Deny
+                        <button onClick={() => { setShowSubmitChangesModal(true); }}
+                          className="px-2 py-1 text-xs bg-indigo-600 text-white rounded flex items-center gap-1" style={{ cursor: 'pointer' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#4338ca'} onMouseLeave={e => e.currentTarget.style.background = '#4f46e5'}>
+                          <Send size={12} /> Submit Changes
                         </button>
                       </div>
-                    )}
-                  </div>
-
-                  <div className="text-sm text-gray-600 mb-3">
-                    Submitted by <strong>{selectedSubmission.submitter?.name || selectedSubmission.submitter?.email || 'Unknown'}</strong> on {new Date(selectedSubmission.createdAt).toLocaleString()}
-                  </div>
-
-                  {/* Change notes */}
-                  <div className="mb-4 p-3 rounded-lg" style={{ background: '#eef2ff' }}>
-                    <h4 className="text-sm font-semibold text-indigo-700 mb-1">Change Notes</h4>
-                    <p className="text-sm text-gray-700">{selectedSubmission.notes}</p>
-                  </div>
-
-                  {/* Review note if denied */}
-                  {selectedSubmission.reviewNote && selectedSubmission.status === 'denied' && (
-                    <div className="mb-4 p-3 rounded-lg" style={{ background: '#fef2f2' }}>
-                      <h4 className="text-sm font-semibold text-red-700 mb-1">Review Note</h4>
-                      <p className="text-sm text-gray-700">{selectedSubmission.reviewNote}</p>
                     </div>
-                  )}
 
-                  {/* Review note if approved */}
-                  {selectedSubmission.reviewNote && selectedSubmission.status === 'approved' && (
-                    <div className="mb-4 p-3 rounded-lg" style={{ background: '#f0fdf4' }}>
-                      <h4 className="text-sm font-semibold text-green-700 mb-1">Review Note</h4>
-                      <p className="text-sm text-gray-700">{selectedSubmission.reviewNote}</p>
-                    </div>
-                  )}
-
-                  {/* Submitted layer stack */}
-                  <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-                    <h4 className="text-sm font-semibold text-gray-700 mb-2">Submitted Layer Stack ({subLayers.length} layers)</h4>
-                    <div className="grid gap-1" style={{ gridTemplateColumns: 'auto 1fr', fontSize: '12px' }}>
-                      {subLayers.map((l, i) => (
-                        <React.Fragment key={i}>
-                          <span className="text-gray-500 pr-2">{i + 1}.</span>
-                          <span className="text-gray-700">{l.material} — {Number(l.thickness).toFixed(1)} nm</span>
-                        </React.Fragment>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Submission comments */}
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1"><MessageSquare size={14} /> Review Comments</h4>
-                    {(selectedSubmission.comments || []).length === 0 && <p className="text-xs text-gray-400 mb-2">No comments yet.</p>}
-                    {(selectedSubmission.comments || []).map(c => (
-                      <div key={c.id} className="mb-2 p-2 bg-gray-50 rounded text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-gray-700">{c.author?.name || c.author?.email || 'Unknown'}</span>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-400">{new Date(c.createdAt).toLocaleString()}</span>
-                            {(c.author?.id === currentUserId || myRole === 'admin') && (
-                              <button onClick={(e) => { e.stopPropagation(); handleDeleteComment('submission', selectedSubmission.id, c.id); }} className="text-red-400 hover:text-red-600" style={{ cursor: 'pointer' }}>
-                                <Trash2 size={12} />
-                              </button>
-                            )}
+                    {/* Submission Traces */}
+                    <div className="p-3 border rounded-lg mb-3">
+                      <div className="font-semibold text-gray-700 mb-2" style={{ fontSize: '12px' }}>Traces</div>
+                      {/* Original */}
+                      <div className="flex items-center gap-2 p-2 rounded mb-1"
+                        style={{ cursor: 'pointer', border: teamActiveLayerView === 'original' ? '2px solid #818cf8' : '1px solid #e5e7eb', background: teamActiveLayerView === 'original' ? '#eef2ff' : '#fff' }}
+                        onClick={() => setTeamActiveLayerView('original')}>
+                        <button onClick={e => { e.stopPropagation(); setTeamVisibleTraces(prev => ({ ...prev, original: !prev.original })); setTeamTraceCache({}); }}
+                          style={{ cursor: 'pointer', color: teamVisibleTraces.original ? '#4f46e5' : '#d1d5db', flexShrink: 0 }}>
+                          {teamVisibleTraces.original ? <Eye size={14} /> : <EyeOff size={14} />}
+                        </button>
+                        <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: getTeamTraceColor('original', submissions), flexShrink: 0 }} />
+                        <span className="text-gray-700 font-medium" style={{ fontSize: '11px' }}>Original Design</span>
+                      </div>
+                      {/* Submissions */}
+                      {submissions.map(sub => {
+                        const tid = `sub_${sub.id}`;
+                        const ssc = subStatusColors[sub.status] || subStatusColors.pending;
+                        return (
+                          <div key={sub.id} className="flex items-center gap-2 p-2 rounded mb-1"
+                            style={{ cursor: 'pointer', border: teamActiveLayerView === tid ? '2px solid #818cf8' : '1px solid #e5e7eb', background: teamActiveLayerView === tid ? '#eef2ff' : '#fff' }}
+                            onClick={() => setTeamActiveLayerView(tid)}>
+                            <button onClick={e => { e.stopPropagation(); setTeamVisibleTraces(prev => ({ ...prev, [tid]: !prev[tid] })); setTeamTraceCache({}); }}
+                              style={{ cursor: 'pointer', color: teamVisibleTraces[tid] ? getTeamTraceColor(tid, submissions) : '#d1d5db', flexShrink: 0 }}>
+                              {teamVisibleTraces[tid] ? <Eye size={14} /> : <EyeOff size={14} />}
+                            </button>
+                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: getTeamTraceColor(tid, submissions), flexShrink: 0 }} />
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div className="text-gray-700" style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {sub.submitter?.name || sub.submitter?.email || 'Unknown'}
+                              </div>
+                              <div className="text-gray-400" style={{ fontSize: '9px' }}>{new Date(sub.createdAt).toLocaleDateString()}</div>
+                            </div>
+                            <span className="px-1.5 py-0.5 rounded text-xs" style={{ background: ssc.bg, color: ssc.text, fontSize: '9px', flexShrink: 0 }}>{sub.status}</span>
                           </div>
-                        </div>
-                        <p className="text-gray-600 mt-1">{c.content}</p>
+                        );
+                      })}
+                      {submissions.length === 0 && <div className="text-xs text-gray-400 mt-1">No submissions yet.</div>}
+                    </div>
+
+                    {/* Approval Timeline */}
+                    <details className="mb-3 border rounded-lg">
+                      <summary className="p-2 font-semibold text-gray-700" style={{ fontSize: '12px', cursor: 'pointer' }}>Approval Timeline</summary>
+                      <div style={{ padding: '0 8px 8px', maxHeight: '250px', overflowY: 'auto' }}>
+                        {[...submissions].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map(sub => {
+                          const ssc = subStatusColors[sub.status] || subStatusColors.pending;
+                          const td = traceDataMap[`sub_${sub.id}`];
+                          const ci = td?.colorInfo;
+                          const visSpectrum = (td?.spectrum || []).filter(p => p.wavelength >= 380 && p.wavelength <= 780);
+                          const avgR = visSpectrum.length > 0 ? (visSpectrum.reduce((s, p) => s + p.R, 0) / visSpectrum.length).toFixed(1) : '—';
+                          return (
+                            <div key={sub.id} className="mb-2 p-2 rounded" style={{ background: '#fafafa', fontSize: '10px' }}>
+                              <div className="flex items-center gap-2">
+                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: ssc.text, flexShrink: 0 }} />
+                                <span className="text-gray-700 font-medium">{sub.submitter?.name || sub.submitter?.email || '?'}</span>
+                                <span className="text-gray-400 ml-auto">{new Date(sub.createdAt).toLocaleDateString()}</span>
+                              </div>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="px-1.5 py-0.5 rounded" style={{ background: ssc.bg, color: ssc.text, fontSize: '9px' }}>{sub.status}</span>
+                                <span className="text-gray-500">Avg R: {avgR}%</span>
+                                {ci && <span style={{ display: 'inline-block', width: '10px', height: '10px', borderRadius: '2px', background: ci.hex || ci.rgb || '#ccc', border: '1px solid rgba(0,0,0,0.1)' }} />}
+                              </div>
+                              {sub.reviewNote && <div className="text-gray-500 mt-1" style={{ fontStyle: 'italic' }}>{sub.reviewNote}</div>}
+                              {sub.notes && <div className="text-gray-400 mt-0.5">{sub.notes}</div>}
+                            </div>
+                          );
+                        })}
+                        {submissions.length === 0 && <div className="text-xs text-gray-400 p-2">No submissions yet.</div>}
                       </div>
-                    ))}
-                    <div className="flex gap-2 mt-2">
-                      <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') handleAddComment('submission', selectedSubmission.id); }}
-                        placeholder="Add a review comment..." className="flex-1 px-3 py-1.5 border rounded text-sm" />
-                      <button onClick={() => handleAddComment('submission', selectedSubmission.id)} className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700" style={{ cursor: 'pointer' }}>
-                        <Send size={14} />
-                      </button>
+                    </details>
+
+                    {/* Layer Details for focused trace */}
+                    <details open className="mb-3 border rounded-lg">
+                      <summary className="p-2 font-semibold text-gray-700" style={{ fontSize: '12px', cursor: 'pointer' }}>
+                        Layer Details — {teamActiveLayerView === 'original' ? 'Original' : (submissions.find(s => `sub_${s.id}` === teamActiveLayerView)?.submitter?.email || 'Submission')}
+                      </summary>
+                      <div style={{ padding: '0 8px 8px', maxHeight: '350px', overflowY: 'auto' }}>
+                        {focusedLayers.length > 0 ? (
+                          <>
+                            <table className="w-full" style={{ fontSize: '10px', borderCollapse: 'collapse' }}>
+                              <thead>
+                                <tr className="bg-gray-50 text-gray-400">
+                                  <th className="text-left px-1 py-1 font-medium" style={{ width: '22px' }}>#</th>
+                                  <th className="text-left px-1 py-1 font-medium">Material</th>
+                                  <th className="text-right px-1 py-1 font-medium" style={{ width: '65px' }}>Thick.</th>
+                                  <th className="text-right px-1 py-1 font-medium" style={{ width: '45px' }}>Pack.</th>
+                                  <th className="text-center px-1 py-1 font-medium" style={{ width: '30px' }}>IAD</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {focusedLayers.map((l, li) => {
+                                  const stressLayer = focusedTraceData?.stress?.layers?.[li];
+                                  return (
+                                    <React.Fragment key={li}>
+                                      <tr style={{ borderTop: '1px solid #f3f4f6' }}>
+                                        <td className="px-1 py-0.5 text-gray-400">{li + 1}</td>
+                                        <td className="px-1 py-0.5 text-gray-700">
+                                          <span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '2px', background: getMatColor(l.material), marginRight: '4px', verticalAlign: 'middle', border: '1px solid rgba(0,0,0,0.1)' }} />
+                                          {l.material}
+                                        </td>
+                                        <td className="px-1 py-0.5 text-gray-700 text-right">{Number(l.thickness).toFixed(2)}</td>
+                                        <td className="px-1 py-0.5 text-gray-500 text-right">{l.packingDensity != null && l.packingDensity !== 1.0 ? l.packingDensity.toFixed(3) : '—'}</td>
+                                        <td className="px-1 py-0.5 text-center">{l.iad?.enabled ? <span style={{ color: '#16a34a', fontWeight: 600 }}>+</span> : <span className="text-gray-300">—</span>}</td>
+                                      </tr>
+                                      {stressLayer && (
+                                        <tr>
+                                          <td colSpan={5} className="px-1 pb-1" style={{ fontSize: '9px' }}>
+                                            <span className="text-gray-400">Stress: {stressLayer.intrinsicStress?.toFixed(0) || '—'} MPa | Force: {stressLayer.force?.toFixed(1) || '—'} MPa·nm</span>
+                                            {stressLayer.type && (
+                                              <span className="ml-1 px-1 py-0.5 rounded" style={{ fontSize: '8px', background: stressLayer.type === 'compressive' ? '#dbeafe' : '#fef3c7', color: stressLayer.type === 'compressive' ? '#1e40af' : '#92400e' }}>
+                                                {stressLayer.type}
+                                              </span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                            {/* Cumulative stress summary */}
+                            {focusedTraceData?.stress && (
+                              <div className="mt-2 p-2 rounded" style={{ background: '#f9fafb', fontSize: '10px' }}>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-gray-500">Total Stress:</span>
+                                  <span className="text-gray-700 font-medium">{focusedTraceData.stress.totalStressMagnitude?.toFixed(1) || '—'} MPa</span>
+                                </div>
+                                <div className="flex items-center justify-between mt-0.5">
+                                  <span className="text-gray-500">Physical Thickness:</span>
+                                  <span className="text-gray-700 font-medium">{focusedTraceData.stress.totalPhysicalThickness?.toFixed(1) || '—'} nm</span>
+                                </div>
+                                {focusedTraceData.stress.riskLevel && (
+                                  <div className="flex items-center justify-between mt-1">
+                                    <span className="text-gray-500">Risk:</span>
+                                    <span className="px-1.5 py-0.5 rounded text-xs" style={{ background: focusedTraceData.stress.riskColor || '#f3f4f6', color: '#fff', fontSize: '9px' }}>{focusedTraceData.stress.riskLevel}</span>
+                                  </div>
+                                )}
+                                {focusedTraceData.stress.recommendation && (
+                                  <div className="text-gray-400 mt-1" style={{ fontSize: '9px' }}>{focusedTraceData.stress.recommendation}</div>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="text-xs text-gray-400 p-2">No layer data available.</div>
+                        )}
+                      </div>
+                    </details>
+
+                    {/* Admin actions for pending submission */}
+                    {myRole === 'admin' && teamActiveLayerView !== 'original' && (() => {
+                      const sub = submissions.find(s => `sub_${s.id}` === teamActiveLayerView);
+                      if (!sub || sub.status !== 'pending') return null;
+                      return (
+                        <div className="p-3 border rounded-lg mb-3 flex gap-2">
+                          <button onClick={() => { setPendingSubmissionId(sub.id); setShowApproveModal(true); }}
+                            className="px-3 py-1.5 text-xs bg-green-600 text-white rounded flex items-center gap-1" style={{ cursor: 'pointer' }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#15803d'} onMouseLeave={e => e.currentTarget.style.background = '#16a34a'}>
+                            <Check size={12} /> Approve
+                          </button>
+                          <button onClick={() => { setPendingSubmissionId(sub.id); setShowDenyModal(true); }}
+                            className="px-3 py-1.5 text-xs bg-red-500 text-white rounded flex items-center gap-1" style={{ cursor: 'pointer' }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#b91c1c'} onMouseLeave={e => e.currentTarget.style.background = '#ef4444'}>
+                            <XCircle size={12} /> Deny
+                          </button>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Discussion */}
+                    <div className="p-3 border rounded-lg">
+                      <div className="font-semibold text-gray-700 mb-2 flex items-center gap-1" style={{ fontSize: '12px' }}><MessageSquare size={14} /> Discussion</div>
+                      {(selectedSharedDesign.comments || []).length === 0 && <p className="text-xs text-gray-400 mb-2">No comments yet.</p>}
+                      <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                        {(selectedSharedDesign.comments || []).map(c => (
+                          <div key={c.id} className="mb-2 p-2 bg-gray-50 rounded" style={{ fontSize: '11px' }}>
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-gray-700">{c.author?.name || c.author?.email || 'Unknown'}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-gray-400" style={{ fontSize: '9px' }}>{new Date(c.createdAt).toLocaleString()}</span>
+                                {(c.author?.id === currentUserId || myRole === 'admin') && (
+                                  <button onClick={(e) => { e.stopPropagation(); handleDeleteComment('design', null, c.id); }} style={{ cursor: 'pointer', color: '#f87171' }}
+                                    onMouseEnter={e => e.currentTarget.style.color = '#dc2626'} onMouseLeave={e => e.currentTarget.style.color = '#f87171'}>
+                                    <Trash2 size={11} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <p className="text-gray-600 mt-1">{c.content}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-2 mt-2">
+                        <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleAddComment('design', null); }}
+                          placeholder="Add a comment..." className="flex-1 px-2 py-1 border rounded text-sm" style={{ fontSize: '11px' }} />
+                        <button onClick={() => handleAddComment('design', null)} className="px-2 py-1 bg-indigo-600 text-white rounded" style={{ cursor: 'pointer' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#4338ca'} onMouseLeave={e => e.currentTarget.style.background = '#4f46e5'}>
+                          <Send size={12} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
               );
             })()}
+
           </div>
         )}
 
@@ -12244,6 +13136,340 @@ const ThinFilmDesigner = () => {
 
       {/* IAD Modal */}
       {showIADModal && <IADModal />}
+
+      {/* ========== COLOR COMPARISON MODAL ========== */}
+      {showColorCompareModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowColorCompareModal(false)}>
+          <div className="bg-white rounded-lg shadow-xl p-4 flex flex-col" style={{ width: '560px', maxWidth: '95vw', maxHeight: 'calc(100vh - 40px)' }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-3 flex-shrink-0">
+              <h2 className="text-base font-bold text-gray-800">
+                Color Comparison
+              </h2>
+              <button onClick={() => setShowColorCompareModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Stack Selection */}
+            <div className="mb-3 pb-3 border-b flex-shrink-0">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-gray-700">Select stacks to compare</div>
+                <div className="flex gap-2">
+                  <button onClick={() => setColorCompareSelected(Object.keys(stackColorData))} className="text-[10px] text-indigo-600 hover:text-indigo-800">Select All</button>
+                  <button onClick={() => setColorCompareSelected([])} className="text-[10px] text-gray-500 hover:text-gray-700">Clear</button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(stackColorData).map(([stackId, color]) => {
+                  const selected = colorCompareSelected.includes(stackId);
+                  return (
+                    <button
+                      key={stackId}
+                      onClick={() => setColorCompareSelected(prev => selected ? prev.filter(id => id !== stackId) : [...prev, stackId])}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${selected ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-gray-300 bg-white text-gray-500 hover:border-gray-400'}`}
+                    >
+                      <div className="w-4 h-4 rounded border flex-shrink-0" style={{ backgroundColor: color.rgb, borderColor: selected ? '#6366f1' : '#d1d5db' }}></div>
+                      <span className="truncate" style={{ maxWidth: '120px' }}>{color.stackName}</span>
+                    </button>
+                  );
+                })}
+                {experimentalColorData && (() => {
+                  const selected = colorCompareSelected.includes('experimental');
+                  return (
+                    <button
+                      onClick={() => setColorCompareSelected(prev => selected ? prev.filter(id => id !== 'experimental') : [...prev, 'experimental'])}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${selected ? 'border-red-500 bg-red-50 text-red-800' : 'border-gray-300 bg-white text-gray-500 hover:border-gray-400'}`}
+                    >
+                      <div className="w-4 h-4 rounded border-2 flex-shrink-0" style={{ backgroundColor: experimentalColorData.rgb, borderColor: selected ? '#ef4444' : '#d1d5db' }}></div>
+                      <span>Experimental</span>
+                    </button>
+                  );
+                })()}
+              </div>
+            </div>
+
+            <div className="overflow-y-auto flex-1 min-h-0 space-y-3">
+              {/* Selected Stack Colors */}
+              {colorCompareSelected.filter(id => id !== 'experimental').length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-gray-700 mb-2">Selected Colors</div>
+                  <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(colorCompareSelected.filter(id => id !== 'experimental').length + (colorCompareSelected.includes('experimental') ? 1 : 0), 4)}, 1fr)` }}>
+                    {colorCompareSelected.filter(id => id !== 'experimental').map(stackId => {
+                      const color = stackColorData[stackId];
+                      if (!color) return null;
+                      return (
+                        <div key={stackId} className="text-center">
+                          <div className="w-full h-12 rounded border-2 border-gray-300 shadow-sm mb-1" style={{ backgroundColor: color.rgb }} title={color.hex}></div>
+                          <div className="text-[10px] font-semibold text-gray-800 truncate">{color.stackName}</div>
+                          <div className="text-[9px] text-gray-500">{color.colorName}</div>
+                          <div className="text-[9px] text-gray-500">L*={color.L} C={color.C} h={color.h}°</div>
+                        </div>
+                      );
+                    })}
+                    {colorCompareSelected.includes('experimental') && experimentalColorData && (
+                      <div className="text-center">
+                        <div className="w-full h-12 rounded border-2 border-red-400 shadow-sm mb-1" style={{ backgroundColor: experimentalColorData.rgb }} title={experimentalColorData.hex}></div>
+                        <div className="text-[10px] font-semibold text-gray-800 truncate">Experimental</div>
+                        <div className="text-[9px] text-gray-500">{experimentalColorData.colorName}</div>
+                        <div className="text-[9px] text-gray-500">L*={experimentalColorData.L} C={experimentalColorData.C} h={experimentalColorData.h}°</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ΔE Pairwise Comparisons */}
+              {(() => {
+                const selectedStacks = colorCompareSelected.filter(id => id !== 'experimental');
+                const includeExp = colorCompareSelected.includes('experimental') && experimentalColorData;
+                const allItems = [
+                  ...selectedStacks.map(id => ({ id, data: stackColorData[id], label: stackColorData[id]?.stackName, type: 'stack' })),
+                  ...(includeExp ? [{ id: 'experimental', data: { L: experimentalColorData.L, a_star: experimentalColorData.a_star, b_star: experimentalColorData.b_star, rgb: experimentalColorData.rgb, stackColor: '#ef4444' }, label: 'Experimental', type: 'experimental' }] : []),
+                ].filter(item => item.data);
+
+                if (allItems.length < 2) return (
+                  <div className="text-center py-6 text-gray-400 text-sm">
+                    Select at least 2 stacks to compare
+                  </div>
+                );
+
+                const comparisons = [];
+                for (let i = 0; i < allItems.length; i++) {
+                  for (let j = i + 1; j < allItems.length; j++) {
+                    const c1 = allItems[i].data;
+                    const c2 = allItems[j].data;
+                    const dL = parseFloat(c1.L) - parseFloat(c2.L);
+                    const da = parseFloat(c1.a_star) - parseFloat(c2.a_star);
+                    const db = parseFloat(c1.b_star) - parseFloat(c2.b_star);
+                    const deltaE = Math.sqrt(dL * dL + da * da + db * db);
+                    comparisons.push({
+                      name1: allItems[i].label, name2: allItems[j].label,
+                      rgb1: c1.rgb, rgb2: c2.rgb,
+                      isExp: allItems[i].type === 'experimental' || allItems[j].type === 'experimental',
+                      deltaE, dL: dL.toFixed(2), da: da.toFixed(2), db: db.toFixed(2),
+                    });
+                  }
+                }
+                comparisons.sort((a, b) => a.deltaE - b.deltaE);
+
+                return (
+                  <div>
+                    <div className="text-xs font-semibold text-gray-700 mb-2">ΔE* Pairwise Comparisons ({comparisons.length})</div>
+                    <div className="space-y-2">
+                      {comparisons.map((comp, idx) => (
+                        <div key={idx} className={`p-2 rounded border ${comp.isExp ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-gray-50'}`}>
+                          <div className="flex items-center gap-2 mb-1">
+                            <div className="flex items-center gap-1 flex-1 min-w-0">
+                              <div className="w-6 h-6 rounded border border-gray-300 flex-shrink-0" style={{ backgroundColor: comp.rgb1 }}></div>
+                              <span className="text-xs font-medium text-gray-800 truncate">{comp.name1}</span>
+                            </div>
+                            <span className="text-xs text-gray-400 flex-shrink-0">vs</span>
+                            <div className="flex items-center gap-1 flex-1 min-w-0">
+                              <div className="w-6 h-6 rounded border border-gray-300 flex-shrink-0" style={{ backgroundColor: comp.rgb2 }}></div>
+                              <span className="text-xs font-medium text-gray-800 truncate">{comp.name2}</span>
+                            </div>
+                            <div className={`text-sm font-bold flex-shrink-0 ${comp.deltaE < 1 ? "text-green-600" : comp.deltaE < 2 ? "text-yellow-600" : comp.deltaE < 3 ? "text-orange-600" : "text-red-600"}`}>
+                              ΔE* = {comp.deltaE.toFixed(2)}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 text-[9px] text-gray-500">
+                            <span>ΔL*={comp.dL}</span>
+                            <span>Δa*={comp.da}</span>
+                            <span>Δb*={comp.db}</span>
+                            <span className="ml-auto font-medium" style={{ color: comp.deltaE < 1 ? '#16a34a' : comp.deltaE < 2 ? '#ca8a04' : comp.deltaE < 3 ? '#ea580c' : '#dc2626' }}>
+                              {comp.deltaE < 0.5 ? "Imperceptible" : comp.deltaE < 1 ? "Slight" : comp.deltaE < 2 ? "Noticeable" : comp.deltaE < 3 ? "Visible" : comp.deltaE < 5 ? "Significant" : "Large"}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ΔE Guide */}
+              <div className="bg-blue-50 rounded p-2 border border-blue-200">
+                <div className="text-xs font-semibold text-blue-800 mb-1">ΔE* Perception Guide</div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px] text-gray-700">
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span> &lt;0.5: Imperceptible</div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span> 0.5–1: Expert eye only</div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500 flex-shrink-0"></span> 1–2: Careful observation</div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 flex-shrink-0"></span> 2–3: Casual observation</div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0"></span> 3–5: Obviously different</div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-700 flex-shrink-0"></span> &gt;5: Very different</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end mt-3 pt-3 border-t flex-shrink-0">
+              <button onClick={() => setShowColorCompareModal(false)} className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-xs">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== TEAM COLOR COMPARISON MODAL ========== */}
+      {showTeamColorCompare && selectedSharedDesign && (() => {
+        const submissions = selectedSharedDesign.submissions || [];
+        const designData = selectedSharedDesign.data || {};
+        const allTraceIds = ['original', ...submissions.map(s => `sub_${s.id}`)];
+
+        // Build trace info for display
+        const traceInfoList = allTraceIds.map(tid => {
+          const traceData = getTeamTraceData(tid, designData, submissions, teamSelectedIlluminant);
+          let label = 'Original';
+          if (tid !== 'original') {
+            const sub = submissions.find(s => `sub_${s.id}` === tid);
+            label = sub ? (sub.submitter?.name || sub.submitter?.email || 'Submission') : tid;
+          }
+          return { id: tid, label, traceData, color: getTeamTraceColor(tid, submissions) };
+        }).filter(t => t.traceData && t.traceData.colorInfo);
+
+        const selectedTraces = traceInfoList.filter(t => teamColorCompareSelected.includes(t.id));
+
+        // Build pairwise comparisons
+        const comparisons = [];
+        for (let i = 0; i < selectedTraces.length; i++) {
+          for (let j = i + 1; j < selectedTraces.length; j++) {
+            const c1 = selectedTraces[i].traceData.colorInfo;
+            const c2 = selectedTraces[j].traceData.colorInfo;
+            const dL = parseFloat(c1.L) - parseFloat(c2.L);
+            const da = parseFloat(c1.a_star) - parseFloat(c2.a_star);
+            const db = parseFloat(c1.b_star) - parseFloat(c2.b_star);
+            const deltaE = Math.sqrt(dL * dL + da * da + db * db);
+            comparisons.push({
+              name1: selectedTraces[i].label, name2: selectedTraces[j].label,
+              rgb1: c1.hex || c1.rgb, rgb2: c2.hex || c2.rgb,
+              color1: selectedTraces[i].color, color2: selectedTraces[j].color,
+              deltaE, dL: dL.toFixed(2), da: da.toFixed(2), db: db.toFixed(2),
+            });
+          }
+        }
+        comparisons.sort((a, b) => a.deltaE - b.deltaE);
+
+        return (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowTeamColorCompare(false)}>
+            <div onClick={e => e.stopPropagation()} className="bg-white rounded-lg shadow-xl p-6 flex flex-col" style={{ maxWidth: '95vw', width: '700px', maxHeight: 'calc(100vh - 40px)' }}>
+              <div className="flex justify-between items-center mb-3 flex-shrink-0">
+                <h2 className="text-base font-bold text-gray-800">Team Color Comparison</h2>
+                <button onClick={() => setShowTeamColorCompare(false)} className="text-gray-500 hover:text-gray-700">
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Trace Selection */}
+              <div className="mb-3 pb-3 border-b flex-shrink-0">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-semibold text-gray-700">Select traces to compare</div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setTeamColorCompareSelected(traceInfoList.map(t => t.id))} className="text-xs text-indigo-600 hover:text-indigo-800" style={{ cursor: 'pointer', fontSize: '10px' }}>Select All</button>
+                    <button onClick={() => setTeamColorCompareSelected([])} className="text-xs text-gray-500 hover:text-gray-700" style={{ cursor: 'pointer', fontSize: '10px' }}>Clear</button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {traceInfoList.map(trace => {
+                    const selected = teamColorCompareSelected.includes(trace.id);
+                    return (
+                      <button
+                        key={trace.id}
+                        onClick={() => setTeamColorCompareSelected(prev => selected ? prev.filter(id => id !== trace.id) : [...prev, trace.id])}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs ${selected ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-gray-300 bg-white text-gray-500'}`}
+                        style={{ cursor: 'pointer', transition: 'all 0.15s' }}
+                      >
+                        <div style={{ width: '16px', height: '16px', borderRadius: '4px', backgroundColor: trace.traceData.colorInfo.hex || trace.traceData.colorInfo.rgb, border: `2px solid ${trace.color}`, flexShrink: 0 }}></div>
+                        <span className="truncate" style={{ maxWidth: '120px' }}>{trace.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ overflowY: 'auto', flex: '1 1 0', minHeight: 0 }}>
+                {/* Selected trace color details */}
+                {selectedTraces.length > 0 && (
+                  <div className="mb-3">
+                    <div className="text-xs font-semibold text-gray-700 mb-2">Selected Colors</div>
+                    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(selectedTraces.length, 4)}, 1fr)` }}>
+                      {selectedTraces.map(trace => {
+                        const ci = trace.traceData.colorInfo;
+                        return (
+                          <div key={trace.id} className="text-center">
+                            <div style={{ width: '100%', height: '48px', borderRadius: '6px', border: `3px solid ${trace.color}`, backgroundColor: ci.hex || ci.rgb, marginBottom: '4px' }} title={ci.hex}></div>
+                            <div style={{ fontSize: '10px', fontWeight: 600, color: '#1f2937' }} className="truncate">{trace.label}</div>
+                            <div style={{ fontSize: '9px', color: '#6b7280' }}>{ci.colorName}</div>
+                            <div style={{ fontSize: '9px', color: '#6b7280' }}>L*={parseFloat(ci.L).toFixed(1)} a*={parseFloat(ci.a_star).toFixed(1)} b*={parseFloat(ci.b_star).toFixed(1)}</div>
+                            <div style={{ fontSize: '9px', color: '#6b7280' }}>C={parseFloat(ci.C).toFixed(1)} h={parseFloat(ci.h).toFixed(1)}</div>
+                            <div style={{ fontSize: '9px', color: '#6b7280' }}>{ci.hex}</div>
+                            <div style={{ fontSize: '9px', color: '#6b7280' }}>{ci.dominantWavelength ? `${ci.dominantWavelength}nm` : ''}</div>
+                            <div style={{ fontSize: '9px', color: '#6b7280' }}>Avg R: {parseFloat(ci.avgReflectivity).toFixed(1)}%</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pairwise Delta E */}
+                {comparisons.length > 0 ? (
+                  <div className="mb-3">
+                    <div className="text-xs font-semibold text-gray-700 mb-2">Delta E* Pairwise Comparisons ({comparisons.length})</div>
+                    <div className="space-y-2">
+                      {comparisons.map((comp, idx) => (
+                        <div key={idx} className="p-2 rounded border border-gray-200 bg-gray-50">
+                          <div className="flex items-center gap-2 mb-1">
+                            <div className="flex items-center gap-1 flex-1 min-w-0">
+                              <div style={{ width: '24px', height: '24px', borderRadius: '4px', border: '1px solid #d1d5db', backgroundColor: comp.rgb1, flexShrink: 0 }}></div>
+                              <span className="text-xs font-medium text-gray-800 truncate">{comp.name1}</span>
+                            </div>
+                            <span className="text-xs text-gray-400" style={{ flexShrink: 0 }}>vs</span>
+                            <div className="flex items-center gap-1 flex-1 min-w-0">
+                              <div style={{ width: '24px', height: '24px', borderRadius: '4px', border: '1px solid #d1d5db', backgroundColor: comp.rgb2, flexShrink: 0 }}></div>
+                              <span className="text-xs font-medium text-gray-800 truncate">{comp.name2}</span>
+                            </div>
+                            <div className="text-sm font-bold" style={{ flexShrink: 0, color: comp.deltaE < 1 ? '#16a34a' : comp.deltaE < 2 ? '#ca8a04' : comp.deltaE < 3.5 ? '#ea580c' : '#dc2626' }}>
+                              Delta E* = {comp.deltaE.toFixed(2)}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3" style={{ fontSize: '9px', color: '#6b7280' }}>
+                            <span>dL*={comp.dL}</span>
+                            <span>da*={comp.da}</span>
+                            <span>db*={comp.db}</span>
+                            <span style={{ marginLeft: 'auto', fontWeight: 500, color: comp.deltaE < 1 ? '#16a34a' : comp.deltaE < 2 ? '#ca8a04' : comp.deltaE < 3.5 ? '#ea580c' : '#dc2626' }}>
+                              {comp.deltaE < 1 ? 'Imperceptible' : comp.deltaE < 2 ? 'Slight (trained observer)' : comp.deltaE < 3.5 ? 'Noticeable' : comp.deltaE < 5 ? 'Significant' : 'Obvious'}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : selectedTraces.length < 2 ? (
+                  <div className="text-center py-6 text-gray-400 text-sm">Select at least 2 traces to compare</div>
+                ) : null}
+
+                {/* Perception Guide */}
+                <div className="bg-blue-50 rounded p-2 border border-blue-200">
+                  <div className="text-xs font-semibold text-blue-800 mb-1">Delta E* Perception Guide</div>
+                  <div className="grid grid-cols-2 gap-x-4" style={{ fontSize: '10px', color: '#374151' }}>
+                    <div className="flex items-center gap-1"><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#22c55e', flexShrink: 0, display: 'inline-block' }}></span> &lt;1: Imperceptible</div>
+                    <div className="flex items-center gap-1"><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#eab308', flexShrink: 0, display: 'inline-block' }}></span> 1-2: Slight (trained observer)</div>
+                    <div className="flex items-center gap-1"><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#f97316', flexShrink: 0, display: 'inline-block' }}></span> 2-3.5: Noticeable</div>
+                    <div className="flex items-center gap-1"><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#ef4444', flexShrink: 0, display: 'inline-block' }}></span> 3.5-5: Significant</div>
+                    <div className="flex items-center gap-1"><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#b91c1c', flexShrink: 0, display: 'inline-block' }}></span> &gt;5: Obvious</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end mt-3 pt-3 border-t flex-shrink-0">
+                <button onClick={() => setShowTeamColorCompare(false)} className="px-4 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-xs" style={{ cursor: 'pointer' }}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ========== MATERIAL LIBRARY MODAL ========== */}
       {showMaterialLibrary && (
@@ -12811,7 +14037,7 @@ const ThinFilmDesigner = () => {
       {/* ========== SUBMIT CHANGES MODAL ========== */}
       {showSubmitChangesModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
+          <div className="bg-white rounded-lg shadow-xl p-6" style={{ width: '480px', maxWidth: '95vw', maxHeight: 'calc(100vh - 40px)', overflowY: 'auto' }}>
             <h3 className="text-lg font-bold text-gray-800 mb-4">Submit Changes for Review</h3>
             <label className="block text-sm text-gray-700 mb-1">Select your saved design:</label>
             <select
@@ -12829,11 +14055,92 @@ const ThinFilmDesigner = () => {
               value={submissionNotes}
               onChange={e => setSubmissionNotes(e.target.value)}
               placeholder="Describe what you changed and why..."
-              className="w-full px-3 py-2 border rounded mb-4 text-sm"
+              className="w-full px-3 py-2 border rounded mb-3 text-sm"
               rows={3}
             />
+
+            {/* Pre-Submission Comparison Preview */}
+            {selectedDesignForSubmission && (
+              <div className="mb-4 p-3 border rounded-lg" style={{ borderColor: '#c7d2fe', background: '#f5f3ff' }}>
+                <div className="text-xs font-semibold text-indigo-800 mb-2">Comparison Preview</div>
+                {submissionPreviewLoading && (
+                  <div className="text-xs text-gray-500 text-center py-3">Loading preview...</div>
+                )}
+                {!submissionPreviewLoading && submissionPreviewData && (() => {
+                  const { personal, original, deltaE } = submissionPreviewData;
+                  const pColor = personal.color;
+                  const oColor = original.color;
+                  return (
+                    <div>
+                      {/* Side-by-side color swatches */}
+                      <div className="flex gap-3 mb-3">
+                        <div className="flex-1 text-center">
+                          <div style={{ fontSize: '10px', fontWeight: 600, color: '#4b5563', marginBottom: '4px' }}>Original</div>
+                          <div style={{ width: '100%', height: '36px', borderRadius: '6px', border: '2px solid #d1d5db', backgroundColor: oColor?.hex || oColor?.rgb || '#ccc' }}></div>
+                          <div style={{ fontSize: '9px', color: '#6b7280', marginTop: '2px' }}>{oColor?.colorName || '—'}</div>
+                        </div>
+                        <div className="flex-1 text-center">
+                          <div style={{ fontSize: '10px', fontWeight: 600, color: '#4b5563', marginBottom: '4px' }}>Your Design</div>
+                          <div style={{ width: '100%', height: '36px', borderRadius: '6px', border: '2px solid #6366f1', backgroundColor: pColor?.hex || pColor?.rgb || '#ccc' }}></div>
+                          <div style={{ fontSize: '9px', color: '#6b7280', marginTop: '2px' }}>{pColor?.colorName || '—'}</div>
+                        </div>
+                      </div>
+
+                      {/* Delta E badge */}
+                      {deltaE != null && (
+                        <div className="text-center mb-3">
+                          <span className="inline-block px-3 py-1 rounded-full text-xs font-bold" style={{
+                            backgroundColor: deltaE < 1 ? '#d1fae5' : deltaE < 2 ? '#fef3c7' : deltaE < 3.5 ? '#ffedd5' : '#fecaca',
+                            color: deltaE < 1 ? '#065f46' : deltaE < 2 ? '#92400e' : deltaE < 3.5 ? '#9a3412' : '#991b1b',
+                          }}>
+                            Delta E* = {deltaE.toFixed(2)} — {deltaE < 1 ? 'Imperceptible' : deltaE < 2 ? 'Slight' : deltaE < 3.5 ? 'Noticeable' : deltaE < 5 ? 'Significant' : 'Obvious'}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Metrics comparison table */}
+                      <div style={{ fontSize: '11px' }}>
+                        <div className="grid grid-cols-3 gap-1 text-center" style={{ fontSize: '10px' }}>
+                          <div style={{ fontWeight: 600, color: '#6b7280' }}>Metric</div>
+                          <div style={{ fontWeight: 600, color: '#6b7280' }}>Original</div>
+                          <div style={{ fontWeight: 600, color: '#6366f1' }}>Yours</div>
+
+                          <div className="text-left text-gray-600">Avg R%</div>
+                          <div className="text-gray-800">{oColor?.avgReflectivity ? parseFloat(oColor.avgReflectivity).toFixed(1) + '%' : '—'}</div>
+                          <div className="text-gray-800">{pColor?.avgReflectivity ? parseFloat(pColor.avgReflectivity).toFixed(1) + '%' : '—'}</div>
+
+                          <div className="text-left text-gray-600">Layers</div>
+                          <div className="text-gray-800">{original.layerCount}</div>
+                          <div className="text-gray-800">{personal.layerCount}</div>
+
+                          <div className="text-left text-gray-600">Thickness</div>
+                          <div className="text-gray-800">{original.totalThickness.toFixed(1)} nm</div>
+                          <div className="text-gray-800">{personal.totalThickness.toFixed(1)} nm</div>
+
+                          <div className="text-left text-gray-600">Stress</div>
+                          <div className="text-gray-800">
+                            {original.stress ? (
+                              <span style={{ color: original.stress.riskColor }}>{original.stress.riskLevel}</span>
+                            ) : '—'}
+                          </div>
+                          <div className="text-gray-800">
+                            {personal.stress ? (
+                              <span style={{ color: personal.stress.riskColor }}>{personal.stress.riskLevel}</span>
+                            ) : '—'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+                {!submissionPreviewLoading && !submissionPreviewData && (
+                  <div className="text-xs text-gray-400 text-center py-2">Could not load preview</div>
+                )}
+              </div>
+            )}
+
             <div className="flex justify-end gap-2">
-              <button onClick={() => { setShowSubmitChangesModal(false); setSubmissionNotes(''); setSelectedDesignForSubmission(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => { setShowSubmitChangesModal(false); setSubmissionNotes(''); setSelectedDesignForSubmission(null); setSubmissionPreviewData(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
               <button onClick={handleSubmitChanges} disabled={!selectedDesignForSubmission || !submissionNotes.trim()}
                 className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50" style={{ cursor: 'pointer' }}>
                 Submit for Review
