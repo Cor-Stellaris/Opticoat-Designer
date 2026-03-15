@@ -20,6 +20,15 @@ model User {
   trackingRuns    TrackingRun[]
   machines        Machine[]
   apiKeys         ApiKey[]
+
+  teamsCreated       Team[]              @relation("TeamsCreated")
+  teamMemberships    TeamMember[]
+  teamInvitations    TeamInvitation[]    @relation("TeamInvitations")
+  sharedDesigns      SharedDesign[]      @relation("SharedDesignsOwned")
+  submissions        DesignSubmission[]  @relation("DesignSubmissions")
+  designComments     DesignComment[]     @relation("DesignComments")
+  submissionComments SubmissionComment[] @relation("SubmissionComments")
+  notifications      Notification[]
 }
 
 model Design {
@@ -30,6 +39,9 @@ model Design {
   data      Json     // Full layer stack + settings serialized
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  sharedDesigns     SharedDesign[]
+  designSubmissions DesignSubmission[]
 
   @@index([userId])
 }
@@ -87,4 +99,122 @@ model ApiKey {
 
   @@index([userId])
   @@index([keyHash])
+}
+
+model Team {
+  id            String           @id @default(cuid())
+  name          String
+  createdById   String
+  createdBy     User             @relation("TeamsCreated", fields: [createdById], references: [id])
+  members       TeamMember[]
+  sharedDesigns SharedDesign[]
+  invitations   TeamInvitation[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+}
+
+model TeamMember {
+  id       String   @id @default(cuid())
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     String   @default("member")
+  joinedAt DateTime @default(now())
+
+  @@unique([teamId, userId])
+  @@index([teamId])
+  @@index([userId])
+}
+
+model TeamInvitation {
+  id          String   @id @default(cuid())
+  teamId      String
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  email       String
+  invitedById String
+  invitedBy   User     @relation("TeamInvitations", fields: [invitedById], references: [id])
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+
+  @@unique([teamId, email])
+  @@index([email])
+}
+
+model SharedDesign {
+  id             String             @id @default(cuid())
+  teamId         String
+  team           Team               @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  ownerId        String
+  owner          User               @relation("SharedDesignsOwned", fields: [ownerId], references: [id])
+  sourceDesignId String?
+  sourceDesign   Design?            @relation(fields: [sourceDesignId], references: [id], onDelete: SetNull)
+  name           String
+  data           Json
+  status         String             @default("draft")
+  submissions    DesignSubmission[]
+  comments       DesignComment[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([teamId])
+  @@index([ownerId])
+}
+
+model DesignSubmission {
+  id             String              @id @default(cuid())
+  sharedDesignId String
+  sharedDesign   SharedDesign        @relation(fields: [sharedDesignId], references: [id], onDelete: Cascade)
+  submitterId    String
+  submitter      User                @relation("DesignSubmissions", fields: [submitterId], references: [id])
+  sourceDesignId String?
+  sourceDesign   Design?             @relation(fields: [sourceDesignId], references: [id], onDelete: SetNull)
+  data           Json
+  notes          String
+  status         String              @default("pending")
+  reviewNote     String?
+  comments       SubmissionComment[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([sharedDesignId])
+  @@index([sharedDesignId, status])
+  @@index([submitterId])
+}
+
+model DesignComment {
+  id             String       @id @default(cuid())
+  sharedDesignId String
+  sharedDesign   SharedDesign @relation(fields: [sharedDesignId], references: [id], onDelete: Cascade)
+  authorId       String
+  author         User         @relation("DesignComments", fields: [authorId], references: [id])
+  content        String
+  createdAt      DateTime     @default(now())
+
+  @@index([sharedDesignId])
+}
+
+model SubmissionComment {
+  id           String           @id @default(cuid())
+  submissionId String
+  submission   DesignSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  authorId     String
+  author       User             @relation("SubmissionComments", fields: [authorId], references: [id])
+  content      String
+  createdAt    DateTime         @default(now())
+
+  @@index([submissionId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  data      Json
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, read])
 }
