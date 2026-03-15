@@ -13324,9 +13324,20 @@ const ThinFilmDesigner = () => {
         const designData = selectedSharedDesign.data || {};
         const allTraceIds = ['original', ...submissions.map(s => `sub_${s.id}`)];
 
-        // Build trace info for display
+        // Build trace info — read from cache only, no setState during render
         const traceInfoList = allTraceIds.map(tid => {
-          const traceData = getTeamTraceData(tid, designData, submissions, teamSelectedIlluminant);
+          // Use cached data if available, otherwise compute without triggering setState
+          let traceData = teamTraceCache[tid];
+          if (!traceData) {
+            let rawData = tid === 'original' ? designData : submissions.find(s => `sub_${s.id}` === tid)?.data;
+            if (rawData) {
+              const customMats = rawData.customMaterials || {};
+              const spectrum = computeFullSpectrumFromData(rawData, customMats);
+              const colorInfo = computeColorInfoFromSpectrum(spectrum, teamSelectedIlluminant);
+              const stress = computeStressFromData(rawData, customMats);
+              traceData = { spectrum, colorInfo, stress, data: rawData };
+            }
+          }
           let label = 'Original';
           if (tid !== 'original') {
             const sub = submissions.find(s => `sub_${s.id}` === tid);

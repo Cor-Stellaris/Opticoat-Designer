@@ -35,22 +35,19 @@ Build uses **CRACO** (not plain react-scripts). Config in `craco.config.js`.
 - **Optimizer** (line ~4229): `optimizeDesign` — random search + 3-stage refinement, supports reflectivity targets, reverse engineering, and color target mode with angle constraints
 - **Drag & drop** (lines ~3596-3615): Container-level HTML5 drag/drop with snapshotted positions to avoid flickering
 
-## Critical: Tailwind CSS Limitation
+## Tailwind CSS: Dual Setup
 
-**The app uses a pre-built standalone Tailwind CSS file** (`public/tailwind-standalone.css`), linked in `public/index.html`. It is NOT JIT-compiled. The `tailwind-input.css` with `@tailwind` directives exists but is NEVER imported.
+The app has **two** Tailwind sources:
+1. **CRACO + PostCSS JIT** (`craco.config.js` → `tailwind.config.js`): Scans `src/**/*.{js,jsx,ts,tsx}` and generates classes at build time. Most standard Tailwind classes work fine (e.g., `border-indigo-500`, `bg-indigo-50`, `text-gray-700`).
+2. **Standalone fallback** (`public/tailwind-standalone.css`): Pre-built file linked in `index.html` for runtime/dev coverage.
 
-### Many Tailwind utility classes DO NOT EXIST in this file:
+### Classes that still need inline styles:
+Some classes are NOT generated even by JIT (typically cursor variants and fractional sizes):
 - `cursor-grab`, `cursor-grabbing`, `cursor-col-resize`, `cursor-row-resize`
-- `w-14`, `w-0.5`, `h-0.5`
-- `hover:text-indigo-500`, `hover:scale-125`
-- Most dynamic/uncommon utilities
+- `w-0.5`, `h-0.5`
 
-### Always use inline styles for these:
 ```jsx
-// WRONG — class doesn't exist in standalone CSS
-className="cursor-grab w-14"
-
-// CORRECT — use inline styles
+// Use inline styles for cursor and uncommon sizing
 style={{ cursor: 'grab', width: '3.5rem' }}
 ```
 
