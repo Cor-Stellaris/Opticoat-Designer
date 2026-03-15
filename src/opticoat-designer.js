@@ -13174,9 +13174,10 @@ const ThinFilmDesigner = () => {
                     <button
                       key={stackId}
                       onClick={() => setColorCompareSelected(prev => selected ? prev.filter(id => id !== stackId) : [...prev, stackId])}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${selected ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-gray-300 bg-white text-gray-500 hover:border-gray-400'}`}
+                      className="flex items-center gap-1.5 px-2 py-1 rounded text-xs"
+                      style={{ transition: 'all 0.15s', border: selected ? '2px solid #6366f1' : '1px solid #d1d5db', background: selected ? '#eef2ff' : '#fff', color: selected ? '#3730a3' : '#6b7280' }}
                     >
-                      <div className="w-4 h-4 rounded border flex-shrink-0" style={{ backgroundColor: color.rgb, borderColor: selected ? '#6366f1' : '#d1d5db' }}></div>
+                      <div className="rounded flex-shrink-0" style={{ width: '16px', height: '16px', backgroundColor: color.rgb, border: `2px solid ${selected ? '#6366f1' : '#d1d5db'}` }}></div>
                       <span className="truncate" style={{ maxWidth: '120px' }}>{color.stackName}</span>
                     </button>
                   );
@@ -13383,8 +13384,8 @@ const ThinFilmDesigner = () => {
                       <button
                         key={trace.id}
                         onClick={() => setTeamColorCompareSelected(prev => selected ? prev.filter(id => id !== trace.id) : [...prev, trace.id])}
-                        className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs ${selected ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-gray-300 bg-white text-gray-500'}`}
-                        style={{ cursor: 'pointer', transition: 'all 0.15s' }}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded text-xs"
+                        style={{ cursor: 'pointer', transition: 'all 0.15s', border: selected ? '2px solid #6366f1' : '1px solid #d1d5db', background: selected ? '#eef2ff' : '#fff', color: selected ? '#3730a3' : '#6b7280' }}
                       >
                         <div style={{ width: '16px', height: '16px', borderRadius: '4px', backgroundColor: trace.traceData.colorInfo.hex || trace.traceData.colorInfo.rgb, border: `2px solid ${trace.color}`, flexShrink: 0 }}></div>
                         <span className="truncate" style={{ maxWidth: '120px' }}>{trace.label}</span>
