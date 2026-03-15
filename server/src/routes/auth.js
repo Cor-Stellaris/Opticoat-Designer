@@ -35,6 +35,7 @@ router.get('/tier', ...requireUser, (req, res) => {
   const limits = TIER_LIMITS[tier] || TIER_LIMITS.free;
 
   res.json({
+    userId: req.user.id,
     tier,
     limits,
   });
