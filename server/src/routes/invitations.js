@@ -13,7 +13,7 @@ router.get('/', ...requireUser, async (req, res) => {
       });
     }
 
-    const invitations = await prisma.invitation.findMany({
+    const invitations = await prisma.teamInvitation.findMany({
       where: { email: req.user.email, status: 'pending' },
       include: {
         team: { select: { name: true } },
@@ -39,7 +39,7 @@ router.post('/:invitationId/accept', ...requireUser, async (req, res) => {
       });
     }
 
-    const invitation = await prisma.invitation.findFirst({
+    const invitation = await prisma.teamInvitation.findFirst({
       where: {
         id: req.params.invitationId,
         email: req.user.email,
@@ -55,7 +55,7 @@ router.post('/:invitationId/accept', ...requireUser, async (req, res) => {
     }
 
     await prisma.$transaction([
-      prisma.invitation.update({
+      prisma.teamInvitation.update({
         where: { id: invitation.id },
         data: { status: 'accepted' },
       }),
@@ -69,10 +69,11 @@ router.post('/:invitationId/accept', ...requireUser, async (req, res) => {
     ]);
 
     // Notify team admin
-    await createNotification(invitation.team.createdById, 'invitation_accepted', {
+    await createNotification(invitation.team.createdById, 'invite_accepted', {
       teamId: invitation.teamId,
       teamName: invitation.team.name,
-      acceptedBy: req.user.email,
+      memberName: req.user.email,
+      memberEmail: req.user.email,
     });
 
     res.json({ success: true });
@@ -85,7 +86,7 @@ router.post('/:invitationId/accept', ...requireUser, async (req, res) => {
 // POST /api/invitations/:invitationId/decline — Decline an invitation
 router.post('/:invitationId/decline', ...requireUser, async (req, res) => {
   try {
-    const invitation = await prisma.invitation.findFirst({
+    const invitation = await prisma.teamInvitation.findFirst({
       where: {
         id: req.params.invitationId,
         email: req.user.email,
@@ -97,7 +98,7 @@ router.post('/:invitationId/decline', ...requireUser, async (req, res) => {
       return res.status(404).json({ error: 'Invitation not found' });
     }
 
-    await prisma.invitation.update({
+    await prisma.teamInvitation.update({
       where: { id: invitation.id },
       data: { status: 'declined' },
     });

@@ -45,7 +45,7 @@ router.post('/', ...requireUser, async (req, res) => {
     // Verify the shared design exists in this team
     const sharedDesign = await prisma.sharedDesign.findFirst({
       where: { id: req.params.designId, teamId: req.params.teamId },
-      include: { team: { select: { createdById: true } } },
+      include: { team: { select: { createdById: true, name: true } } },
     });
 
     if (!sharedDesign) {
@@ -65,12 +65,12 @@ router.post('/', ...requireUser, async (req, res) => {
 
     // Notify team admin
     if (sharedDesign.team.createdById !== req.user.id) {
-      await createNotification(sharedDesign.team.createdById, 'submission_created', {
+      await createNotification(sharedDesign.team.createdById, 'submission_new', {
         teamId: req.params.teamId,
-        sharedDesignId: req.params.designId,
-        submissionId: submission.id,
+        teamName: sharedDesign.team.name,
         designName: sharedDesign.name,
-        submittedBy: req.user.email,
+        submitterName: req.user.email,
+        submissionId: submission.id,
       });
     }
 
@@ -149,15 +149,14 @@ router.post('/:subId/approve', ...requireUser, async (req, res) => {
     if (submission.submitterId !== req.user.id) {
       const sharedDesign = await prisma.sharedDesign.findUnique({
         where: { id: req.params.designId },
-        select: { name: true },
+        select: { name: true, team: { select: { name: true } } },
       });
 
       await createNotification(submission.submitterId, 'submission_approved', {
         teamId: req.params.teamId,
-        sharedDesignId: req.params.designId,
-        submissionId: submission.id,
+        teamName: sharedDesign?.team?.name || '',
         designName: sharedDesign?.name,
-        approvedBy: req.user.email,
+        reviewNote: reviewNote || '',
       });
     }
 
@@ -199,15 +198,13 @@ router.post('/:subId/deny', ...requireUser, async (req, res) => {
     if (submission.submitterId !== req.user.id) {
       const sharedDesign = await prisma.sharedDesign.findUnique({
         where: { id: req.params.designId },
-        select: { name: true },
+        select: { name: true, team: { select: { name: true } } },
       });
 
       await createNotification(submission.submitterId, 'submission_denied', {
         teamId: req.params.teamId,
-        sharedDesignId: req.params.designId,
-        submissionId: submission.id,
+        teamName: sharedDesign?.team?.name || '',
         designName: sharedDesign?.name,
-        deniedBy: req.user.email,
         reviewNote: reviewNote.trim(),
       });
     }
@@ -277,7 +274,7 @@ router.post('/:subId/comments', ...requireUser, async (req, res) => {
     // Notify submitter + team admin + prior commenters (excluding self)
     const sharedDesign = await prisma.sharedDesign.findFirst({
       where: { id: req.params.designId, teamId: req.params.teamId },
-      include: { team: { select: { createdById: true } } },
+      include: { team: { select: { createdById: true, name: true } } },
     });
 
     const priorComments = await prisma.submissionComment.findMany({
@@ -306,12 +303,11 @@ router.post('/:subId/comments', ...requireUser, async (req, res) => {
 
     await Promise.all(
       [...notifyUserIds].map(userId =>
-        createNotification(userId, 'submission_comment', {
+        createNotification(userId, 'comment_submission', {
           teamId: req.params.teamId,
-          sharedDesignId: req.params.designId,
-          submissionId: req.params.subId,
+          teamName: sharedDesign?.team?.name || '',
           designName: sharedDesign?.name,
-          commentBy: req.user.email,
+          authorName: req.user.email,
           commentPreview,
         })
       )

@@ -58,6 +58,11 @@ router.post('/', ...requireUser, async (req, res) => {
 // GET /api/teams — List teams user belongs to
 router.get('/', ...requireUser, async (req, res) => {
   try {
+    const limits = TIER_LIMITS[req.user.tier] || TIER_LIMITS.free;
+    if (!limits.teamCollaboration) {
+      return res.status(403).json({ error: 'Team collaboration requires Enterprise tier', currentTier: req.user.tier });
+    }
+
     const memberships = await prisma.teamMember.findMany({
       where: { userId: req.user.id },
       include: {
@@ -197,7 +202,7 @@ router.post('/:teamId/invite', ...requireUser, async (req, res) => {
     }
 
     // Check for pending invitation
-    const pendingInvite = await prisma.invitation.findFirst({
+    const pendingInvite = await prisma.teamInvitation.findFirst({
       where: { teamId: req.params.teamId, email: normalizedEmail, status: 'pending' },
     });
     if (pendingInvite) {
@@ -205,7 +210,7 @@ router.post('/:teamId/invite', ...requireUser, async (req, res) => {
     }
 
     // Upsert invitation (handles re-inviting after decline)
-    const invitation = await prisma.invitation.upsert({
+    const invitation = await prisma.teamInvitation.upsert({
       where: {
         teamId_email: { teamId: req.params.teamId, email: normalizedEmail },
       },
@@ -223,10 +228,10 @@ router.post('/:teamId/invite', ...requireUser, async (req, res) => {
 
     // If invitee has an account, create notification
     if (existingUser) {
-      await createNotification(existingUser.id, 'team_invitation', {
+      await createNotification(existingUser.id, 'team_invite', {
         teamId: req.params.teamId,
         teamName: team.name,
-        invitedBy: req.user.email,
+        inviterName: req.user.email,
         invitationId: invitation.id,
       });
     }

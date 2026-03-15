@@ -51,6 +51,7 @@ router.post('/', ...requireUser, async (req, res) => {
     });
 
     // Notify all other team members
+    const team = await prisma.team.findUnique({ where: { id: req.params.teamId }, select: { name: true } });
     const members = await prisma.teamMember.findMany({
       where: { teamId: req.params.teamId, userId: { not: req.user.id } },
       select: { userId: true },
@@ -60,9 +61,9 @@ router.post('/', ...requireUser, async (req, res) => {
       members.map(m =>
         createNotification(m.userId, 'design_shared', {
           teamId: req.params.teamId,
-          sharedDesignId: design.id,
+          teamName: team?.name,
           designName: name,
-          sharedBy: req.user.email,
+          ownerName: req.user.email,
         })
       )
     );
@@ -239,6 +240,7 @@ router.post('/:designId/comments', ...requireUser, async (req, res) => {
 
     const design = await prisma.sharedDesign.findFirst({
       where: { id: req.params.designId, teamId: req.params.teamId },
+      include: { team: { select: { name: true } } },
     });
 
     if (!design) {
@@ -277,11 +279,11 @@ router.post('/:designId/comments', ...requireUser, async (req, res) => {
 
     await Promise.all(
       [...notifyUserIds].map(userId =>
-        createNotification(userId, 'design_comment', {
+        createNotification(userId, 'comment_design', {
           teamId: req.params.teamId,
-          sharedDesignId: req.params.designId,
+          teamName: design.team.name,
           designName: design.name,
-          commentBy: req.user.email,
+          authorName: req.user.email,
           commentPreview,
         })
       )
