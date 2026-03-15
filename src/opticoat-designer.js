@@ -1283,8 +1283,32 @@ const ThinFilmDesigner = () => {
   }, [shareDesignName, layers, layerStacks, currentStackId, machines, currentMachineId, substrate, incident, wavelengthRange, recipes, targets, designPoints, designMaterials, designLayers, layerTemplate, displayMode, selectedIlluminant, customMaterials, selectedTeamId, loadTeamDetail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCloneDesign = useCallback(async (teamId, designId) => {
-    try { const clone = await apiPost(`/api/teams/${teamId}/designs/${designId}/clone`); showToast('Design cloned: ' + clone.name, 'success'); } catch (e) { showToast('Failed to clone: ' + e.message, 'error'); }
-  }, []);
+    try {
+      const clone = await apiPost(`/api/teams/${teamId}/designs/${designId}/clone`);
+      // Add cloned design's layers as a new stack in the current workspace
+      const cloneData = clone.data || {};
+      let clonedLayers = cloneData.layers || [];
+      if (cloneData.layerStacks && cloneData.currentStackId) {
+        const cloneStack = cloneData.layerStacks.find(s => s.id === cloneData.currentStackId);
+        if (cloneStack && cloneStack.layers && cloneStack.layers.length > 0) {
+          clonedLayers = cloneStack.layers;
+        }
+      }
+      if (clonedLayers.length > 0) {
+        const newId = Math.max(0, ...layerStacks.map(s => s.id)) + 1;
+        const newStack = {
+          id: newId,
+          machineId: currentMachineId,
+          name: clone.name || 'Cloned Design',
+          layers: clonedLayers.map((l, i) => ({ ...l, id: i + 1 })),
+          visible: true,
+          color: `hsl(${(newId * 60) % 360}, 70%, 50%)`,
+        };
+        setLayerStacks(prev => [...prev, newStack]);
+      }
+      showToast('Design cloned: ' + clone.name, 'success');
+    } catch (e) { showToast('Failed to clone: ' + e.message, 'error'); }
+  }, [layerStacks, currentMachineId]);
 
   const handleSubmitChanges = useCallback(async () => {
     if (!submissionNotes.trim() || !selectedDesignForSubmission) return;
