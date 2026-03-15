@@ -1285,7 +1285,6 @@ const ThinFilmDesigner = () => {
   const handleCloneDesign = useCallback(async (teamId, designId) => {
     try {
       const clone = await apiPost(`/api/teams/${teamId}/designs/${designId}/clone`);
-      // Add cloned design's layers as a new stack in the current workspace
       const cloneData = clone.data || {};
       let clonedLayers = cloneData.layers || [];
       if (cloneData.layerStacks && cloneData.currentStackId) {
@@ -1295,20 +1294,43 @@ const ThinFilmDesigner = () => {
         }
       }
       if (clonedLayers.length > 0) {
+        // Add source machine if it doesn't already exist
+        let targetMachineId = currentMachineId;
+        if (cloneData.machines?.length > 0) {
+          const sourceStack = cloneData.layerStacks?.find(s => s.id === cloneData.currentStackId) || cloneData.layerStacks?.[0];
+          const sourceMachineId = sourceStack?.machineId || cloneData.currentMachineId || cloneData.machines[0].id;
+          const sourceMachine = cloneData.machines.find(m => m.id === sourceMachineId) || cloneData.machines[0];
+          const existingMachine = machines.find(m => m.name === sourceMachine.name);
+          if (existingMachine) {
+            targetMachineId = existingMachine.id;
+          } else {
+            const newMachineId = Math.max(0, ...machines.map(m => m.id)) + 1;
+            targetMachineId = newMachineId;
+            setMachines(prev => [...prev, {
+              id: newMachineId,
+              name: sourceMachine.name,
+              toolingFactors: sourceMachine.toolingFactors || {},
+            }]);
+          }
+        }
         const newId = Math.max(0, ...layerStacks.map(s => s.id)) + 1;
         const newStack = {
           id: newId,
-          machineId: currentMachineId,
+          machineId: targetMachineId,
           name: clone.name || 'Cloned Design',
           layers: clonedLayers.map((l, i) => ({ ...l, id: i + 1 })),
           visible: true,
           color: `hsl(${(newId * 60) % 360}, 70%, 50%)`,
         };
         setLayerStacks(prev => [...prev, newStack]);
+        // Merge custom materials from cloned design
+        if (cloneData.customMaterials) {
+          setCustomMaterials(prev => ({ ...prev, ...cloneData.customMaterials }));
+        }
       }
       showToast('Design cloned: ' + clone.name, 'success');
     } catch (e) { showToast('Failed to clone: ' + e.message, 'error'); }
-  }, [layerStacks, currentMachineId]);
+  }, [layerStacks, currentMachineId, machines]);
 
   const handleSubmitChanges = useCallback(async () => {
     if (!submissionNotes.trim() || !selectedDesignForSubmission) return;
@@ -4684,10 +4706,32 @@ const ThinFilmDesigner = () => {
         ? d.layerStacks.find(s => s.id === d.currentStackId)?.layers || d.layerStacks[0].layers
         : [{ id: 1, material: "SiO2", thickness: 100, iad: null }]);
 
+      // Add source machine if it doesn't already exist
+      let targetMachineId = currentMachineId;
+      if (d.machines?.length > 0) {
+        // Find the machine that owned the loaded stack
+        const sourceStack = d.layerStacks?.find(s => s.id === d.currentStackId) || d.layerStacks?.[0];
+        const sourceMachineId = sourceStack?.machineId || d.currentMachineId || d.machines[0].id;
+        const sourceMachine = d.machines.find(m => m.id === sourceMachineId) || d.machines[0];
+        // Check if a machine with the same name already exists
+        const existingMachine = machines.find(m => m.name === sourceMachine.name);
+        if (existingMachine) {
+          targetMachineId = existingMachine.id;
+        } else {
+          const newMachineId = Math.max(0, ...machines.map(m => m.id)) + 1;
+          targetMachineId = newMachineId;
+          setMachines(prev => [...prev, {
+            id: newMachineId,
+            name: sourceMachine.name,
+            toolingFactors: sourceMachine.toolingFactors || {},
+          }]);
+        }
+      }
+
       const newStackId = Math.max(...layerStacks.map(s => s.id), 0) + 1;
       const newStack = {
         id: newStackId,
-        machineId: currentMachineId,
+        machineId: targetMachineId,
         name: designName,
         layers: loadedLayers,
         visible: true,
@@ -4713,14 +4757,6 @@ const ThinFilmDesigner = () => {
       if (d.wavelengthRange) setWavelengthRange(d.wavelengthRange);
       if (d.selectedIlluminant) setSelectedIlluminant(d.selectedIlluminant);
       if (d.targets) setTargets(d.targets);
-      if (d.machines?.length > 0) {
-        const sourceMachine = d.machines[0];
-        if (sourceMachine.toolingFactors) {
-          setMachines(prev => prev.map(m =>
-            m.id === currentMachineId ? { ...m, toolingFactors: { ...m.toolingFactors, ...sourceMachine.toolingFactors } } : m
-          ));
-        }
-      }
 
       // Release the guard after state updates flush
       Promise.resolve().then(() => { isUpdatingStackRef.current = false; });
