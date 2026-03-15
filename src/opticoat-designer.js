@@ -14133,10 +14133,15 @@ const ThinFilmDesigner = () => {
             <textarea
               value={submissionNotes}
               onChange={e => setSubmissionNotes(e.target.value)}
-              placeholder="Describe what you changed and why..."
+              placeholder="Describe what you changed and why... (required)"
               className="w-full px-3 py-2 border rounded mb-3 text-sm"
               rows={3}
             />
+            {(!selectedDesignForSubmission || !submissionNotes.trim()) && (
+              <div className="text-xs text-gray-400 mb-2" style={{ marginTop: '-8px' }}>
+                {!selectedDesignForSubmission ? 'Select a design above' : 'Enter change notes'} to enable submission
+              </div>
+            )}
 
             {/* Pre-Submission Comparison Preview */}
             {selectedDesignForSubmission && (
@@ -14221,7 +14226,12 @@ const ThinFilmDesigner = () => {
             <div className="flex justify-end gap-2">
               <button onClick={() => { setShowSubmitChangesModal(false); setSubmissionNotes(''); setSelectedDesignForSubmission(null); setSubmissionPreviewData(null); }} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" style={{ cursor: 'pointer' }}>Cancel</button>
               <button onClick={handleSubmitChanges} disabled={!selectedDesignForSubmission || !submissionNotes.trim()}
-                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50" style={{ cursor: 'pointer' }}>
+                className="px-4 py-2 text-sm text-white rounded"
+                style={{
+                  cursor: (!selectedDesignForSubmission || !submissionNotes.trim()) ? 'not-allowed' : 'pointer',
+                  opacity: (!selectedDesignForSubmission || !submissionNotes.trim()) ? 0.5 : 1,
+                  backgroundColor: (!selectedDesignForSubmission || !submissionNotes.trim()) ? '#6b7280' : '#4f46e5',
+                }}>
                 Submit for Review
               </button>
             </div>
