@@ -8209,6 +8209,28 @@ const ThinFilmDesigner = () => {
                   <p className="text-[10px] text-gray-500 mt-2">
                     CSV format: wavelength (nm), reflectivity (%)
                   </p>
+                  <div className="mt-2">
+                    <label className="text-xs text-gray-600">
+                      Match Tolerance (±%):
+                    </label>
+                    <input
+                      type="number"
+                      value={matchTolerance}
+                      onChange={(e) => setMatchTolerance(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                      onBlur={(e) => {
+                        if (e.target.value === "" || isNaN(parseFloat(e.target.value)) || parseFloat(e.target.value) < 0.1) {
+                          setMatchTolerance(1.0);
+                        }
+                      }}
+                      className="w-full px-2 py-1 border rounded text-sm mt-1"
+                      min="0.1"
+                      max="10"
+                      step="0.1"
+                    />
+                    <p className="text-[10px] text-gray-500 mt-1">
+                      Each CSV point must match within ±{matchTolerance}%
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
@@ -8543,45 +8565,59 @@ const ThinFilmDesigner = () => {
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-xs text-gray-600">
-                          Number of Layers:
+                          Layers (Min–Max):
                         </label>
-                        <input
-                          type="number"
-                          value={designLayers}
-
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? "" : parseInt(e.target.value) || 3;
-                            setDesignLayers(val);
-                            // Update layer template to match new layer count
-                            if (val !== "" && val > 0) {
-                              setLayerTemplate(prev => {
-                                const newTemplate = [...prev];
-                                while (newTemplate.length < val) {
-                                  // Alternate between SiO2 and ZrO2 by default
-                                  newTemplate.push({
-                                    material: newTemplate.length % 2 === 0 ? "SiO2" : "ZrO2",
-                                    minThickness: 20,
-                                    maxThickness: 200
-                                  });
-                                }
-                                return newTemplate.slice(0, val);
-                              });
-                            }
-                          }}
-                          onBlur={(e) => {
-                            if (e.target.value === "" || parseInt(e.target.value) < 1) {
-                              setDesignLayers(3);
-                              setLayerTemplate([
-                                { material: "SiO2", minThickness: 20, maxThickness: 200 },
-                                { material: "ZrO2", minThickness: 20, maxThickness: 200 },
-                                { material: "SiO2", minThickness: 20, maxThickness: 200 }
-                              ]);
-                            }
-                          }}
-                          className="w-full px-2 py-1 border rounded text-sm"
-                          min="1"
-                          max="20"
-                        />
+                        <div className="flex gap-1 items-center">
+                          <input
+                            type="number"
+                            value={minDesignLayers}
+                            onChange={(e) => {
+                              const val = e.target.value === "" ? "" : parseInt(e.target.value) || 1;
+                              setMinDesignLayers(val);
+                            }}
+                            onBlur={(e) => {
+                              let val = parseInt(e.target.value);
+                              if (isNaN(val) || val < 1) val = 1;
+                              if (val > maxDesignLayers) val = maxDesignLayers;
+                              setMinDesignLayers(val);
+                            }}
+                            className="w-full px-2 py-1 border rounded text-sm"
+                            min="1"
+                            max="20"
+                          />
+                          <span className="text-xs text-gray-400">–</span>
+                          <input
+                            type="number"
+                            value={maxDesignLayers}
+                            onChange={(e) => {
+                              const val = e.target.value === "" ? "" : parseInt(e.target.value) || 12;
+                              setMaxDesignLayers(val);
+                              // Update layer template to match max layer count
+                              if (val !== "" && val > 0) {
+                                setLayerTemplate(prev => {
+                                  const newTemplate = [...prev];
+                                  while (newTemplate.length < val) {
+                                    newTemplate.push({
+                                      material: newTemplate.length % 2 === 0 ? "SiO2" : "ZrO2",
+                                      minThickness: 20,
+                                      maxThickness: 200
+                                    });
+                                  }
+                                  return newTemplate.slice(0, val);
+                                });
+                              }
+                            }}
+                            onBlur={(e) => {
+                              let val = parseInt(e.target.value);
+                              if (isNaN(val) || val < 1) val = 3;
+                              if (val < minDesignLayers) val = minDesignLayers;
+                              setMaxDesignLayers(val);
+                            }}
+                            className="w-full px-2 py-1 border rounded text-sm"
+                            min="1"
+                            max="20"
+                          />
+                        </div>
                       </div>
                       <div>
                         <label className="text-xs text-gray-600">
@@ -8734,9 +8770,26 @@ const ThinFilmDesigner = () => {
                         </div>
                       ) : (
                         <div>
-                          <label className="text-xs text-gray-600">
-                            Materials to Use (will alternate automatically):
-                          </label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs text-gray-600">
+                              Available Materials:
+                            </label>
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => setDesignMaterials(Object.keys(allMaterials))}
+                                className="text-[10px] text-indigo-600 hover:text-indigo-800 underline"
+                              >
+                                Select All
+                              </button>
+                              <span className="text-[10px] text-gray-300">|</span>
+                              <button
+                                onClick={() => setDesignMaterials([])}
+                                className="text-[10px] text-red-500 hover:text-red-700 underline"
+                              >
+                                Deselect All
+                              </button>
+                            </div>
+                          </div>
                           <div className="grid grid-cols-3 gap-1 mt-1">
                             {Object.keys(allMaterials)
                               .map((mat) => (
@@ -8770,46 +8823,6 @@ const ThinFilmDesigner = () => {
                           >
                             Manage Materials...
                           </button>
-                        </div>
-                      )}
-                    </div>
-                    <div className="pt-2 border-t">
-                      <label className="flex items-center gap-2 text-xs font-medium mb-2">
-                        <input
-                          type="checkbox"
-                          checked={minimizePeaks}
-                          onChange={(e) => setMinimizePeaks(e.target.checked)}
-                          className="cursor-pointer"
-                        />
-                        Minimize Reflectivity Peaks
-                      </label>
-                      {minimizePeaks && (
-                        <div className="ml-5">
-                          <label className="text-xs text-gray-600">
-                            Smoothness Weight (0-1):
-                          </label>
-                          <input
-                            type="number"
-                            value={smoothnessWeight}
-                            onChange={(e) =>
-                              setSmoothnessWeight(
-                                e.target.value === "" ? "" : safeParseFloat(e.target.value)
-                              )
-                            }
-                            onBlur={(e) => {
-                              if (e.target.value === "") {
-                                setSmoothnessWeight(0);
-                              }
-                            }}
-                            className="w-full px-2 py-1 border rounded text-sm"
-                            min="0"
-                            max="1"
-                            step="0.1"
-                          />
-                          <p className="text-[10px] text-gray-500 mt-1">
-                            Higher values prioritize smoother curves over target
-                            accuracy
-                          </p>
                         </div>
                       )}
                     </div>
@@ -9183,9 +9196,9 @@ const ThinFilmDesigner = () => {
                   onClick={optimizeDesign}
                   disabled={
                     optimizing ||
-                    (!reverseEngineerMode && designPoints.length === 0) ||
+                    (!reverseEngineerMode && !colorTargetMode && designPoints.length === 0) ||
                     (reverseEngineerMode && !reverseEngineerData) ||
-                    designMaterials.length === 0
+                    (!useLayerTemplate && designMaterials.length === 0)
                   }
                   className="mt-3 w-full py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2 flex-shrink-0"
                 >
@@ -9256,8 +9269,17 @@ const ThinFilmDesigner = () => {
                             {solution.error < 3 ? "✓ " : ""}
                             {colorTargetMode 
                               ? `ΔE* ${solution.error.toFixed(2)}` 
-                              : `${solution.error.toFixed(2)}% error`}
+                              : `${solution.error.toFixed(2)}% error${solution.maxDeviation !== undefined ? ` (max: ${solution.maxDeviation.toFixed(1)}%)` : ''}`}
                           </span>
+                          {!colorTargetMode && !reverseEngineerMode && solution.targetResults && (
+                            <div className="flex gap-1 mt-1 flex-wrap">
+                              {solution.targetResults.map((tr, ti) => (
+                                <span key={ti} className={`text-[10px] px-1 rounded ${tr.pass ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                  {tr.pass ? '✓' : '✗'} T{ti + 1}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
                         {/* Color Swatch for Color Target Mode */}
