@@ -426,7 +426,8 @@ const ThinFilmDesigner = () => {
   const [optimizationProgress, setOptimizationProgress] = useState(0);
   const [optimizationStage, setOptimizationStage] = useState("");
   const [solutions, setSolutions] = useState([]);
-  const [designLayers, setDesignLayers] = useState(5);
+  const [minDesignLayers, setMinDesignLayers] = useState(3);
+  const [maxDesignLayers, setMaxDesignLayers] = useState(12);
   const [designMaterials, setDesignMaterials] = useState(["SiO2", "ZrO2"]);
   const [useLayerTemplate, setUseLayerTemplate] = useState(false);
   const [layerTemplate, setLayerTemplate] = useState([
@@ -438,8 +439,6 @@ const ThinFilmDesigner = () => {
   ]);
   const [targetModeIterations, setTargetModeIterations] = useState(75000);
   const [reverseEngineerIterations, setReverseEngineerIterations] = useState(200000);
-  const [minimizePeaks, setMinimizePeaks] = useState(false);
-  const [smoothnessWeight, setSmoothnessWeight] = useState(0.5);
   const [reverseEngineerData, setReverseEngineerData] = useState(null);
   const [reverseEngineerMode, setReverseEngineerMode] = useState(false);
   const [colorTargetMode, setColorTargetMode] = useState(false);
@@ -456,6 +455,7 @@ const ThinFilmDesigner = () => {
   const [adhesionMaterial, setAdhesionMaterial] = useState("SiO2");
   const [adhesionThickness, setAdhesionThickness] = useState(10);
   const [maxErrorThreshold, setMaxErrorThreshold] = useState(5.0);
+  const [matchTolerance, setMatchTolerance] = useState(1.0);
 
   // Recipe Tracking State
   const [trackingRuns, setTrackingRuns] = useState([]);
@@ -3715,7 +3715,14 @@ const ThinFilmDesigner = () => {
           if (session.trackingRuns) setTrackingRuns(session.trackingRuns);
           if (session.designPoints) setDesignPoints(session.designPoints);
           if (session.designMaterials) setDesignMaterials(session.designMaterials);
-          if (session.designLayers) setDesignLayers(session.designLayers);
+          if (session.minDesignLayers) setMinDesignLayers(session.minDesignLayers);
+          if (session.maxDesignLayers) setMaxDesignLayers(session.maxDesignLayers);
+          if (session.designLayers && !session.minDesignLayers) {
+            // Backward compatibility: old sessions had single designLayers
+            setMinDesignLayers(Math.max(1, session.designLayers - 2));
+            setMaxDesignLayers(session.designLayers + 4);
+          }
+          if (session.matchTolerance !== undefined) setMatchTolerance(session.matchTolerance);
           if (session.layerTemplate) setLayerTemplate(session.layerTemplate);
           if (session.layoutMode) setLayoutMode(session.layoutMode);
           if (session.displayMode) setDisplayMode(session.displayMode);
@@ -3766,7 +3773,9 @@ const ThinFilmDesigner = () => {
         trackingRuns,
         designPoints,
         designMaterials,
-        designLayers,
+        minDesignLayers,
+        maxDesignLayers,
+        matchTolerance,
         layerTemplate,
         layoutMode,
         displayMode,
@@ -3782,7 +3791,7 @@ const ThinFilmDesigner = () => {
     };
   }, [offlineReady, layers, layerStacks, currentStackId, machines, currentMachineId,
       substrate, incident, wavelengthRange, recipes, targets, trackingRuns,
-      designPoints, designMaterials, designLayers, layerTemplate, layoutMode,
+      designPoints, designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate, layoutMode,
       displayMode, selectedIlluminant, customMaterials]);
 
   // ============ Save/Load Designs ============
@@ -3811,7 +3820,7 @@ const ThinFilmDesigner = () => {
     const designData = {
       layers, layerStacks, currentStackId, machines, currentMachineId,
       substrate, incident, wavelengthRange, recipes, targets, trackingRuns,
-      designPoints, designMaterials, designLayers, layerTemplate,
+      designPoints, designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate,
       displayMode, selectedIlluminant, customMaterials,
     };
     try {
@@ -3835,7 +3844,7 @@ const ThinFilmDesigner = () => {
     }
   }, [isSignedIn, layers, layerStacks, currentStackId, machines, currentMachineId,
       substrate, incident, wavelengthRange, recipes, targets, designPoints,
-      designMaterials, designLayers, layerTemplate, displayMode, selectedIlluminant,
+      designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate, displayMode, selectedIlluminant,
       customMaterials, loadDesignsList, checkLimit, savedDesigns, trackingRuns]);
 
   const handleLoadDesign = useCallback(async (design) => {
