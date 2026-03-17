@@ -5371,651 +5371,333 @@ const ThinFilmDesigner = () => {
     return { score, error, maxDeviation, violation, perTarget };
   };
 
+
   const optimizeDesign = async () => {
     // Validation
     if (!reverseEngineerMode && !colorTargetMode && designPoints.length === 0) {
       showToast("Please add at least one target point, upload a CSV file for reverse engineering, or use Color Target Mode", 'error');
       return;
     }
-
     if (reverseEngineerMode && !reverseEngineerData) {
       showToast("Please upload a CSV file for reverse engineering", 'error');
       return;
     }
-
     if (colorTargetMode && targetColorL === 0 && targetColorA === 0 && targetColorB === 0) {
-      // Allow all zeros but warn user
-      if (!window.confirm("Target color is set to L*=0, a*=0, b*=0 (pure black). Continue anyway?")) {
-        return;
-      }
+      if (!window.confirm("Target color is set to L*=0, a*=0, b*=0 (pure black). Continue anyway?")) return;
+    }
+    if (!useLayerTemplate && designMaterials.length === 0) {
+      showToast("Please select at least one material", 'error');
+      return;
     }
 
     setOptimizing(true);
     setSolutions([]);
     setOptimizationProgress(0);
-    setOptimizationStage("Initializing...");
+    setOptimizationStage("Phase 1: Generating candidates...");
 
-    // Separate materials by refractive index (low vs high)
-    const lowIndexMaterials = [];
-    const highIndexMaterials = [];
-    const threshold = 1.8; // Approximate threshold between low and high index
-
-    designMaterials.forEach((mat) => {
-      const n = getRefractiveIndex(mat, 550);
-      if (n < threshold) {
-        lowIndexMaterials.push(mat);
-      } else {
-        highIndexMaterials.push(mat);
-      }
-    });
-
-    // Ensure we have both types (only needed when not using template)
-    if (!useLayerTemplate && (lowIndexMaterials.length === 0 || highIndexMaterials.length === 0)) {
-      showToast("Please select both low-index (n<1.8) and high-index (n>1.8) materials for alternating structure", 'error');
-      setOptimizing(false);
-      return;
-    }
-
-    // DRAMATICALLY increased iterations for <3% error target
-    // This will take longer but produce much better results
     const numIterations = reverseEngineerMode ? reverseEngineerIterations : targetModeIterations;
-    const foundSolutions = [];
+    const minLayers = useLayerTemplate ? layerTemplate.length : (typeof minDesignLayers === 'number' ? minDesignLayers : 3);
+    const maxLayers = useLayerTemplate ? layerTemplate.length : (typeof maxDesignLayers === 'number' ? maxDesignLayers : 12);
+    const allMats = Object.keys(allMaterials);
+    const paletteMats = useLayerTemplate ? allMats : designMaterials;
 
-    // Track best solution for refinement
-    let bestSolution = null;
-
-    setOptimizationStage("Phase 1: Extensive Random Search");
+    // ===== PHASE 1: Seed Generation =====
+    const seeds = [];
+    let validSeedCount = 0;
 
     for (let iter = 0; iter < numIterations; iter++) {
-      // Update progress every 200 iterations
-      if (iter % 200 === 0) {
-        setOptimizationProgress((iter / numIterations) * 30); // First 30% for random search
-        await new Promise((resolve) => setTimeout(resolve, 0)); // Allow UI update
+      if (iter % 500 === 0) {
+        setOptimizationProgress((iter / numIterations) * 25);
+        setOptimizationStage(`Phase 1: Generating candidates... ${validSeedCount} valid seeds found`);
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
 
-      // Generate layer stack
       const testLayers = [];
-
       if (useLayerTemplate) {
-        // Use exact layer structure from template with per-layer thickness ranges
-        for (let i = 0; i < designLayers; i++) {
-          const layerConfig = layerTemplate[i] || { material: "SiO2", minThickness: 20, maxThickness: 200 };
-          const material = layerConfig.material;
-          const minT = layerConfig.minThickness || 20;
-          const maxT = layerConfig.maxThickness || 200;
-          const thickness = minT + Math.random() * (maxT - minT);
-          testLayers.push({ id: i, material, thickness });
+        for (let i = 0; i < layerTemplate.length; i++) {
+          const lc = layerTemplate[i] || { material: "SiO2", minThickness: 20, maxThickness: 200 };
+          const minT = lc.minThickness || 20;
+          const maxT = lc.maxThickness || 200;
+          testLayers.push({ id: i, material: lc.material, thickness: minT + Math.random() * (maxT - minT) });
         }
       } else {
-        // Random layer stack with alternating low/high index
-        // Randomly start with either low or high index
-        let useLowIndex = Math.random() < 0.5;
-
-        for (let i = 0; i < designLayers; i++) {
-          let material;
-          if (useLowIndex) {
-            material =
-              lowIndexMaterials[
-                Math.floor(Math.random() * lowIndexMaterials.length)
-              ];
-          } else {
-            material =
-              highIndexMaterials[
-                Math.floor(Math.random() * highIndexMaterials.length)
-              ];
-          }
-
-          // Wider thickness range for better exploration
-          const thickness = reverseEngineerMode
-            ? 30 + Math.random() * 150
-            : 25 + Math.random() * 125;
+        const numLayersForSeed = minLayers + Math.floor(Math.random() * (maxLayers - minLayers + 1));
+        for (let i = 0; i < numLayersForSeed; i++) {
+          const material = paletteMats[Math.floor(Math.random() * paletteMats.length)];
+          const thickness = 10 + Math.random() * 250;
           testLayers.push({ id: i, material, thickness });
-
-          // Alternate for next layer
-          useLowIndex = !useLowIndex;
         }
       }
 
-      // Calculate error
-      let error = 0;
-      let errorCount = 0;
+      const result = calculateCombinedScore(testLayers);
+      if (result.violation === 0) validSeedCount++;
 
-      if (colorTargetMode) {
-            // Color target mode: minimize ΔE* from target color
-            const colorResult = calculateStackColorDeltaE(
-              testLayers,
-              currentStackId,
-              targetColorL,
-              targetColorA,
-              targetColorB
-            );
-            error = colorResult.deltaE;
+      seeds.push({
+        layers: testLayers,
+        score: result.score,
+        error: result.error,
+        maxDeviation: result.maxDeviation,
+        violation: result.violation,
+        perTarget: result.perTarget,
+      });
+    }
 
-            // Angle color constraints
-            if (angleColorConstraints.length > 0) {
-              let angleError = 0;
-              const normalColor = colorResult;
+    // Sort seeds: compliant first (violation=0), then by score
+    seeds.sort((a, b) => {
+      if (a.violation === 0 && b.violation !== 0) return -1;
+      if (a.violation !== 0 && b.violation === 0) return 1;
+      return a.score - b.score;
+    });
+    const topSeeds = seeds.slice(0, 20);
 
-              angleColorConstraints.forEach(constraint => {
-                if (constraint.mode === 'maxShift') {
-                  const angleColor = calculateStackColorDeltaE(
-                    testLayers, currentStackId, normalColor.L, normalColor.a, normalColor.b, constraint.angle
-                  );
-                  if (angleColor.deltaE > constraint.maxDeltaE) {
-                    angleError += Math.pow(angleColor.deltaE - constraint.maxDeltaE, 2);
-                  }
-                } else if (constraint.mode === 'target') {
-                  const angleColor = calculateStackColorDeltaE(
-                    testLayers, currentStackId, constraint.targetL, constraint.targetA, constraint.targetB, constraint.angle
-                  );
-                  angleError += Math.pow(angleColor.deltaE, 2);
+    // ===== PHASE 2: Needle Refinement =====
+    setOptimizationStage("Phase 2: Refining solutions...");
+    setOptimizationProgress(25);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const refinementPasses = [
+      { stepSizes: [20, 10], maxSweeps: 15 },   // Coarse
+      { stepSizes: [5, 2], maxSweeps: 15 },      // Medium
+      { stepSizes: [1, 0.5], maxSweeps: 20 },    // Fine
+    ];
+
+    const refinedSolutions = [];
+
+    for (let seedIdx = 0; seedIdx < topSeeds.length; seedIdx++) {
+      setOptimizationProgress(25 + (seedIdx / topSeeds.length) * 50);
+      setOptimizationStage(`Phase 2: Refining solution ${seedIdx + 1} of ${topSeeds.length} — best error: ${topSeeds[0].error.toFixed(2)}%`);
+      if (seedIdx % 2 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+
+      let currentLayers = JSON.parse(JSON.stringify(topSeeds[seedIdx].layers));
+      let currentResult = calculateCombinedScore(currentLayers);
+
+      for (const pass of refinementPasses) {
+        for (let sweep = 0; sweep < pass.maxSweeps; sweep++) {
+          const prevScore = currentResult.score;
+
+          for (let layerIdx = 0; layerIdx < currentLayers.length; layerIdx++) {
+            const originalThickness = currentLayers[layerIdx].thickness;
+            let bestScore = currentResult.score;
+            let bestThickness = originalThickness;
+
+            for (const step of pass.stepSizes) {
+              for (const sign of [1, -1]) {
+                const newThickness = originalThickness + sign * step;
+                if (newThickness < 5) continue; // Min thickness guard
+
+                // Respect template bounds if using template
+                if (useLayerTemplate && layerTemplate[layerIdx]) {
+                  const minT = layerTemplate[layerIdx].minThickness || 5;
+                  const maxT = layerTemplate[layerIdx].maxThickness || 500;
+                  if (newThickness < minT || newThickness > maxT) continue;
                 }
-              });
 
-              if (angleError > 0) {
-                const avgAngleError = Math.sqrt(angleError / angleColorConstraints.length);
-                const avgWeight = angleColorConstraints.reduce((sum, c) => sum + c.weight, 0) / angleColorConstraints.length / 100;
-                error += avgAngleError * avgWeight * 10;
-              }
-            }
+                currentLayers[layerIdx].thickness = newThickness;
+                const testResult = calculateCombinedScore(currentLayers);
 
-            errorCount = 1;
-          } else if (reverseEngineerMode) {
-            // Reverse engineering mode: fit to uploaded CSV data
-            reverseEngineerData.forEach((dataPoint) => {
-              let calcR = calculateReflectivityAtWavelength(
-                dataPoint.wavelength,
-                testLayers
-              );
-              
-              // Apply double-sided correction if enabled (matches how CSV was measured)
-              if (doubleSidedAR) {
-                calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
-              }
-              
-              calcR = calcR * 100;
-              error += Math.pow(calcR - dataPoint.reflectivity, 2);
-              errorCount++;
-            });
-          } else {
-        // Normal mode: fit to design points
-        designPoints.forEach((point) => {
-          if (point.useWavelengthRange) {
-            // Sample multiple wavelengths across the range
-            const numSamples = 5;
-            const step =
-              (point.wavelengthMax - point.wavelengthMin) / (numSamples - 1);
-            for (let i = 0; i < numSamples; i++) {
-              const lambda = point.wavelengthMin + i * step;
-              const calcR =
-                calculateReflectivityAtWavelength(lambda, testLayers) * 100;
-
-              if (point.useReflectivityRange) {
-                // Range mode: only penalize if outside range
-                if (calcR < point.reflectivityMin) {
-                  error += Math.pow(point.reflectivityMin - calcR, 2);
-                  errorCount++;
-                } else if (calcR > point.reflectivityMax) {
-                  error += Math.pow(calcR - point.reflectivityMax, 2);
-                  errorCount++;
+                if (testResult.score < bestScore) {
+                  bestScore = testResult.score;
+                  bestThickness = newThickness;
                 }
-              } else {
-                // Single target mode
-                const targetValue =
-                  (point.reflectivityMin + point.reflectivityMax) / 2;
-                error += Math.pow(calcR - targetValue, 2);
-                errorCount++;
               }
             }
-          } else {
-            // Single wavelength
-            const lambda = (point.wavelengthMin + point.wavelengthMax) / 2;
-            const calcR =
-              calculateReflectivityAtWavelength(lambda, testLayers) * 100;
 
-            if (point.useReflectivityRange) {
-              if (calcR < point.reflectivityMin) {
-                error += Math.pow(point.reflectivityMin - calcR, 2);
-              } else if (calcR > point.reflectivityMax) {
-                error += Math.pow(calcR - point.reflectivityMax, 2);
-              }
-            } else {
-              const targetValue =
-                (point.reflectivityMin + point.reflectivityMax) / 2;
-              error += Math.pow(calcR - targetValue, 2);
+            currentLayers[layerIdx].thickness = bestThickness;
+            if (bestThickness !== originalThickness) {
+              currentResult = calculateCombinedScore(currentLayers);
             }
-            errorCount++;
-          }
-        });
-      }
-
-      error = errorCount > 0 ? Math.sqrt(error / errorCount) : 0;
-
-      // Add smoothness penalty - apply to BOTH target mode AND reverse engineering
-      const { min, max, step } = wavelengthRange;
-      let prevR = null;
-      let smoothnessPenalty = 0;
-      let smoothnessCount = 0;
-      let peakCount = 0;
-      let prevSlope = null;
-
-      // Sample across full wavelength range to detect peaks and smoothness
-      for (let lambda = min; lambda <= max; lambda += step * 2) {
-        const calcR =
-          calculateReflectivityAtWavelength(lambda, testLayers) * 100;
-
-        if (prevR !== null) {
-          const currentSlope = calcR - prevR;
-
-          // Detect peaks (sign change in slope)
-          if (
-            prevSlope !== null &&
-            Math.sign(currentSlope) !== Math.sign(prevSlope) &&
-            Math.abs(currentSlope) > 1
-          ) {
-            peakCount++;
           }
 
-          // Penalize large variations between adjacent points
-          const variation = Math.abs(calcR - prevR);
-          smoothnessPenalty += Math.pow(variation, 2);
-          smoothnessCount++;
+          // Remove layers that converged below 5nm (if not using template and above min layer count)
+          if (!useLayerTemplate && currentLayers.length > minLayers) {
+            const thinLayers = currentLayers.filter(l => l.thickness < 5);
+            if (thinLayers.length > 0) {
+              currentLayers = currentLayers.filter(l => l.thickness >= 5);
+              // Re-index
+              currentLayers.forEach((l, i) => { l.id = i; });
+              currentResult = calculateCombinedScore(currentLayers);
+            }
+          }
 
-          prevSlope = currentSlope;
-        }
-        prevR = calcR;
-      }
-
-      if (smoothnessCount > 0) {
-        const avgVariation = Math.sqrt(smoothnessPenalty / smoothnessCount);
-
-        // Calculate total optical thickness (sum of n*d for each layer)
-        const totalOpticalThickness = testLayers.reduce((sum, layer) => {
-          const n = getRefractiveIndex(layer.material, 550); // Use 550nm as reference
-          return sum + n * layer.thickness;
-        }, 0);
-
-        if (reverseEngineerMode) {
-          // For reverse engineering: moderate smoothness to match data while reducing peaks
-          const smoothnessError = avgVariation * 0.2; // Lighter weight to prioritize data fit
-          const peakError = peakCount * 1.5; // Moderate peak penalty
-          const thicknessError = totalOpticalThickness / 5000; // Slight penalty for very thick stacks
-          error = error + smoothnessError + peakError + thicknessError;
-        } else {
-          // For target mode: use user-defined weight if minimizePeaks is checked
-          const effectiveWeight = minimizePeaks ? smoothnessWeight : 0.3;
-          const smoothnessError = avgVariation * effectiveWeight;
-          const peakError = peakCount * 2.0; // Heavier peak penalty for target mode
-          const thicknessError = totalOpticalThickness / 3000; // Encourage thinner stacks
-          error = error + smoothnessError + peakError + thicknessError;
+          // Check convergence
+          const improvement = prevScore - currentResult.score;
+          if (improvement < currentResult.score * 0.0001) break; // < 0.01% improvement
         }
       }
 
       // Add adhesion layer if enabled
-      const layersWithAdhesion = useAdhesionLayer
-        ? [
-            {
-              id: -1,
-              material: adhesionMaterial,
-              thickness: adhesionThickness,
-              iad: null,
-            },
-            ...testLayers,
-          ]
-        : testLayers;
+      const finalLayers = useAdhesionLayer
+        ? [{ id: -1, material: adhesionMaterial, thickness: adhesionThickness, iad: null }, ...currentLayers]
+        : currentLayers;
 
-      foundSolutions.push({ layers: layersWithAdhesion, error });
-
-      // Track best solution
-      if (!bestSolution || error < bestSolution.error) {
-        bestSolution = {
-          layers: JSON.parse(JSON.stringify(layersWithAdhesion)),
-          error,
-        };
-      }
+      refinedSolutions.push({
+        layers: finalLayers,
+        score: currentResult.score,
+        error: currentResult.error,
+        maxDeviation: currentResult.maxDeviation,
+        violation: currentResult.violation,
+        perTarget: currentResult.perTarget,
+      });
     }
 
-    // Refinement phase: Take the top 50 solutions and refine them VERY aggressively
-    setOptimizationStage("Phase 2: Fine-Tuning (This may take a few minutes)");
-    setOptimizationProgress(30);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // ===== PHASE 3: Material Swapping =====
+    setOptimizationStage("Phase 3: Testing material swaps...");
+    setOptimizationProgress(75);
+    await new Promise(resolve => setTimeout(resolve, 0));
 
-    foundSolutions.sort((a, b) => a.error - b.error);
-    const topSolutions = foundSolutions.slice(0, 50);
+    let improvementsFound = 0;
 
-    // Multi-stage refinement with decreasing step sizes
-    const refinementStages = [
-      { iterations: 1000, adjustmentRange: 0.3 }, // ±30%
-      { iterations: 1000, adjustmentRange: 0.15 }, // ±15%
-      { iterations: 500, adjustmentRange: 0.05 }, // ±5% for final precision
-    ];
+    if (!useLayerTemplate && paletteMats.length > 1) {
+      // Only swap on top 5 solutions to save time
+      const topForSwap = refinedSolutions.sort((a, b) => a.score - b.score).slice(0, 5);
 
-    for (let solIdx = 0; solIdx < topSolutions.length; solIdx++) {
-      setOptimizationProgress(30 + (solIdx / topSolutions.length) * 60); // 30-90%
+      for (const sol of topForSwap) {
+        // Strip adhesion layer for scoring consistency with Phase 1/2
+        const hasAdhesion = useAdhesionLayer && sol.layers.length > 0 && sol.layers[0].id === -1;
+        const adhesionLayer = hasAdhesion ? sol.layers[0] : null;
+        const swapLayers = JSON.parse(JSON.stringify(hasAdhesion ? sol.layers.slice(1) : sol.layers));
+        const startIdx = 0;
 
-      let baseLayers = JSON.parse(JSON.stringify(topSolutions[solIdx].layers));
+        for (let layerIdx = startIdx; layerIdx < swapLayers.length; layerIdx++) {
+          const originalMaterial = swapLayers[layerIdx].material;
+          let bestScore = calculateCombinedScore(swapLayers).score;
+          let bestMaterial = originalMaterial;
 
-      // Multi-stage refinement
-      for (const stage of refinementStages) {
-        for (let refineIter = 0; refineIter < stage.iterations; refineIter++) {
-          const refinedLayers = baseLayers.map((layer, layerIndex) => {
-            // Adaptive random adjustment based on stage
-            const adjustment =
-              1 -
-              stage.adjustmentRange +
-              Math.random() * (2 * stage.adjustmentRange);
-            
-            // Get layer-specific min/max if using template
-            let minT = 15;
-            let maxT = 300;
-            if (useLayerTemplate && layerTemplate[layerIndex]) {
-              minT = layerTemplate[layerIndex].minThickness || 15;
-              maxT = layerTemplate[layerIndex].maxThickness || 300;
-            }
-            
-            const newThickness = Math.max(
-              minT,
-              Math.min(maxT, layer.thickness * adjustment)
-            );
-            return { ...layer, thickness: newThickness };
-          });
+          for (const mat of paletteMats) {
+            if (mat === originalMaterial) continue;
+            swapLayers[layerIdx].material = mat;
+            const testResult = calculateCombinedScore(swapLayers);
 
-          // Calculate error
-          let error = 0;
-          let errorCount = 0;
-
-          if (colorTargetMode) {
-            // Color target mode: minimize ΔE* from target color
-            const colorResult = calculateStackColorDeltaE(
-              refinedLayers,
-              currentStackId,
-              targetColorL,
-              targetColorA,
-              targetColorB
-            );
-            const deltaE = colorResult.deltaE;
-            
-            // Check if we should combine with reflectivity targets
-            if (colorWeight < 100 && designPoints.length > 0) {
-              // Calculate reflectivity error using same method as normal mode
-              let reflectivityError = 0;
-              let reflectivityCount = 0;
-              
-              designPoints.forEach((point) => {
-                if (point.useWavelengthRange) {
-                  const numSamples = 5;
-                  const step = (point.wavelengthMax - point.wavelengthMin) / (numSamples - 1);
-                  for (let i = 0; i < numSamples; i++) {
-                    const lambda = point.wavelengthMin + i * step;
-                    const calcR = calculateReflectivityAtWavelength(lambda, refinedLayers) * 100;
-                    if (point.useReflectivityRange) {
-                      if (calcR < point.reflectivityMin) {
-                        reflectivityError += Math.pow(point.reflectivityMin - calcR, 2);
-                        reflectivityCount++;
-                      } else if (calcR > point.reflectivityMax) {
-                        reflectivityError += Math.pow(calcR - point.reflectivityMax, 2);
-                        reflectivityCount++;
-                      }
-                    } else {
-                      const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
-                      reflectivityError += Math.pow(calcR - targetValue, 2);
-                      reflectivityCount++;
-                    }
-                  }
-                } else {
-                  const calcR = calculateReflectivityAtWavelength(point.wavelength || point.wavelengthMin, refinedLayers) * 100;
-                  if (point.useReflectivityRange) {
-                    if (calcR < point.reflectivityMin) {
-                      reflectivityError += Math.pow(point.reflectivityMin - calcR, 2);
-                      reflectivityCount++;
-                    } else if (calcR > point.reflectivityMax) {
-                      reflectivityError += Math.pow(calcR - point.reflectivityMax, 2);
-                      reflectivityCount++;
-                    }
-                  } else {
-                    const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
-                    reflectivityError += Math.pow(calcR - targetValue, 2);
-                    reflectivityCount++;
-                  }
-                }
-              });
-              
-              const avgReflectivityError = reflectivityCount > 0 ? Math.sqrt(reflectivityError / reflectivityCount) : 0;
-              
-              // Combine errors based on weight
-              const colorFraction = colorWeight / 100;
-              const reflectivityFraction = 1 - colorFraction;
-              error = (colorFraction * deltaE) + (reflectivityFraction * avgReflectivityError);
-            } else {
-              // Color only
-              error = deltaE;
-            }
-
-            // Angle color constraints
-            if (angleColorConstraints.length > 0) {
-              let angleError = 0;
-              const normalColor = colorResult;
-
-              angleColorConstraints.forEach(constraint => {
-                if (constraint.mode === 'maxShift') {
-                  const angleColor = calculateStackColorDeltaE(
-                    refinedLayers, currentStackId, normalColor.L, normalColor.a, normalColor.b, constraint.angle
-                  );
-                  if (angleColor.deltaE > constraint.maxDeltaE) {
-                    angleError += Math.pow(angleColor.deltaE - constraint.maxDeltaE, 2);
-                  }
-                } else if (constraint.mode === 'target') {
-                  const angleColor = calculateStackColorDeltaE(
-                    refinedLayers, currentStackId, constraint.targetL, constraint.targetA, constraint.targetB, constraint.angle
-                  );
-                  angleError += Math.pow(angleColor.deltaE, 2);
-                }
-              });
-
-              if (angleError > 0) {
-                const avgAngleError = Math.sqrt(angleError / angleColorConstraints.length);
-                const avgWeight = angleColorConstraints.reduce((sum, c) => sum + c.weight, 0) / angleColorConstraints.length / 100;
-                error += avgAngleError * avgWeight * 10;
-              }
-            }
-
-            errorCount = 1;
-          } else if (reverseEngineerMode) {
-            reverseEngineerData.forEach((dataPoint) => {
-              let calcR = calculateReflectivityAtWavelength(
-                dataPoint.wavelength,
-                refinedLayers
-              );
-              
-              // Apply double-sided correction if enabled (matches how CSV was measured)
-              if (doubleSidedAR) {
-                calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
-              }
-              
-              calcR = calcR * 100;
-              error += Math.pow(calcR - dataPoint.reflectivity, 2);
-              errorCount++;
-            });
-          } else {
-            designPoints.forEach((point) => {
-              if (point.useWavelengthRange) {
-                const numSamples = 5;
-                const step =
-                  (point.wavelengthMax - point.wavelengthMin) /
-                  (numSamples - 1);
-                for (let i = 0; i < numSamples; i++) {
-                  const lambda = point.wavelengthMin + i * step;
-                  const calcR =
-                    calculateReflectivityAtWavelength(lambda, refinedLayers) *
-                    100;
-
-                  if (point.useReflectivityRange) {
-                    if (calcR < point.reflectivityMin) {
-                      error += Math.pow(point.reflectivityMin - calcR, 2);
-                      errorCount++;
-                    } else if (calcR > point.reflectivityMax) {
-                      error += Math.pow(calcR - point.reflectivityMax, 2);
-                      errorCount++;
-                    }
-                  } else {
-                    const targetValue =
-                      (point.reflectivityMin + point.reflectivityMax) / 2;
-                    error += Math.pow(calcR - targetValue, 2);
-                    errorCount++;
-                  }
-                }
-              } else {
-                const lambda = (point.wavelengthMin + point.wavelengthMax) / 2;
-                const calcR =
-                  calculateReflectivityAtWavelength(lambda, refinedLayers) *
-                  100;
-
-                if (point.useReflectivityRange) {
-                  if (calcR < point.reflectivityMin) {
-                    error += Math.pow(point.reflectivityMin - calcR, 2);
-                  } else if (calcR > point.reflectivityMax) {
-                    error += Math.pow(calcR - point.reflectivityMax, 2);
-                  }
-                } else {
-                  const targetValue =
-                    (point.reflectivityMin + point.reflectivityMax) / 2;
-                  error += Math.pow(calcR - targetValue, 2);
-                }
-                errorCount++;
-              }
-            });
-          }
-
-          error = errorCount > 0 ? Math.sqrt(error / errorCount) : 0;
-
-          // Add smoothness penalties (lighter during refinement)
-          const { min, max, step } = wavelengthRange;
-          let prevR = null;
-          let smoothnessPenalty = 0;
-          let smoothnessCount = 0;
-          let peakCount = 0;
-          let prevSlope = null;
-
-          for (let lambda = min; lambda <= max; lambda += step * 2) {
-            const calcR =
-              calculateReflectivityAtWavelength(lambda, refinedLayers) * 100;
-
-            if (prevR !== null) {
-              const currentSlope = calcR - prevR;
-              if (
-                prevSlope !== null &&
-                Math.sign(currentSlope) !== Math.sign(prevSlope) &&
-                Math.abs(currentSlope) > 1
-              ) {
-                peakCount++;
-              }
-              const variation = Math.abs(calcR - prevR);
-              smoothnessPenalty += Math.pow(variation, 2);
-              smoothnessCount++;
-              prevSlope = currentSlope;
-            }
-            prevR = calcR;
-          }
-
-          if (smoothnessCount > 0) {
-            const avgVariation = Math.sqrt(smoothnessPenalty / smoothnessCount);
-            const totalOpticalThickness = refinedLayers.reduce((sum, layer) => {
-              const n = getRefractiveIndex(layer.material, 550);
-              return sum + n * layer.thickness;
-            }, 0);
-
-            if (reverseEngineerMode) {
-              const smoothnessError = avgVariation * 0.15;
-              const peakError = peakCount * 1.0;
-              const thicknessError = totalOpticalThickness / 5000;
-              error = error + smoothnessError + peakError + thicknessError;
-            } else {
-              const effectiveWeight = minimizePeaks ? smoothnessWeight : 0.25;
-              const smoothnessError = avgVariation * effectiveWeight;
-              const peakError = peakCount * 1.5;
-              const thicknessError = totalOpticalThickness / 3000;
-              error = error + smoothnessError + peakError + thicknessError;
+            if (testResult.score < bestScore) {
+              bestScore = testResult.score;
+              bestMaterial = mat;
             }
           }
 
-          // Don't add adhesion layer here - it's already in refinedLayers from phase 1
-          foundSolutions.push({ layers: refinedLayers, error });
+          swapLayers[layerIdx].material = bestMaterial;
 
-          // If this refinement is better, use it as new base for next iteration
-          if (foundSolutions.length > 0 && error < topSolutions[solIdx].error) {
-            baseLayers = JSON.parse(JSON.stringify(refinedLayers));
-            topSolutions[solIdx].error = error;
+          if (bestMaterial !== originalMaterial) {
+            improvementsFound++;
+            // Quick fine-pass needle sweep after accepted swap
+            for (let sweep = 0; sweep < 5; sweep++) {
+              let improved = false;
+              for (let li = startIdx; li < swapLayers.length; li++) {
+                const orig = swapLayers[li].thickness;
+                let bScore = calculateCombinedScore(swapLayers).score;
+                let bThick = orig;
+                for (const step of [1, 0.5]) {
+                  for (const sign of [1, -1]) {
+                    const nt = orig + sign * step;
+                    if (nt < 5) continue;
+                    swapLayers[li].thickness = nt;
+                    const tr = calculateCombinedScore(swapLayers);
+                    if (tr.score < bScore) { bScore = tr.score; bThick = nt; }
+                  }
+                }
+                swapLayers[li].thickness = bThick;
+                if (bThick !== orig) improved = true;
+              }
+              if (!improved) break;
+            }
+
+            // Update the solution
+            const finalResult = calculateCombinedScore(swapLayers);
+            sol.layers = adhesionLayer
+              ? [adhesionLayer, ...JSON.parse(JSON.stringify(swapLayers))]
+              : JSON.parse(JSON.stringify(swapLayers));
+            sol.score = finalResult.score;
+            sol.error = finalResult.error;
+            sol.maxDeviation = finalResult.maxDeviation;
+            sol.violation = finalResult.violation;
+            sol.perTarget = finalResult.perTarget;
           }
         }
       }
     }
 
-    // Final sort and filter based on user-defined error threshold
-    setOptimizationStage("Phase 3: Finalizing Solutions");
+    setOptimizationStage(`Phase 3: Testing material swaps... ${improvementsFound} improvements found`);
+
+    // ===== FINAL: Sort, deduplicate, filter =====
+    setOptimizationStage("Finalizing solutions...");
     setOptimizationProgress(90);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise(resolve => setTimeout(resolve, 0));
 
-    foundSolutions.sort((a, b) => a.error - b.error);
+    // Sort: compliant solutions first, then by error
+    refinedSolutions.sort((a, b) => {
+      if (a.violation === 0 && b.violation !== 0) return -1;
+      if (a.violation !== 0 && b.violation === 0) return 1;
+      return a.error - b.error;
+    });
 
-    // Use user-configurable error threshold
-    const excellentSolutions = foundSolutions.filter((s) => s.error < maxErrorThreshold);
+    // Deduplicate: solutions must differ by > 2% of total stack thickness
+    const deduplicated = [];
+    for (const sol of refinedSolutions) {
+      const solThickness = sol.layers.reduce((sum, l) => sum + l.thickness, 0);
+      const threshold = solThickness * 0.02;
+      const isDuplicate = deduplicated.some(existing => {
+        if (existing.layers.length !== sol.layers.length) return false;
+        const diff = existing.layers.reduce((sum, l, i) =>
+          sum + Math.abs(l.thickness - (sol.layers[i]?.thickness || 0)), 0);
+        return diff < threshold;
+      });
+      if (!isDuplicate) deduplicated.push(sol);
+      if (deduplicated.length >= 10) break; // Keep pool for filtering
+    }
+
+    // Filter by error threshold and constraint compliance
+    const qualified = deduplicated.filter(s => s.error < maxErrorThreshold);
 
     let finalSolutions;
-    if (excellentSolutions.length >= 5) {
-      finalSolutions = excellentSolutions.slice(0, 5);
-    } else if (excellentSolutions.length > 0) {
-      // Return whatever excellent solutions we have, even if < 5
-      finalSolutions = excellentSolutions.slice(0, 5);
-      console.log(
-        `Found ${excellentSolutions.length} solutions with <${maxErrorThreshold}% error`
-      );
+    if (qualified.length >= 1) {
+      finalSolutions = qualified.slice(0, 5);
     } else {
-      // No solutions meet the criteria
-      const bestError =
-        foundSolutions.length > 0 ? foundSolutions[0].error.toFixed(2) : "N/A";
-      showToast(`No solutions found with error <${maxErrorThreshold}%. Best error: ${bestError}%. Try increasing Max Error threshold, adding layers, widening thickness ranges, or using different materials.`, 'error');
+      // No solutions meet criteria — show best anyway with message
+      const bestError = deduplicated.length > 0 ? deduplicated[0].error.toFixed(2) : "N/A";
+      const bestViolation = deduplicated.length > 0 && deduplicated[0].violation > 0;
+      const msg = bestViolation
+        ? `No solutions satisfy all constraints. Best error: ${bestError}%. Try: widening target boxes, adding more materials, or increasing max layer count.`
+        : `No solutions found with error < ${maxErrorThreshold}%. Best error: ${bestError}%. Try increasing Max Error threshold.`;
+      showToast(msg, 'error');
       setOptimizing(false);
       setOptimizationProgress(0);
       setOptimizationStage("");
       return;
     }
 
-    // Add reflectivity data for each solution for preview charts
+    // Generate chart data and color info for each solution
     const solutionsWithData = finalSolutions.map((sol, idx) => {
       const data = [];
-      for (
-        let wavelength = wavelengthRange.min;
-        wavelength <= wavelengthRange.max;
-        wavelength += wavelengthRange.step
-      ) {
+      for (let wavelength = wavelengthRange.min; wavelength <= wavelengthRange.max; wavelength += wavelengthRange.step) {
         const R = calculateReflectivityAtWavelength(wavelength, sol.layers);
         data.push({
           wavelength,
-          reflectivity:
-            displayMode === "transmission" ? (1 - R) * 100 : R * 100,
+          reflectivity: displayMode === "transmission" ? (1 - R) * 100 : R * 100,
         });
       }
-      
-      // Calculate color info for this solution
+
       let solutionColorInfo = null;
       if (colorTargetMode) {
         solutionColorInfo = calculateStackColorDeltaE(
-          sol.layers,
-          currentStackId,
-          targetColorL,
-          targetColorA,
-          targetColorB
+          sol.layers, currentStackId, targetColorL, targetColorA, targetColorB
         );
       }
-      
-      return { ...sol, chartData: data, id: idx + 1, colorInfo: solutionColorInfo };
+
+      // Final 2nm validation pass for hard constraints
+      const finalCheck = calculateConstraintViolation(sol.layers, 2);
+
+      return {
+        ...sol,
+        chartData: data,
+        id: idx + 1,
+        colorInfo: solutionColorInfo,
+        targetResults: finalCheck.perTarget,
+      };
     });
 
     setOptimizationProgress(100);
     setOptimizationStage("Complete!");
     setSolutions(solutionsWithData);
 
-    // Reset progress after a short delay
     setTimeout(() => {
       setOptimizing(false);
       setOptimizationProgress(0);
