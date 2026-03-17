@@ -5121,6 +5121,256 @@ const ThinFilmDesigner = () => {
     );
   };
 
+  // === OPTIMIZER HELPER FUNCTIONS ===
+
+  // Calculate how far a solution violates hard constraints.
+  // Returns { violation: number, perTarget: [{pass, deviation}] }
+  // violation = 0 means all constraints satisfied.
+  const calculateConstraintViolation = (testLayers, sampleStep = 5) => {
+    let totalViolation = 0;
+    const perTarget = [];
+
+    if (colorTargetMode) {
+      // Color target mode uses soft constraints only (Delta E)
+      return { violation: 0, perTarget: [] };
+    }
+
+    if (reverseEngineerMode && reverseEngineerData) {
+      reverseEngineerData.forEach((dataPoint) => {
+        let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
+        if (doubleSidedAR) {
+          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+        }
+        calcR = calcR * 100;
+        const deviation = Math.abs(calcR - dataPoint.reflectivity);
+        const tolerance = matchTolerance;
+        if (deviation > tolerance) {
+          totalViolation += Math.pow(deviation - tolerance, 2);
+          perTarget.push({ pass: false, deviation });
+        } else {
+          perTarget.push({ pass: true, deviation });
+        }
+      });
+    } else {
+      // Target point mode
+      designPoints.forEach((point) => {
+        let maxViolation = 0;
+        let pass = true;
+
+        if (point.useWavelengthRange) {
+          for (let lambda = point.wavelengthMin; lambda <= point.wavelengthMax; lambda += sampleStep) {
+            const calcR = calculateReflectivityAtWavelength(lambda, testLayers) * 100;
+            if (point.useReflectivityRange) {
+              if (calcR < point.reflectivityMin) {
+                const v = point.reflectivityMin - calcR;
+                maxViolation = Math.max(maxViolation, v);
+                totalViolation += v * v;
+                pass = false;
+              } else if (calcR > point.reflectivityMax) {
+                const v = calcR - point.reflectivityMax;
+                maxViolation = Math.max(maxViolation, v);
+                totalViolation += v * v;
+                pass = false;
+              }
+            } else {
+              const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+              const v = Math.abs(calcR - targetValue);
+              if (v > 1.0) {
+                maxViolation = Math.max(maxViolation, v);
+                totalViolation += v * v;
+                pass = false;
+              }
+            }
+          }
+        } else {
+          const lambda = (point.wavelengthMin + point.wavelengthMax) / 2;
+          const calcR = calculateReflectivityAtWavelength(lambda, testLayers) * 100;
+          if (point.useReflectivityRange) {
+            if (calcR < point.reflectivityMin) {
+              const v = point.reflectivityMin - calcR;
+              maxViolation = Math.max(maxViolation, v);
+              totalViolation += v * v;
+              pass = false;
+            } else if (calcR > point.reflectivityMax) {
+              const v = calcR - point.reflectivityMax;
+              maxViolation = Math.max(maxViolation, v);
+              totalViolation += v * v;
+              pass = false;
+            }
+          } else {
+            const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+            const v = Math.abs(calcR - targetValue);
+            if (v > 1.0) {
+              maxViolation = Math.max(maxViolation, v);
+              totalViolation += v * v;
+              pass = false;
+            }
+          }
+        }
+        perTarget.push({ pass, deviation: maxViolation });
+      });
+    }
+
+    return { violation: totalViolation, perTarget };
+  };
+
+  // Calculate the RMS error score for ranking solutions (no penalties, pure target deviation).
+  // Returns { error: number, maxDeviation: number }
+  const calculateMeritError = (testLayers, sampleStep = 5) => {
+    let error = 0;
+    let errorCount = 0;
+    let maxDeviation = 0;
+
+    if (colorTargetMode) {
+      const colorResult = calculateStackColorDeltaE(
+        testLayers, currentStackId, targetColorL, targetColorA, targetColorB
+      );
+      let totalError = colorResult.deltaE;
+
+      // Angle color constraints (preserved from current implementation)
+      if (angleColorConstraints.length > 0) {
+        let angleError = 0;
+        angleColorConstraints.forEach(constraint => {
+          if (constraint.mode === 'maxShift') {
+            const angleColor = calculateStackColorDeltaE(
+              testLayers, currentStackId, colorResult.L, colorResult.a, colorResult.b, constraint.angle
+            );
+            if (angleColor.deltaE > constraint.maxDeltaE) {
+              angleError += Math.pow(angleColor.deltaE - constraint.maxDeltaE, 2);
+            }
+          } else if (constraint.mode === 'target') {
+            const angleColor = calculateStackColorDeltaE(
+              testLayers, currentStackId, constraint.targetL, constraint.targetA, constraint.targetB, constraint.angle
+            );
+            angleError += Math.pow(angleColor.deltaE, 2);
+          }
+        });
+        if (angleError > 0) {
+          const avgAngleError = Math.sqrt(angleError / angleColorConstraints.length);
+          const avgWeight = angleColorConstraints.reduce((sum, c) => sum + c.weight, 0) / angleColorConstraints.length / 100;
+          totalError += avgAngleError * avgWeight * 10;
+        }
+      }
+
+      // Combined color + reflectivity weighting
+      if (colorWeight < 100 && designPoints.length > 0) {
+        let reflectivityError = 0;
+        let reflectivityCount = 0;
+        designPoints.forEach((point) => {
+          const lambda = point.useWavelengthRange
+            ? point.wavelengthMin
+            : (point.wavelengthMin + point.wavelengthMax) / 2;
+          const step = point.useWavelengthRange
+            ? (point.wavelengthMax - point.wavelengthMin) / 4
+            : 0;
+          const numSamples = point.useWavelengthRange ? 5 : 1;
+          for (let i = 0; i < numSamples; i++) {
+            const wl = lambda + i * step;
+            const calcR = calculateReflectivityAtWavelength(wl, testLayers) * 100;
+            const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+            if (point.useReflectivityRange) {
+              if (calcR < point.reflectivityMin) {
+                reflectivityError += Math.pow(point.reflectivityMin - calcR, 2);
+                reflectivityCount++;
+              } else if (calcR > point.reflectivityMax) {
+                reflectivityError += Math.pow(calcR - point.reflectivityMax, 2);
+                reflectivityCount++;
+              }
+            } else {
+              reflectivityError += Math.pow(calcR - targetValue, 2);
+              reflectivityCount++;
+            }
+          }
+        });
+        const avgReflErr = reflectivityCount > 0 ? Math.sqrt(reflectivityError / reflectivityCount) : 0;
+        const colorFraction = colorWeight / 100;
+        totalError = colorFraction * totalError + (1 - colorFraction) * avgReflErr;
+      }
+
+      return { error: totalError, maxDeviation: totalError };
+    }
+
+    if (reverseEngineerMode && reverseEngineerData) {
+      reverseEngineerData.forEach((dataPoint) => {
+        let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
+        if (doubleSidedAR) {
+          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+        }
+        calcR = calcR * 100;
+        const deviation = Math.abs(calcR - dataPoint.reflectivity);
+        maxDeviation = Math.max(maxDeviation, deviation);
+        error += Math.pow(deviation, 2);
+        errorCount++;
+      });
+    } else {
+      // Target point mode
+      designPoints.forEach((point) => {
+        if (point.useWavelengthRange) {
+          for (let lambda = point.wavelengthMin; lambda <= point.wavelengthMax; lambda += sampleStep) {
+            const calcR = calculateReflectivityAtWavelength(lambda, testLayers) * 100;
+            const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+            if (point.useReflectivityRange) {
+              if (calcR < point.reflectivityMin) {
+                const d = point.reflectivityMin - calcR;
+                error += d * d;
+                maxDeviation = Math.max(maxDeviation, d);
+                errorCount++;
+              } else if (calcR > point.reflectivityMax) {
+                const d = calcR - point.reflectivityMax;
+                error += d * d;
+                maxDeviation = Math.max(maxDeviation, d);
+                errorCount++;
+              } else {
+                // Inside the box — error is distance from midpoint (for ranking)
+                const d = Math.abs(calcR - targetValue);
+                error += d * d;
+                errorCount++;
+              }
+            } else {
+              const d = Math.abs(calcR - targetValue);
+              error += d * d;
+              maxDeviation = Math.max(maxDeviation, d);
+              errorCount++;
+            }
+          }
+        } else {
+          const lambda = (point.wavelengthMin + point.wavelengthMax) / 2;
+          const calcR = calculateReflectivityAtWavelength(lambda, testLayers) * 100;
+          const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+          if (point.useReflectivityRange) {
+            if (calcR < point.reflectivityMin) {
+              const d = point.reflectivityMin - calcR;
+              error += d * d;
+              maxDeviation = Math.max(maxDeviation, d);
+            } else if (calcR > point.reflectivityMax) {
+              const d = calcR - point.reflectivityMax;
+              error += d * d;
+              maxDeviation = Math.max(maxDeviation, d);
+            }
+          } else {
+            const d = Math.abs(calcR - targetValue);
+            error += d * d;
+            maxDeviation = Math.max(maxDeviation, d);
+          }
+          errorCount++;
+        }
+      });
+    }
+
+    const rmsError = errorCount > 0 ? Math.sqrt(error / errorCount) : 0;
+    return { error: rmsError, maxDeviation };
+  };
+
+  // Combined score: error + constraint violation penalty.
+  // Lower is better. Solutions with violation=0 are ranked by error alone.
+  const calculateCombinedScore = (testLayers) => {
+    const { violation, perTarget } = calculateConstraintViolation(testLayers);
+    const { error, maxDeviation } = calculateMeritError(testLayers);
+    // Heavy penalty for constraint violations to ensure compliant solutions rank first
+    const score = error + violation * 10;
+    return { score, error, maxDeviation, violation, perTarget };
+  };
+
   const optimizeDesign = async () => {
     // Validation
     if (!reverseEngineerMode && !colorTargetMode && designPoints.length === 0) {
