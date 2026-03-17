@@ -47,23 +47,12 @@ if (hasDatabase) {
   const billingRouter = require('./routes/billing');
   const trackingRouter = require('./routes/tracking');
   const machinesRouter = require('./routes/machines');
-  const teamsRouter = require('./routes/teams');
-  const invitationsRouter = require('./routes/invitations');
-  const sharedDesignsRouter = require('./routes/sharedDesigns');
-  const submissionsRouter = require('./routes/submissions');
-  const notificationsRouter = require('./routes/notifications');
-
   app.use('/api/auth', authRouter);
   app.use('/api/designs', designsRouter);
   app.use('/api/materials', materialsRouter);
   app.use('/api/billing', billingRouter);
   app.use('/api/tracking', trackingRouter);
   app.use('/api/machines', machinesRouter);
-  app.use('/api/teams', teamsRouter);
-  app.use('/api/invitations', invitationsRouter);
-  app.use('/api/teams/:teamId/designs', sharedDesignsRouter);
-  app.use('/api/teams/:teamId/designs/:designId/submissions', submissionsRouter);
-  app.use('/api/notifications', notificationsRouter);
 } else {
   console.log('⚡ Running in chat-only mode (no DATABASE_URL set)');
 }
