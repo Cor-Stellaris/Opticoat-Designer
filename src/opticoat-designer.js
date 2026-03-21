@@ -438,7 +438,7 @@ const ThinFilmDesigner = () => {
     { material: "SiO2", minThickness: 20, maxThickness: 200 }
   ]);
   const [targetModeIterations, setTargetModeIterations] = useState(75000);
-  const [reverseEngineerIterations, setReverseEngineerIterations] = useState(200000);
+  const [reverseEngineerIterations, setReverseEngineerIterations] = useState(50000);
   const [reverseEngineerData, setReverseEngineerData] = useState(null);
   const [reverseEngineerMode, setReverseEngineerMode] = useState(false);
   const [colorTargetMode, setColorTargetMode] = useState(false);
@@ -5361,29 +5361,171 @@ const ThinFilmDesigner = () => {
     return { error: rmsError, maxDeviation };
   };
 
-  // Combined score: error + constraint violation penalty.
+  // Solve Ax = b via Gaussian elimination with partial pivoting (for LM optimizer)
+  const solveLinear = (A, b) => {
+    const n = A.length;
+    const aug = A.map((row, i) => [...row, b[i]]);
+    for (let col = 0; col < n; col++) {
+      let maxVal = Math.abs(aug[col][col]);
+      let maxRow = col;
+      for (let row = col + 1; row < n; row++) {
+        if (Math.abs(aug[row][col]) > maxVal) {
+          maxVal = Math.abs(aug[row][col]);
+          maxRow = row;
+        }
+      }
+      if (maxVal < 1e-15) return null;
+      if (maxRow !== col) [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
+      for (let row = col + 1; row < n; row++) {
+        const f = aug[row][col] / aug[col][col];
+        for (let j = col; j <= n; j++) aug[row][j] -= f * aug[col][j];
+      }
+    }
+    const x = new Array(n);
+    for (let i = n - 1; i >= 0; i--) {
+      x[i] = aug[i][n];
+      for (let j = i + 1; j < n; j++) x[i] -= aug[i][j] * x[j];
+      x[i] /= aug[i][i];
+    }
+    return x;
+  };
+
+  // Classify material as High or Low refractive index at 550nm
+  const classifyMaterialIndex = (material) => {
+    const n = getRefractiveIndex(material, 550);
+    return n >= 1.85 ? 'H' : 'L';
+  };
+
+  // Combined score: error + constraint violation penalty + alternation penalty.
   // Lower is better. Solutions with violation=0 are ranked by error alone.
   const calculateCombinedScore = (testLayers) => {
-    const { violation, perTarget } = calculateConstraintViolation(testLayers);
-    const { error, maxDeviation } = calculateMeritError(testLayers);
-    // Heavy penalty for constraint violations to ensure compliant solutions rank first
-    const score = error + violation * 10;
-    return { score, error, maxDeviation, violation, perTarget };
+    // Single-pass scoring: computes violation, error, and maxDeviation in one loop
+    // to avoid redundant reflectivity calculations (critical for CSV reverse engineering)
+
+    if (colorTargetMode) {
+      // Color target mode: soft constraints only, delegate to existing functions
+      const { error, maxDeviation } = calculateMeritError(testLayers);
+      return { score: error, error, maxDeviation, violation: 0, perTarget: [] };
+    }
+
+    let totalViolation = 0;
+    let errorSum = 0;
+    let errorCount = 0;
+    let maxDeviation = 0;
+    const perTarget = [];
+
+    if (reverseEngineerMode && reverseEngineerData) {
+      // Single pass through CSV data points
+      for (let i = 0; i < reverseEngineerData.length; i++) {
+        const dataPoint = reverseEngineerData[i];
+        let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
+        if (doubleSidedAR) {
+          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+        }
+        calcR = calcR * 100;
+        const deviation = Math.abs(calcR - dataPoint.reflectivity);
+        maxDeviation = Math.max(maxDeviation, deviation);
+        errorSum += deviation * deviation;
+        errorCount++;
+        // Constraint violation check
+        if (deviation > matchTolerance) {
+          totalViolation += Math.pow(deviation - matchTolerance, 2);
+          perTarget.push({ pass: false, deviation });
+        } else {
+          perTarget.push({ pass: true, deviation });
+        }
+      }
+    } else {
+      // Target point mode — single pass
+      // errorSum = distance from midpoint (for ranking quality)
+      // totalViolation = out-of-bounds distance only (for constraint checking, separate from error)
+      designPoints.forEach((point) => {
+        let pointMaxViolation = 0;
+        let pointPass = true;
+        const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+
+        if (point.useWavelengthRange) {
+          for (let lambda = point.wavelengthMin; lambda <= point.wavelengthMax; lambda += 5) {
+            const calcR = calculateReflectivityAtWavelength(lambda, testLayers) * 100;
+            const d = Math.abs(calcR - targetValue);
+            errorSum += d * d;
+            maxDeviation = Math.max(maxDeviation, d);
+            errorCount++;
+
+            if (point.useReflectivityRange) {
+              if (calcR < point.reflectivityMin) {
+                const v = point.reflectivityMin - calcR;
+                totalViolation += v * v;
+                pointMaxViolation = Math.max(pointMaxViolation, v);
+                pointPass = false;
+              } else if (calcR > point.reflectivityMax) {
+                const v = calcR - point.reflectivityMax;
+                totalViolation += v * v;
+                pointMaxViolation = Math.max(pointMaxViolation, v);
+                pointPass = false;
+              }
+            } else {
+              if (d > 1.0) {
+                totalViolation += (d - 1.0) * (d - 1.0);
+                pointMaxViolation = Math.max(pointMaxViolation, d);
+                pointPass = false;
+              }
+            }
+          }
+        } else {
+          const lambda = (point.wavelengthMin + point.wavelengthMax) / 2;
+          const calcR = calculateReflectivityAtWavelength(lambda, testLayers) * 100;
+          const d = Math.abs(calcR - targetValue);
+          errorSum += d * d;
+          maxDeviation = Math.max(maxDeviation, d);
+          errorCount++;
+
+          if (point.useReflectivityRange) {
+            if (calcR < point.reflectivityMin) {
+              const v = point.reflectivityMin - calcR;
+              totalViolation += v * v;
+              pointMaxViolation = Math.max(pointMaxViolation, v);
+              pointPass = false;
+            } else if (calcR > point.reflectivityMax) {
+              const v = calcR - point.reflectivityMax;
+              totalViolation += v * v;
+              pointMaxViolation = Math.max(pointMaxViolation, v);
+              pointPass = false;
+            }
+          } else {
+            if (d > 1.0) {
+              totalViolation += (d - 1.0) * (d - 1.0);
+              pointMaxViolation = Math.max(pointMaxViolation, d);
+              pointPass = false;
+            }
+          }
+        }
+        perTarget.push({ pass: pointPass, deviation: pointMaxViolation });
+      });
+    }
+
+    const error = errorCount > 0 ? Math.sqrt(errorSum / errorCount) : 0;
+    // Soft penalty for non-alternating H/L adjacent layers (delamination risk)
+    let alternationPenalty = 0;
+    for (let i = 1; i < testLayers.length; i++) {
+      if (classifyMaterialIndex(testLayers[i - 1].material) === classifyMaterialIndex(testLayers[i].material)) {
+        alternationPenalty += 0.5;
+      }
+    }
+    const score = error + totalViolation * 10 + alternationPenalty;
+    return { score, error, maxDeviation, violation: totalViolation, perTarget };
   };
 
 
   const optimizeDesign = async () => {
     // Validation
-    if (!reverseEngineerMode && !colorTargetMode && designPoints.length === 0) {
-      showToast("Please add at least one target point, upload a CSV file for reverse engineering, or use Color Target Mode", 'error');
+    if (!reverseEngineerMode && designPoints.length === 0) {
+      showToast("Please add at least one target point or upload a CSV file for reverse engineering", 'error');
       return;
     }
     if (reverseEngineerMode && !reverseEngineerData) {
       showToast("Please upload a CSV file for reverse engineering", 'error');
       return;
-    }
-    if (colorTargetMode && targetColorL === 0 && targetColorA === 0 && targetColorB === 0) {
-      if (!window.confirm("Target color is set to L*=0, a*=0, b*=0 (pure black). Continue anyway?")) return;
     }
     if (!useLayerTemplate && designMaterials.length === 0) {
       showToast("Please select at least one material", 'error');
@@ -5401,15 +5543,135 @@ const ThinFilmDesigner = () => {
     const allMats = Object.keys(allMaterials);
     const paletteMats = useLayerTemplate ? allMats : designMaterials;
 
+    // Budget scaling — maps user iteration count to work multipliers
+    const budgetScale = Math.max(1, numIterations / 50000);
+    const seedBudget = Math.round(numIterations * 0.5);
+    const topSeedCount = Math.min(100, Math.max(20, Math.round(10 * budgetScale)));
+    const sweepMultiplier = Math.max(1, Math.sqrt(budgetScale));
+    const shakeRounds = Math.min(12, Math.max(3, Math.round(3 * budgetScale)));
+    const shakeSolutions = Math.min(15, Math.max(5, Math.round(5 * Math.sqrt(budgetScale))));
+    const lmSolutions = Math.min(20, Math.max(8, Math.round(8 * Math.sqrt(budgetScale))));
+    const lmMaxIters = Math.min(400, Math.max(150, Math.round(150 * Math.sqrt(budgetScale))));
+    const swapSolutions = Math.min(10, Math.max(5, Math.round(5 * Math.sqrt(budgetScale))));
+    const finalLMSolutions = Math.min(10, Math.max(5, Math.round(5 * Math.sqrt(budgetScale))));
+    const finalLMIters = Math.min(200, Math.max(80, Math.round(80 * Math.sqrt(budgetScale))));
+
     // ===== PHASE 1: Seed Generation =====
     const seeds = [];
     let validSeedCount = 0;
 
-    for (let iter = 0; iter < numIterations; iter++) {
-      if (iter % 500 === 0) {
-        setOptimizationProgress((iter / numIterations) * 25);
-        setOptimizationStage(`Phase 1: Generating candidates... ${validSeedCount} valid seeds found`);
+    // Determine reference wavelengths for quarter-wave seeding
+    let qwotWavelengths = [];
+    if (!reverseEngineerMode && designPoints.length > 0) {
+      qwotWavelengths = designPoints.map(p => (p.wavelengthMin + p.wavelengthMax) / 2);
+    } else if (reverseEngineerMode && reverseEngineerData && reverseEngineerData.length > 0) {
+      // Use the median wavelength from CSV data
+      const sortedWl = reverseEngineerData.map(d => d.wavelength).sort((a, b) => a - b);
+      qwotWavelengths = [sortedWl[Math.floor(sortedWl.length / 2)]];
+    }
+
+    // Classify palette materials into High/Low index groups for alternation
+    const highMats = paletteMats.filter(m => classifyMaterialIndex(m) === 'H');
+    const lowMats = paletteMats.filter(m => classifyMaterialIndex(m) === 'L');
+    const canAlternate = highMats.length > 0 && lowMats.length > 0;
+
+    // ----- Phase 1A: Differential Evolution (population-based global search) -----
+    if (!useLayerTemplate) {
+      const dePopSize = Math.min(40, Math.max(15, Math.round(15 * Math.sqrt(budgetScale))));
+      const deGenerations = Math.min(100, Math.max(20, Math.round(20 * budgetScale)));
+      const F = 0.8;  // Mutation factor
+      const CR = 0.7; // Crossover rate
+
+      // Build alternating material sequences for different layer counts
+      const buildAlternatingMats = (nLayers) => {
+        const mats = [];
+        for (let i = 0; i < nLayers; i++) {
+          if (canAlternate) {
+            const group = (i % 2 === 0) ? highMats : lowMats;
+            mats.push(group[Math.floor(Math.random() * group.length)]);
+          } else {
+            mats.push(paletteMats[Math.floor(Math.random() * paletteMats.length)]);
+          }
+        }
+        return mats;
+      };
+
+      // Run DE for 2-3 layer count configurations
+      const deCounts = new Set([minLayers, maxLayers, Math.round((minLayers + maxLayers) / 2)]);
+
+      for (const nLayers of deCounts) {
+        setOptimizationStage(`Phase 1A: Differential Evolution (${nLayers} layers)...`);
         await new Promise(resolve => setTimeout(resolve, 0));
+
+        // Initialize population
+        const pop = [];
+        for (let i = 0; i < dePopSize; i++) {
+          const mats = buildAlternatingMats(nLayers);
+          const layers = mats.map((mat, j) => ({
+            id: j, material: mat, thickness: 10 + Math.random() * 250
+          }));
+          const result = calculateCombinedScore(layers);
+          pop.push({ layers, score: result.score, result });
+        }
+
+        // Evolve
+        for (let gen = 0; gen < deGenerations; gen++) {
+          for (let i = 0; i < dePopSize; i++) {
+            // Select 3 distinct random indices != i
+            let a, b, c;
+            do { a = Math.floor(Math.random() * dePopSize); } while (a === i);
+            do { b = Math.floor(Math.random() * dePopSize); } while (b === i || b === a);
+            do { c = Math.floor(Math.random() * dePopSize); } while (c === i || c === a || c === b);
+
+            // Mutation + crossover (evolve thicknesses only, materials stay fixed)
+            const jRand = Math.floor(Math.random() * nLayers);
+            const trial = pop[i].layers.map((l, j) => ({
+              ...l,
+              thickness: (Math.random() < CR || j === jRand)
+                ? Math.max(5, Math.min(500, pop[a].layers[j].thickness + F * (pop[b].layers[j].thickness - pop[c].layers[j].thickness)))
+                : l.thickness
+            }));
+
+            const trialResult = calculateCombinedScore(trial);
+            if (trialResult.score <= pop[i].score) {
+              pop[i] = { layers: trial, score: trialResult.score, result: trialResult };
+            }
+          }
+
+          if (gen % 10 === 0) {
+            setOptimizationProgress((gen / deGenerations) * 5);
+            await new Promise(resolve => setTimeout(resolve, 0));
+          }
+        }
+
+        // Add DE population as seeds
+        for (const member of pop) {
+          const r = member.result;
+          if (r.violation === 0) validSeedCount++;
+          seeds.push({
+            layers: member.layers,
+            score: r.score,
+            error: r.error,
+            maxDeviation: r.maxDeviation,
+            violation: r.violation,
+            perTarget: r.perTarget,
+          });
+        }
+      }
+    }
+
+    // ----- Phase 1B: Random seeding (remaining budget) -----
+    const randomBudget = Math.round(seedBudget * (useLayerTemplate ? 1.0 : 0.4));
+    const minExplored = Math.round(randomBudget * 0.4);
+    for (let iter = 0; iter < randomBudget; iter++) {
+      if (iter % 500 === 0) {
+        setOptimizationProgress(5 + (iter / randomBudget) * 15);
+        setOptimizationStage(`Phase 1B: Random seeds... ${validSeedCount} valid seeds (${iter.toLocaleString()}/${randomBudget.toLocaleString()})`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        // Early termination: scale with budget, require exploring at least 40%
+        if (validSeedCount >= topSeedCount * 2 && iter >= minExplored) break;
+        if (iter >= Math.round(randomBudget * 0.6) && validSeedCount === 0) break;
       }
 
       const testLayers = [];
@@ -5422,9 +5684,40 @@ const ThinFilmDesigner = () => {
         }
       } else {
         const numLayersForSeed = minLayers + Math.floor(Math.random() * (maxLayers - minLayers + 1));
+        // Use quarter-wave seeding for first 40% of iterations, random for rest
+        const useQWOT = qwotWavelengths.length > 0 && iter < seedBudget * 0.4;
+
         for (let i = 0; i < numLayersForSeed; i++) {
-          const material = paletteMats[Math.floor(Math.random() * paletteMats.length)];
-          const thickness = 10 + Math.random() * 250;
+          let candidates;
+          if (canAlternate && i > 0) {
+            // Enforce H/L alternation: pick from opposite group
+            const prevClass = classifyMaterialIndex(testLayers[i - 1].material);
+            candidates = prevClass === 'H' ? lowMats : highMats;
+          } else if (canAlternate && i === 0) {
+            // First layer: randomly pick H or L
+            candidates = Math.random() < 0.5 ? highMats : lowMats;
+          } else {
+            // Only one index group available: just avoid repeats
+            const prevMat = i > 0 ? testLayers[i - 1].material : null;
+            candidates = paletteMats.length > 1 ? paletteMats.filter(m => m !== prevMat) : paletteMats;
+          }
+          const material = candidates[Math.floor(Math.random() * candidates.length)];
+
+          let thickness;
+          if (useQWOT) {
+            // Quarter-wave optical thickness: physical thickness = λ / (4 * n)
+            // Use a random target wavelength and random multiplier (1x, 2x, 3x QWOT)
+            const refLambda = qwotWavelengths[Math.floor(Math.random() * qwotWavelengths.length)];
+            const n = getRefractiveIndex(material, refLambda);
+            const qwot = refLambda / (4 * n);
+            // Random multiplier: 1-4 quarter-waves, with ±20% jitter
+            const multiplier = 1 + Math.floor(Math.random() * 4);
+            thickness = qwot * multiplier * (0.8 + Math.random() * 0.4);
+            thickness = Math.max(10, Math.min(500, thickness));
+          } else {
+            thickness = 10 + Math.random() * 250;
+          }
+
           testLayers.push({ id: i, material, thickness });
         }
       }
@@ -5448,23 +5741,24 @@ const ThinFilmDesigner = () => {
       if (a.violation !== 0 && b.violation === 0) return 1;
       return a.score - b.score;
     });
-    const topSeeds = seeds.slice(0, 20);
+    const topSeeds = seeds.slice(0, topSeedCount);
 
     // ===== PHASE 2: Needle Refinement =====
-    setOptimizationStage("Phase 2: Refining solutions...");
-    setOptimizationProgress(25);
+    setOptimizationStage(`Phase 2: Refining ${topSeeds.length} solutions...`);
+    setOptimizationProgress(20);
     await new Promise(resolve => setTimeout(resolve, 0));
 
     const refinementPasses = [
-      { stepSizes: [20, 10], maxSweeps: 15 },   // Coarse
-      { stepSizes: [5, 2], maxSweeps: 15 },      // Medium
-      { stepSizes: [1, 0.5], maxSweeps: 20 },    // Fine
+      { stepSizes: [50, 20], maxSweeps: Math.round(10 * sweepMultiplier) },
+      { stepSizes: [10, 5], maxSweeps: Math.round(15 * sweepMultiplier) },
+      { stepSizes: [2, 1], maxSweeps: Math.round(15 * sweepMultiplier) },
+      { stepSizes: [0.5, 0.2], maxSweeps: Math.round(20 * sweepMultiplier) },
     ];
 
     const refinedSolutions = [];
 
     for (let seedIdx = 0; seedIdx < topSeeds.length; seedIdx++) {
-      setOptimizationProgress(25 + (seedIdx / topSeeds.length) * 50);
+      setOptimizationProgress(20 + (seedIdx / topSeeds.length) * 15);
       setOptimizationStage(`Phase 2: Refining solution ${seedIdx + 1} of ${topSeeds.length} — best error: ${topSeeds[0].error.toFixed(2)}%`);
       if (seedIdx % 2 === 0) await new Promise(resolve => setTimeout(resolve, 0));
 
@@ -5513,15 +5807,25 @@ const ThinFilmDesigner = () => {
             const thinLayers = currentLayers.filter(l => l.thickness < 5);
             if (thinLayers.length > 0) {
               currentLayers = currentLayers.filter(l => l.thickness >= 5);
+              // Merge adjacent same-material layers (removal may have created neighbors)
+              const merged = [currentLayers[0]];
+              for (let mi = 1; mi < currentLayers.length; mi++) {
+                if (currentLayers[mi].material === merged[merged.length - 1].material) {
+                  merged[merged.length - 1].thickness += currentLayers[mi].thickness;
+                } else {
+                  merged.push(currentLayers[mi]);
+                }
+              }
+              currentLayers = merged;
               // Re-index
               currentLayers.forEach((l, i) => { l.id = i; });
               currentResult = calculateCombinedScore(currentLayers);
             }
           }
 
-          // Check convergence
+          // Check convergence — stop when score barely changes between sweeps
           const improvement = prevScore - currentResult.score;
-          if (improvement < currentResult.score * 0.0001) break; // < 0.01% improvement
+          if (improvement >= 0 && improvement < Math.max(currentResult.score * 0.0001, 0.001)) break;
         }
       }
 
@@ -5540,6 +5844,377 @@ const ThinFilmDesigner = () => {
       });
     }
 
+    // ===== PHASE 2B: Shake and Re-refine (basin hopping) =====
+    setOptimizationStage("Phase 2B: Escaping local minima...");
+    setOptimizationProgress(35);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const shakeRefinePasses = [
+      { stepSizes: [10, 5], maxSweeps: Math.round(10 * sweepMultiplier) },
+      { stepSizes: [2, 1], maxSweeps: Math.round(10 * sweepMultiplier) },
+      { stepSizes: [0.5, 0.2], maxSweeps: Math.round(15 * sweepMultiplier) },
+    ];
+    const topForShake = refinedSolutions.sort((a, b) => a.score - b.score).slice(0, shakeSolutions);
+
+    for (let shakeRound = 0; shakeRound < shakeRounds; shakeRound++) {
+      setOptimizationStage(`Phase 2B: Shake round ${shakeRound + 1}/${shakeRounds} — best error: ${topForShake[0]?.error.toFixed(2) || '?'}%`);
+      setOptimizationProgress(35 + (shakeRound / shakeRounds) * 10);
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      for (const sol of topForShake) {
+        // Strip adhesion layer for perturbation
+        const hasAdhesion = useAdhesionLayer && sol.layers.length > 0 && sol.layers[0].id === -1;
+        const adhesionLayer = hasAdhesion ? sol.layers[0] : null;
+        const shakeLayers = JSON.parse(JSON.stringify(hasAdhesion ? sol.layers.slice(1) : sol.layers));
+
+        // Perturb all thicknesses by ±15-25%
+        for (const layer of shakeLayers) {
+          const perturbFactor = 0.75 + Math.random() * 0.5; // 0.75 to 1.25
+          layer.thickness = Math.max(5, layer.thickness * perturbFactor);
+          if (useLayerTemplate && layerTemplate[layer.id]) {
+            layer.thickness = Math.max(layerTemplate[layer.id].minThickness || 5,
+              Math.min(layerTemplate[layer.id].maxThickness || 500, layer.thickness));
+          }
+        }
+
+        // Re-refine the perturbed stack
+        let shakeResult = calculateCombinedScore(shakeLayers);
+        for (const pass of shakeRefinePasses) {
+          for (let sweep = 0; sweep < pass.maxSweeps; sweep++) {
+            const prevScore = shakeResult.score;
+            for (let li = 0; li < shakeLayers.length; li++) {
+              const origT = shakeLayers[li].thickness;
+              let bestScore = shakeResult.score;
+              let bestT = origT;
+              for (const step of pass.stepSizes) {
+                for (const sign of [1, -1]) {
+                  const nt = origT + sign * step;
+                  if (nt < 5) continue;
+                  if (useLayerTemplate && layerTemplate[li]) {
+                    if (nt < (layerTemplate[li].minThickness || 5) || nt > (layerTemplate[li].maxThickness || 500)) continue;
+                  }
+                  shakeLayers[li].thickness = nt;
+                  const tr = calculateCombinedScore(shakeLayers);
+                  if (tr.score < bestScore) { bestScore = tr.score; bestT = nt; }
+                }
+              }
+              shakeLayers[li].thickness = bestT;
+              if (bestT !== origT) shakeResult = calculateCombinedScore(shakeLayers);
+            }
+            const imp = prevScore - shakeResult.score;
+            if (imp >= 0 && imp < Math.max(shakeResult.score * 0.0001, 0.001)) break;
+          }
+        }
+
+        // Keep the shaken result if it's better
+        if (shakeResult.score < sol.score) {
+          sol.layers = adhesionLayer ? [adhesionLayer, ...JSON.parse(JSON.stringify(shakeLayers))] : JSON.parse(JSON.stringify(shakeLayers));
+          sol.score = shakeResult.score;
+          sol.error = shakeResult.error;
+          sol.maxDeviation = shakeResult.maxDeviation;
+          sol.violation = shakeResult.violation;
+          sol.perTarget = shakeResult.perTarget;
+        }
+      }
+    }
+
+    // ===== PHASE 2.5: Needle Insertion (OptiLayer-style layer insertion) =====
+    if (!useLayerTemplate) {
+      setOptimizationStage("Phase 2.5: Needle insertion...");
+      setOptimizationProgress(45);
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      const needleSolutions = Math.min(8, Math.max(3, Math.round(3 * Math.sqrt(budgetScale))));
+      const topForNeedle = refinedSolutions.sort((a, b) => a.score - b.score).slice(0, needleSolutions);
+
+      for (let nsi = 0; nsi < topForNeedle.length; nsi++) {
+        const sol = topForNeedle[nsi];
+        if (nsi % 2 === 0) {
+          setOptimizationStage(`Phase 2.5: Needle insertion ${nsi + 1}/${topForNeedle.length} — error: ${sol.error.toFixed(2)}%`);
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        // Strip adhesion layer
+        const hasAdhesion = useAdhesionLayer && sol.layers.length > 0 && sol.layers[0].id === -1;
+        const adhesionLayer = hasAdhesion ? sol.layers[0] : null;
+        let workLayers = JSON.parse(JSON.stringify(hasAdhesion ? sol.layers.slice(1) : sol.layers));
+
+        let needleImproved = true;
+        while (needleImproved && workLayers.length < maxLayers) {
+          needleImproved = false;
+          let bestInsertScore = calculateCombinedScore(workLayers).score;
+          let bestInsertPos = -1;
+          let bestInsertMat = null;
+
+          // Try inserting a thin needle at every position
+          for (let pos = 0; pos <= workLayers.length; pos++) {
+            for (const mat of paletteMats) {
+              // Enforce H/L alternation at insertion point
+              if (canAlternate) {
+                const leftMat = pos > 0 ? workLayers[pos - 1].material : null;
+                const rightMat = pos < workLayers.length ? workLayers[pos].material : null;
+                const matClass = classifyMaterialIndex(mat);
+                if (leftMat && matClass === classifyMaterialIndex(leftMat)) continue;
+                if (rightMat && matClass === classifyMaterialIndex(rightMat)) continue;
+              }
+
+              // Insert 5nm needle and score
+              const testLayers = JSON.parse(JSON.stringify(workLayers));
+              testLayers.splice(pos, 0, { id: 999, material: mat, thickness: 5 });
+              const testResult = calculateCombinedScore(testLayers);
+
+              if (testResult.score < bestInsertScore - 0.01) {
+                bestInsertScore = testResult.score;
+                bestInsertPos = pos;
+                bestInsertMat = mat;
+              }
+            }
+          }
+
+          if (bestInsertPos >= 0) {
+            // Accept the best insertion
+            workLayers.splice(bestInsertPos, 0, { id: 999, material: bestInsertMat, thickness: 5 });
+            workLayers.forEach((l, idx) => { l.id = idx; });
+
+            // Quick coordinate descent refinement on the expanded stack
+            const needleRefPasses = [
+              { stepSizes: [20, 10], maxSweeps: 5 },
+              { stepSizes: [5, 2], maxSweeps: 5 },
+              { stepSizes: [1, 0.5], maxSweeps: 5 },
+            ];
+            let currentResult = calculateCombinedScore(workLayers);
+            for (const pass of needleRefPasses) {
+              for (let sweep = 0; sweep < pass.maxSweeps; sweep++) {
+                const prevScore = currentResult.score;
+                for (let li = 0; li < workLayers.length; li++) {
+                  const originalThickness = workLayers[li].thickness;
+                  let bScore = currentResult.score;
+                  let bThick = originalThickness;
+                  for (const step of pass.stepSizes) {
+                    for (const sign of [1, -1]) {
+                      const nt = originalThickness + sign * step;
+                      if (nt < 3) continue;
+                      workLayers[li].thickness = nt;
+                      const tr = calculateCombinedScore(workLayers);
+                      if (tr.score < bScore) { bScore = tr.score; bThick = nt; }
+                    }
+                  }
+                  workLayers[li].thickness = bThick;
+                  if (bThick !== originalThickness) currentResult = calculateCombinedScore(workLayers);
+                }
+                const imp = prevScore - currentResult.score;
+                if (imp >= 0 && imp < Math.max(currentResult.score * 0.0001, 0.001)) break;
+              }
+            }
+
+            // Remove layers that stayed very thin (needle didn't grow)
+            workLayers = workLayers.filter(l => l.thickness >= 3);
+            workLayers.forEach((l, idx) => { l.id = idx; });
+
+            needleImproved = true;
+          }
+        }
+
+        // Merge adjacent same-material layers if any were created
+        if (workLayers.length > 1) {
+          const merged = [{ ...workLayers[0] }];
+          for (let mi = 1; mi < workLayers.length; mi++) {
+            if (workLayers[mi].material === merged[merged.length - 1].material) {
+              merged[merged.length - 1].thickness += workLayers[mi].thickness;
+            } else {
+              merged.push({ ...workLayers[mi] });
+            }
+          }
+          if (merged.length < workLayers.length) {
+            workLayers = merged;
+            workLayers.forEach((l, idx) => { l.id = idx; });
+          }
+        }
+
+        const needleResult = calculateCombinedScore(workLayers);
+        if (needleResult.score < sol.score) {
+          sol.layers = adhesionLayer
+            ? [adhesionLayer, ...JSON.parse(JSON.stringify(workLayers))]
+            : JSON.parse(JSON.stringify(workLayers));
+          sol.score = needleResult.score;
+          sol.error = needleResult.error;
+          sol.maxDeviation = needleResult.maxDeviation;
+          sol.violation = needleResult.violation;
+          sol.perTarget = needleResult.perTarget;
+        }
+      }
+    }
+
+    // ===== PHASE 2C: Levenberg-Marquardt Polishing =====
+    {
+      setOptimizationStage("Phase 2C: Levenberg-Marquardt refinement...");
+      setOptimizationProgress(60);
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      // Build evaluation wavelengths and targets once
+      const lmEvalPoints = [];
+      if (reverseEngineerMode && reverseEngineerData) {
+        for (const dp of reverseEngineerData) {
+          lmEvalPoints.push({ wavelength: dp.wavelength, target: dp.reflectivity });
+        }
+      } else {
+        for (const point of designPoints) {
+          const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+          if (point.useWavelengthRange) {
+            for (let lambda = point.wavelengthMin; lambda <= point.wavelengthMax; lambda += 5) {
+              lmEvalPoints.push({ wavelength: lambda, target: targetValue });
+            }
+          } else {
+            const lambda = (point.wavelengthMin + point.wavelengthMax) / 2;
+            lmEvalPoints.push({ wavelength: lambda, target: targetValue });
+          }
+        }
+      }
+
+      // Compute residual vector: r_i = calcR(λ_i) - target_i
+      const computeLMResiduals = (lmLayers) => {
+        const r = new Array(lmEvalPoints.length);
+        for (let i = 0; i < lmEvalPoints.length; i++) {
+          let calcR = calculateReflectivityAtWavelength(lmEvalPoints[i].wavelength, lmLayers);
+          if (reverseEngineerMode && doubleSidedAR) {
+            calcR = calcR + (1 - calcR) * (1 - calcR) * calcR;
+          }
+          r[i] = calcR * 100 - lmEvalPoints[i].target;
+        }
+        return r;
+      };
+
+      const topForLM = refinedSolutions.sort((a, b) => a.score - b.score).slice(0, lmSolutions);
+
+      for (let solIdx = 0; solIdx < topForLM.length; solIdx++) {
+        const sol = topForLM[solIdx];
+        if (solIdx % 2 === 0) {
+          setOptimizationStage(`Phase 2C: LM refining solution ${solIdx + 1}/${topForLM.length} — error: ${sol.error.toFixed(2)}%`);
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        // Strip adhesion layer for optimization
+        const hasAdhesion = useAdhesionLayer && sol.layers.length > 0 && sol.layers[0].id === -1;
+        const adhesionLayer = hasAdhesion ? sol.layers[0] : null;
+        const lmLayers = JSON.parse(JSON.stringify(hasAdhesion ? sol.layers.slice(1) : sol.layers));
+        const nParams = lmLayers.length;
+        if (nParams === 0 || lmEvalPoints.length === 0) continue;
+
+        // Thickness bounds
+        const minThick = lmLayers.map((_, i) => {
+          if (useLayerTemplate && layerTemplate[i]) return layerTemplate[i].minThickness || 5;
+          return 5;
+        });
+        const maxThick = lmLayers.map((_, i) => {
+          if (useLayerTemplate && layerTemplate[i]) return layerTemplate[i].maxThickness || 2000;
+          return 2000;
+        });
+
+        // Run LM with one restart (perturb + re-converge to escape shallow local minima)
+        for (let lmRun = 0; lmRun < 2; lmRun++) {
+          if (lmRun === 1) {
+            // Restart: perturb thicknesses by ±1% and reset damping
+            for (let j = 0; j < nParams; j++) {
+              const perturbFactor = 0.99 + Math.random() * 0.02;
+              lmLayers[j].thickness = Math.max(minThick[j],
+                Math.min(maxThick[j], lmLayers[j].thickness * perturbFactor));
+            }
+          }
+
+        let residuals = computeLMResiduals(lmLayers);
+        let cost = 0;
+        for (let i = 0; i < residuals.length; i++) cost += residuals[i] * residuals[i];
+        let lambda = lmRun === 0 ? 1e-3 : 1e-2;
+
+        for (let iter = 0; iter < lmMaxIters; iter++) {
+          const nRes = residuals.length;
+
+          // Compute Jacobian columns via central differences with adaptive step
+          const JtJ = Array.from({ length: nParams }, () => new Float64Array(nParams));
+          const Jtr = new Float64Array(nParams);
+          const Jcols = [];
+
+          for (let j = 0; j < nParams; j++) {
+            const origT = lmLayers[j].thickness;
+            const dt_j = Math.max(0.01, Math.min(0.1, origT * 0.001));
+            lmLayers[j].thickness = origT + dt_j;
+            const rPlus = computeLMResiduals(lmLayers);
+            lmLayers[j].thickness = origT - dt_j;
+            const rMinus = computeLMResiduals(lmLayers);
+            lmLayers[j].thickness = origT;
+
+            const col = new Float64Array(nRes);
+            for (let i = 0; i < nRes; i++) col[i] = (rPlus[i] - rMinus[i]) / (2 * dt_j);
+            Jcols.push(col);
+          }
+
+          // Accumulate J^T J (symmetric) and J^T r
+          for (let j = 0; j < nParams; j++) {
+            for (let k = j; k < nParams; k++) {
+              let sum = 0;
+              for (let i = 0; i < nRes; i++) sum += Jcols[j][i] * Jcols[k][i];
+              JtJ[j][k] = sum;
+              JtJ[k][j] = sum;
+            }
+            let sum = 0;
+            for (let i = 0; i < nRes; i++) sum += Jcols[j][i] * residuals[i];
+            Jtr[j] = sum;
+          }
+
+          // Damped normal equations: (J^T J + λ·diag(J^T J)) δ = -J^T r
+          const damped = JtJ.map((row, i) => {
+            const newRow = Array.from(row);
+            newRow[i] += lambda * Math.max(newRow[i], 1e-6);
+            return newRow;
+          });
+          const negJtr = Array.from(Jtr).map(v => -v);
+          const delta = solveLinear(damped, negJtr);
+          if (!delta) break;
+
+          // Trial step with bounds clamping
+          const savedThicknesses = lmLayers.map(l => l.thickness);
+          for (let j = 0; j < nParams; j++) {
+            lmLayers[j].thickness = Math.max(minThick[j],
+              Math.min(maxThick[j], savedThicknesses[j] + delta[j]));
+          }
+
+          const trialResiduals = computeLMResiduals(lmLayers);
+          let trialCost = 0;
+          for (let i = 0; i < trialResiduals.length; i++) trialCost += trialResiduals[i] * trialResiduals[i];
+
+          if (trialCost < cost) {
+            // Accept step, decrease damping
+            residuals = trialResiduals;
+            cost = trialCost;
+            lambda *= 0.3;
+            lambda = Math.max(lambda, 1e-12);
+          } else {
+            // Reject step, restore thicknesses, increase damping
+            for (let j = 0; j < nParams; j++) lmLayers[j].thickness = savedThicknesses[j];
+            lambda *= 10;
+            if (lambda > 1e12) break;
+          }
+
+          // Convergence: max thickness change < 0.005 nm
+          if (Math.max(...delta.map(Math.abs)) < 0.005) break;
+        }
+        } // end lmRun restart loop
+
+        // Re-score with full merit function (includes constraint violations)
+        const lmResult = calculateCombinedScore(lmLayers);
+        if (lmResult.score < sol.score) {
+          sol.layers = adhesionLayer
+            ? [adhesionLayer, ...JSON.parse(JSON.stringify(lmLayers))]
+            : JSON.parse(JSON.stringify(lmLayers));
+          sol.score = lmResult.score;
+          sol.error = lmResult.error;
+          sol.maxDeviation = lmResult.maxDeviation;
+          sol.violation = lmResult.violation;
+          sol.perTarget = lmResult.perTarget;
+        }
+      }
+    }
+
     // ===== PHASE 3: Material Swapping =====
     setOptimizationStage("Phase 3: Testing material swaps...");
     setOptimizationProgress(75);
@@ -5548,8 +6223,7 @@ const ThinFilmDesigner = () => {
     let improvementsFound = 0;
 
     if (!useLayerTemplate && paletteMats.length > 1) {
-      // Only swap on top 5 solutions to save time
-      const topForSwap = refinedSolutions.sort((a, b) => a.score - b.score).slice(0, 5);
+      const topForSwap = refinedSolutions.sort((a, b) => a.score - b.score).slice(0, swapSolutions);
 
       for (const sol of topForSwap) {
         // Strip adhesion layer for scoring consistency with Phase 1/2
@@ -5563,8 +6237,18 @@ const ThinFilmDesigner = () => {
           let bestScore = calculateCombinedScore(swapLayers).score;
           let bestMaterial = originalMaterial;
 
+          // Skip materials that would violate H/L alternation or create mergeable 3-in-a-row
+          const prevMat = layerIdx > 0 ? swapLayers[layerIdx - 1].material : null;
+          const nextMat = layerIdx < swapLayers.length - 1 ? swapLayers[layerIdx + 1].material : null;
+          const prevClass = prevMat ? classifyMaterialIndex(prevMat) : null;
+          const nextClass = nextMat ? classifyMaterialIndex(nextMat) : null;
+
           for (const mat of paletteMats) {
             if (mat === originalMaterial) continue;
+            if (mat === prevMat && mat === nextMat) continue;
+            // Skip if same index class as BOTH neighbors (guaranteed delamination risk)
+            const matClass = classifyMaterialIndex(mat);
+            if (canAlternate && prevClass && nextClass && matClass === prevClass && matClass === nextClass) continue;
             swapLayers[layerIdx].material = mat;
             const testResult = calculateCombinedScore(swapLayers);
 
@@ -5612,14 +6296,175 @@ const ThinFilmDesigner = () => {
             sol.perTarget = finalResult.perTarget;
           }
         }
+
+        // Merge adjacent same-material layers created by swaps
+        const coreLayers = adhesionLayer ? sol.layers.slice(1) : sol.layers;
+        if (coreLayers.length > 1) {
+          const merged = [{ ...coreLayers[0] }];
+          for (let mi = 1; mi < coreLayers.length; mi++) {
+            if (coreLayers[mi].material === merged[merged.length - 1].material) {
+              merged[merged.length - 1].thickness += coreLayers[mi].thickness;
+            } else {
+              merged.push({ ...coreLayers[mi] });
+            }
+          }
+          if (merged.length < coreLayers.length) {
+            merged.forEach((l, i) => { l.id = i; });
+            const mergedResult = calculateCombinedScore(merged);
+            sol.layers = adhesionLayer ? [adhesionLayer, ...merged] : merged;
+            sol.score = mergedResult.score;
+            sol.error = mergedResult.error;
+            sol.maxDeviation = mergedResult.maxDeviation;
+            sol.violation = mergedResult.violation;
+            sol.perTarget = mergedResult.perTarget;
+          }
+        }
       }
     }
 
     setOptimizationStage(`Phase 3: Testing material swaps... ${improvementsFound} improvements found`);
 
+    // ===== PHASE 4: Final LM Polish (re-converge after material swaps) =====
+    if (improvementsFound > 0) {
+      setOptimizationStage("Phase 4: Final LM polish...");
+      setOptimizationProgress(85);
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      // Re-use lmEvalPoints from Phase 2C (still in scope)
+      const lmEvalPointsFinal = [];
+      if (reverseEngineerMode && reverseEngineerData) {
+        for (const dp of reverseEngineerData) {
+          lmEvalPointsFinal.push({ wavelength: dp.wavelength, target: dp.reflectivity });
+        }
+      } else {
+        for (const point of designPoints) {
+          const targetValue = (point.reflectivityMin + point.reflectivityMax) / 2;
+          if (point.useWavelengthRange) {
+            for (let lambda = point.wavelengthMin; lambda <= point.wavelengthMax; lambda += 5) {
+              lmEvalPointsFinal.push({ wavelength: lambda, target: targetValue });
+            }
+          } else {
+            const lambda = (point.wavelengthMin + point.wavelengthMax) / 2;
+            lmEvalPointsFinal.push({ wavelength: lambda, target: targetValue });
+          }
+        }
+      }
+
+      const computeFinalResiduals = (lmLayers) => {
+        const r = new Array(lmEvalPointsFinal.length);
+        for (let i = 0; i < lmEvalPointsFinal.length; i++) {
+          let calcR = calculateReflectivityAtWavelength(lmEvalPointsFinal[i].wavelength, lmLayers);
+          if (reverseEngineerMode && doubleSidedAR) {
+            calcR = calcR + (1 - calcR) * (1 - calcR) * calcR;
+          }
+          r[i] = calcR * 100 - lmEvalPointsFinal[i].target;
+        }
+        return r;
+      };
+
+      const topForFinalLM = refinedSolutions.sort((a, b) => a.score - b.score).slice(0, finalLMSolutions);
+      for (const sol of topForFinalLM) {
+        const hasAdhesion = useAdhesionLayer && sol.layers.length > 0 && sol.layers[0].id === -1;
+        const adhesionLayer = hasAdhesion ? sol.layers[0] : null;
+        const lmLayers = JSON.parse(JSON.stringify(hasAdhesion ? sol.layers.slice(1) : sol.layers));
+        const nParams = lmLayers.length;
+        if (nParams === 0 || lmEvalPointsFinal.length === 0) continue;
+
+        const minThick = lmLayers.map((_, i) => {
+          if (useLayerTemplate && layerTemplate[i]) return layerTemplate[i].minThickness || 5;
+          return 5;
+        });
+        const maxThick = lmLayers.map((_, i) => {
+          if (useLayerTemplate && layerTemplate[i]) return layerTemplate[i].maxThickness || 2000;
+          return 2000;
+        });
+
+        let residuals = computeFinalResiduals(lmLayers);
+        let cost = 0;
+        for (let i = 0; i < residuals.length; i++) cost += residuals[i] * residuals[i];
+        let lambda = 1e-3;
+
+        for (let iter = 0; iter < finalLMIters; iter++) {
+          const nRes = residuals.length;
+          const JtJ = Array.from({ length: nParams }, () => new Float64Array(nParams));
+          const Jtr = new Float64Array(nParams);
+          const Jcols = [];
+
+          for (let j = 0; j < nParams; j++) {
+            const origT = lmLayers[j].thickness;
+            const dt_j = Math.max(0.01, Math.min(0.1, origT * 0.001));
+            lmLayers[j].thickness = origT + dt_j;
+            const rPlus = computeFinalResiduals(lmLayers);
+            lmLayers[j].thickness = origT - dt_j;
+            const rMinus = computeFinalResiduals(lmLayers);
+            lmLayers[j].thickness = origT;
+            const col = new Float64Array(nRes);
+            for (let i = 0; i < nRes; i++) col[i] = (rPlus[i] - rMinus[i]) / (2 * dt_j);
+            Jcols.push(col);
+          }
+
+          for (let j = 0; j < nParams; j++) {
+            for (let k = j; k < nParams; k++) {
+              let sum = 0;
+              for (let i = 0; i < nRes; i++) sum += Jcols[j][i] * Jcols[k][i];
+              JtJ[j][k] = sum;
+              JtJ[k][j] = sum;
+            }
+            let sum = 0;
+            for (let i = 0; i < nRes; i++) sum += Jcols[j][i] * residuals[i];
+            Jtr[j] = sum;
+          }
+
+          const damped = JtJ.map((row, i) => {
+            const newRow = Array.from(row);
+            newRow[i] += lambda * Math.max(newRow[i], 1e-6);
+            return newRow;
+          });
+          const negJtr = Array.from(Jtr).map(v => -v);
+          const delta = solveLinear(damped, negJtr);
+          if (!delta) break;
+
+          const savedThicknesses = lmLayers.map(l => l.thickness);
+          for (let j = 0; j < nParams; j++) {
+            lmLayers[j].thickness = Math.max(minThick[j],
+              Math.min(maxThick[j], savedThicknesses[j] + delta[j]));
+          }
+
+          const trialResiduals = computeFinalResiduals(lmLayers);
+          let trialCost = 0;
+          for (let i = 0; i < trialResiduals.length; i++) trialCost += trialResiduals[i] * trialResiduals[i];
+
+          if (trialCost < cost) {
+            residuals = trialResiduals;
+            cost = trialCost;
+            lambda *= 0.3;
+            lambda = Math.max(lambda, 1e-12);
+          } else {
+            for (let j = 0; j < nParams; j++) lmLayers[j].thickness = savedThicknesses[j];
+            lambda *= 10;
+            if (lambda > 1e12) break;
+          }
+
+          if (Math.max(...delta.map(Math.abs)) < 0.005) break;
+        }
+
+        const lmResult = calculateCombinedScore(lmLayers);
+        if (lmResult.score < sol.score) {
+          sol.layers = adhesionLayer
+            ? [adhesionLayer, ...JSON.parse(JSON.stringify(lmLayers))]
+            : JSON.parse(JSON.stringify(lmLayers));
+          sol.score = lmResult.score;
+          sol.error = lmResult.error;
+          sol.maxDeviation = lmResult.maxDeviation;
+          sol.violation = lmResult.violation;
+          sol.perTarget = lmResult.perTarget;
+        }
+      }
+    }
+
     // ===== FINAL: Sort, deduplicate, filter =====
     setOptimizationStage("Finalizing solutions...");
-    setOptimizationProgress(90);
+    setOptimizationProgress(95);
     await new Promise(resolve => setTimeout(resolve, 0));
 
     // Sort: compliant solutions first, then by error
@@ -5644,14 +6489,19 @@ const ThinFilmDesigner = () => {
       if (deduplicated.length >= 10) break; // Keep pool for filtering
     }
 
-    // Filter by error threshold and constraint compliance
+    // Filter by error threshold
     const qualified = deduplicated.filter(s => s.error < maxErrorThreshold);
 
     let finalSolutions;
     if (qualified.length >= 1) {
       finalSolutions = qualified.slice(0, 5);
+    } else if (deduplicated.length > 0) {
+      // Always show best solutions even if above error threshold, with a warning
+      finalSolutions = deduplicated.slice(0, 5);
+      const bestError = deduplicated[0].error.toFixed(2);
+      showToast(`Best solutions have ${bestError}% RMS error (above ${maxErrorThreshold}% threshold). Try: adding more materials, increasing layer count, or raising Max Error.`, 'error');
     } else {
-      // No solutions meet criteria — show best anyway with message
+      // No solutions meet criteria
       const bestError = deduplicated.length > 0 ? deduplicated[0].error.toFixed(2) : "N/A";
       const bestViolation = deduplicated.length > 0 && deduplicated[0].violation > 0;
       const msg = bestViolation
@@ -5675,13 +6525,6 @@ const ThinFilmDesigner = () => {
         });
       }
 
-      let solutionColorInfo = null;
-      if (colorTargetMode) {
-        solutionColorInfo = calculateStackColorDeltaE(
-          sol.layers, currentStackId, targetColorL, targetColorA, targetColorB
-        );
-      }
-
       // Final 2nm validation pass for hard constraints
       const finalCheck = calculateConstraintViolation(sol.layers, 2);
 
@@ -5689,7 +6532,6 @@ const ThinFilmDesigner = () => {
         ...sol,
         chartData: data,
         id: idx + 1,
-        colorInfo: solutionColorInfo,
         targetResults: finalCheck.perTarget,
       };
     });
@@ -8056,8 +8898,8 @@ const ThinFilmDesigner = () => {
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="radio"
-                    checked={!reverseEngineerMode && !colorTargetMode}
-                    onChange={() => { setReverseEngineerMode(false); setColorTargetMode(false); }}
+                    checked={!reverseEngineerMode}
+                    onChange={() => { setReverseEngineerMode(false); }}
                     className="cursor-pointer"
                   />
                   <span className="text-sm font-medium">Target Point Mode</span>
@@ -8069,7 +8911,7 @@ const ThinFilmDesigner = () => {
                     disabled={!tierLimits.reverseEngineer}
                     onChange={() => {
                       if (!tierLimits.reverseEngineer) { setUpgradeFeature('Reverse Engineer mode'); setShowUpgradePrompt(true); return; }
-                      setReverseEngineerMode(true); setColorTargetMode(false);
+                      setReverseEngineerMode(true);
                     }}
                     className={tierLimits.reverseEngineer ? "cursor-pointer" : "cursor-not-allowed"}
                   />
@@ -8077,35 +8919,6 @@ const ThinFilmDesigner = () => {
                     Reverse Engineer CSV{!tierLimits.reverseEngineer ? ' 🔒' : ''}
                   </span>
                 </label>
-                <label className={`flex items-center gap-2 ${tierLimits.colorTargetMode ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
-                  <input
-                    type="radio"
-                    checked={colorTargetMode}
-                    disabled={!tierLimits.colorTargetMode}
-                    onChange={() => {
-                      if (!tierLimits.colorTargetMode) { setUpgradeFeature('Color Target mode'); setShowUpgradePrompt(true); return; }
-                      setColorTargetMode(true); setReverseEngineerMode(false);
-                    }}
-                    className={tierLimits.colorTargetMode ? "cursor-pointer" : "cursor-not-allowed"}
-                  />
-                  <span className="text-sm font-medium">
-                    Color Target Mode{!tierLimits.colorTargetMode ? ' 🔒' : ''}
-                  </span>
-                </label>
-                <div className="border-l border-blue-300 pl-4 ml-2">
-                  <label 
-                    className="flex items-center gap-2 cursor-pointer"
-                    title="Enable if measured without black backing (includes backside reflection)"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={doubleSidedAR}
-                      onChange={(e) => setDoubleSidedAR(e.target.checked)}
-                      className="cursor-pointer"
-                    />
-                    <span className="text-sm font-medium">+Backside</span>
-                  </label>
-                </div>
               </div>
 
               {reverseEngineerMode && (
@@ -8173,8 +8986,8 @@ const ThinFilmDesigner = () => {
                 
                 {/* Scrollable content area */}
                 <div className="flex-1 overflow-y-auto min-h-0 pr-2">
-                
-                {colorTargetMode && (
+
+                {false && colorTargetMode && (
                   <div className="p-2 bg-purple-50 rounded border border-purple-200 mb-3 flex-shrink-0">
                     <div className="flex items-center gap-2 mb-2">
                       <div 
@@ -8490,7 +9303,7 @@ const ThinFilmDesigner = () => {
                         step="10000"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        50k=fast, 200k=normal, 500k=thorough
+                        50k=fast (~30s), 200k=normal (~2-3min), 500k=thorough (~5-8min)
                       </p>
                     </div>
 
@@ -8515,7 +9328,7 @@ const ThinFilmDesigner = () => {
                             }}
                             className="w-full px-2 py-1 border rounded text-sm"
                             min="1"
-                            max="20"
+                            max="50"
                           />
                           <span className="text-xs text-gray-400">–</span>
                           <input
@@ -8547,7 +9360,7 @@ const ThinFilmDesigner = () => {
                             }}
                             className="w-full px-2 py-1 border rounded text-sm"
                             min="1"
-                            max="20"
+                            max="50"
                           />
                         </div>
                       </div>
@@ -9128,7 +9941,7 @@ const ThinFilmDesigner = () => {
                   onClick={optimizeDesign}
                   disabled={
                     optimizing ||
-                    (!reverseEngineerMode && !colorTargetMode && designPoints.length === 0) ||
+                    (!reverseEngineerMode && designPoints.length === 0) ||
                     (reverseEngineerMode && !reverseEngineerData) ||
                     (!useLayerTemplate && designMaterials.length === 0)
                   }
@@ -9165,7 +9978,7 @@ const ThinFilmDesigner = () => {
                       ></div>
                     </div>
                     <p className="text-xs text-gray-500 mt-1 text-center">
-                      This may take 1-3 minutes for best results (&lt;3% error)
+                      This may take 30 seconds to 8 minutes depending on iteration count
                     </p>
                   </div>
                 )}
@@ -9199,11 +10012,9 @@ const ThinFilmDesigner = () => {
                             }`}
                           >
                             {solution.error < 3 ? "✓ " : ""}
-                            {colorTargetMode 
-                              ? `ΔE* ${solution.error.toFixed(2)}` 
-                              : `${solution.error.toFixed(2)}% error${solution.maxDeviation !== undefined ? ` (max: ${solution.maxDeviation.toFixed(1)}%)` : ''}`}
+                            {`${solution.error.toFixed(2)}% error${solution.maxDeviation !== undefined ? ` (max: ${solution.maxDeviation.toFixed(1)}%)` : ''}`}
                           </span>
-                          {!colorTargetMode && !reverseEngineerMode && solution.targetResults && (
+                          {!reverseEngineerMode && solution.targetResults && (
                             <div className="flex gap-1 mt-1 flex-wrap">
                               {solution.targetResults.map((tr, ti) => (
                                 <span key={ti} className={`text-[10px] px-1 rounded ${tr.pass ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
@@ -9214,28 +10025,8 @@ const ThinFilmDesigner = () => {
                           )}
                         </div>
 
-                        {/* Color Swatch for Color Target Mode */}
-                        {colorTargetMode && solution.colorInfo && (
-                          <div className="mb-2 p-2 bg-white rounded border flex items-center gap-3">
-                            <div
-                              className="w-12 h-12 rounded border-2 border-gray-300 shadow-inner flex-shrink-0"
-                              style={{ backgroundColor: solution.colorInfo.rgb }}
-                              title={`L*=${solution.colorInfo.L.toFixed(1)} a*=${solution.colorInfo.a.toFixed(1)} b*=${solution.colorInfo.b.toFixed(1)}`}
-                            ></div>
-                            <div className="text-xs">
-                              <div className="font-semibold text-gray-700">Resulting Color</div>
-                              <div>L*: {solution.colorInfo.L.toFixed(1)}</div>
-                              <div>a*: {solution.colorInfo.a.toFixed(1)}</div>
-                              <div>b*: {solution.colorInfo.b.toFixed(1)}</div>
-                            </div>
-                            <div className="ml-auto text-right">
-                              <div className="text-xs text-gray-500">Target</div>
-                              <div className="text-xs">L*: {targetColorL}</div>
-                              <div className="text-xs">a*: {targetColorA}</div>
-                              <div className="text-xs">b*: {targetColorB}</div>
-                            </div>
-                          </div>
-                        )}
+
+
 
                         {/* Preview Chart */}
                         {solution.chartData && (
@@ -12345,7 +13136,6 @@ const ThinFilmDesigner = () => {
                     { label: 'Target Optimizer', values: [true, true, true, true] },
                     { label: 'Max Optimization Layers', values: ['6', '15', '50', '100'] },
                     { label: 'Reverse Engineer', values: [false, false, true, true] },
-                    { label: 'Color Target Mode', values: [false, false, true, true] },
                     { label: 'CSV Upload', values: [false, false, true, true] },
                   ].map((row, i) => (
                     <tr key={row.label} style={{ background: i % 2 === 0 ? '#f9fafb' : '#fff' }}>
