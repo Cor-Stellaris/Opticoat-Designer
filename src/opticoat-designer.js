@@ -41,6 +41,8 @@ import {
   MessageCircle,
   Send,
   Copy,
+  Moon,
+  Sun,
 } from "lucide-react";
 import { saveSession, loadSession, migrateFromLocalStorage, saveDesignLocally, getLocalDesigns, deleteLocalDesign } from './services/offlineStore';
 import syncManager from './services/syncManager';
@@ -296,6 +298,11 @@ function computeReflectivityFromData(designData, customMats = {}) {
 
 const ThinFilmDesigner = () => {
   const [activeTab, setActiveTab] = useState("designer");
+
+  // Dark mode state — persisted to localStorage, synced to <html> class
+  const [darkMode, setDarkMode] = useState(() => {
+    try { return localStorage.getItem('opticoat-darkMode') === 'true'; } catch { return false; }
+  });
 
   const [layers, setLayers] = useState([
     { id: 1, material: "SiO2", thickness: 148.42, iad: null, packingDensity: 1.0 },
@@ -562,6 +569,65 @@ const ThinFilmDesigner = () => {
   // Auth state (Clerk)
   const { isSignedIn, user: authUser } = useClerkUser();
   const { getToken } = useClerkAuth();
+
+  // ─── Theme-aware color helpers (for inline styles & Recharts props) ───
+  const theme = {
+    // Surfaces
+    surface: darkMode ? '#161830' : '#ffffff',
+    surfaceAlt: darkMode ? '#1a1c38' : '#f9fafb',
+    surfaceHover: darkMode ? '#22244a' : '#f3f4f6',
+    appBg: darkMode ? '#0c0d1a' : '#eef2ff',
+    // Text
+    textPrimary: darkMode ? '#e2e4e9' : '#1f2937',
+    textSecondary: darkMode ? '#a8adb8' : '#4b5563',
+    textTertiary: darkMode ? '#8891a0' : '#6b7280',
+    textMuted: darkMode ? '#5c6370' : '#9ca3af',
+    // Borders
+    border: darkMode ? '#2a2c4a' : '#e5e7eb',
+    borderStrong: darkMode ? '#363860' : '#d1d5db',
+    // Accent
+    accent: darkMode ? '#6366f1' : '#4f46e5',
+    accentLight: darkMode ? '#1e1f3a' : '#e0e7ff',
+    accentText: darkMode ? '#818cf8' : '#4f46e5',
+    accentHover: darkMode ? '#818cf8' : '#4338ca',
+    // Status
+    success: darkMode ? '#22c55e' : '#16a34a',
+    error: darkMode ? '#f87171' : '#dc2626',
+    warning: darkMode ? '#fbbf24' : '#d97706',
+    // Charts
+    chartBg: darkMode ? '#161830' : '#ffffff',
+    chartGrid: darkMode ? '#2a2c4a' : '#e5e7eb',
+    chartAxisText: darkMode ? '#8891a0' : '#6b7280',
+    chartTooltipBg: darkMode ? '#1e2040' : '#ffffff',
+    chartTooltipBorder: darkMode ? '#363860' : '#e5e7eb',
+    chartTooltipText: darkMode ? '#e2e4e9' : '#1f2937',
+    // Inputs
+    inputBg: darkMode ? '#1a1c38' : '#ffffff',
+    inputBorder: darkMode ? '#363860' : '#d1d5db',
+    inputText: darkMode ? '#e2e4e9' : '#1f2937',
+    // Shadow
+    shadow: darkMode
+      ? '0 4px 6px -1px rgba(0,0,0,0.5), 0 2px 4px -1px rgba(0,0,0,0.4)'
+      : '0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.06)',
+    shadowLg: darkMode
+      ? '0 10px 15px -3px rgba(0,0,0,0.6), 0 4px 6px -2px rgba(0,0,0,0.4)'
+      : '0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.05)',
+    // Overlay
+    overlay: darkMode ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.5)',
+  };
+
+  // Helper: adjust material pastel colors for dark mode (reduce lightness for dark bg)
+  const getMaterialBg = (hexColor, opacity = 0.15) => {
+    if (!darkMode) return hexColor;
+    // In dark mode, use the material color at low opacity over dark surface
+    return `${hexColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+  };
+
+  // Dark mode: sync class on <html> and persist to localStorage
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    try { localStorage.setItem('opticoat-darkMode', String(darkMode)); } catch {}
+  }, [darkMode]);
 
   // Set token provider for API client
   useEffect(() => {
@@ -3146,7 +3212,7 @@ const ThinFilmDesigner = () => {
 
     let statsHTML = `<div style="${s({
       width: '200px', padding: '12px', 'font-family': 'Arial,sans-serif', 'font-size': '11px',
-      color: '#374151', 'background-color': '#ffffff', 'border-left': '1px solid #e5e7eb',
+      color: theme.textPrimary, 'background-color': '#ffffff', 'border-left': '1px solid #e5e7eb',
       display: 'flex', 'flex-direction': 'column', gap: '10px', overflow: 'hidden'
     })}">`;
 
@@ -3199,7 +3265,7 @@ const ThinFilmDesigner = () => {
     document.body.appendChild(exportWrapper);
 
     html2canvas(exportWrapper, {
-      backgroundColor: '#ffffff',
+      backgroundColor: darkMode ? '#161830' : '#ffffff',
       scale: 2,
       useCORS: true,
       width: chartRect.width + 200,
@@ -6828,13 +6894,13 @@ const ThinFilmDesigner = () => {
   const renderAdmittanceChart = () => (
     <ResponsiveContainer width="100%" height="100%">
       <ScatterChart margin={{ top: 10, right: 20, bottom: 40, left: 30 }}>
-        <CartesianGrid strokeDasharray="3 3" />
+        <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
         <XAxis
           dataKey="re"
           type="number"
           name="Re(Y)"
           label={{ value: "Re(Y) — Admittance", position: "insideBottom", offset: -5 }}
-          tick={{ fontSize: 10 }}
+          tick={{ fontSize: 10, fill: theme.chartAxisText }}
           domain={["auto", "auto"]}
         />
         <YAxis
@@ -6842,11 +6908,11 @@ const ThinFilmDesigner = () => {
           type="number"
           name="Im(Y)"
           label={{ value: "Im(Y)", angle: -90, position: "insideLeft", offset: -10 }}
-          tick={{ fontSize: 10 }}
+          tick={{ fontSize: 10, fill: theme.chartAxisText }}
           domain={["auto", "auto"]}
         />
         <Tooltip content={admittanceTooltipContent} />
-        <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px" }} verticalAlign="bottom" />
+        <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} verticalAlign="bottom" />
         {admittanceData.map((locus) => (
           <Scatter
             key={`adm-${locus.wavelength}`}
@@ -6867,7 +6933,7 @@ const ThinFilmDesigner = () => {
   const renderEfieldChart = () => (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={efieldData.data || []} margin={{ top: 10, right: 20, bottom: 40, left: 30 }}>
-        <CartesianGrid strokeDasharray="3 3" />
+        <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
         {efieldData.layers.map((layer, idx) => (
           <ReferenceArea
             key={`efield-layer-${idx}`}
@@ -6882,12 +6948,12 @@ const ThinFilmDesigner = () => {
           dataKey="depth"
           type="number"
           label={{ value: "Depth (nm)", position: "insideBottom", offset: -5 }}
-          tick={{ fontSize: 10 }}
+          tick={{ fontSize: 10, fill: theme.chartAxisText }}
           domain={["auto", "auto"]}
         />
         <YAxis
           label={{ value: "|E|\u00B2 / |E\u2080|\u00B2", angle: -90, position: "insideLeft", offset: -10 }}
-          tick={{ fontSize: 10 }}
+          tick={{ fontSize: 10, fill: theme.chartAxisText }}
           domain={[0, "auto"]}
         />
         <Tooltip
@@ -6907,7 +6973,7 @@ const ThinFilmDesigner = () => {
             return null;
           }}
         />
-        <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px" }} verticalAlign="bottom" />
+        <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} verticalAlign="bottom" />
         {efieldData.lines.map((line) => (
           <Line
             key={`efield-${line.wavelength}`}
@@ -7015,8 +7081,23 @@ const ThinFilmDesigner = () => {
               <span>Load</span>
             </button>
 
+            {/* Dark mode toggle */}
+            <button
+              onClick={() => setDarkMode(prev => !prev)}
+              className="flex items-center justify-center rounded"
+              style={{
+                width: 28, height: 28,
+                background: darkMode ? 'var(--accent-light)' : 'var(--accent-lighter)',
+                color: 'var(--accent-text)',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+              title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {darkMode ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
+
             {/* Online/Offline indicator */}
-            <div className="flex items-center gap-1 px-2 py-1 rounded-t text-xs" style={{ color: isOnline ? '#16a34a' : '#d97706' }}>
+            <div className="flex items-center gap-1 px-2 py-1 rounded-t text-xs" style={{ color: isOnline ? 'var(--success)' : 'var(--warning)' }}>
               {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
             </div>
 
@@ -7389,7 +7470,7 @@ const ThinFilmDesigner = () => {
                               data-layer-row
                               className={`grid gap-x-1 p-1 border-b border-gray-200 text-xs items-center hover:bg-gray-50 ${layer.locked ? "border-l-2 border-l-red-400" : ""}`}
                               style={{
-                                backgroundColor: allMaterials[layer.material]?.color || "#fff",
+                                backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || (darkMode ? '#1a1c38' : '#fff')),
                                 gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 3.5rem',
                                 transform: getDragTransform(idx, dragIndex, dragOverIndex),
                                 transition: 'transform 0.2s ease',
@@ -7635,9 +7716,9 @@ const ThinFilmDesigner = () => {
               {layoutMode === "horizontal" && (
                 <div
                   className="flex items-center justify-center flex-shrink-0"
-                  style={{ width: '11px', padding: '0 4px', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: '#d1d5db', cursor: 'col-resize' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#818cf8'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#d1d5db'; }}
+                  style={{ width: '11px', padding: '0 4px', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'col-resize' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = theme.accentHover; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = theme.borderStrong; }}
                   onMouseDown={handleHorizontalDividerMouseDown}
                   title="Drag to resize"
                 >
@@ -7654,7 +7735,7 @@ const ThinFilmDesigner = () => {
                   {displayMode === "admittance" ? renderAdmittanceChart() : displayMode === "efield" ? renderEfieldChart() : (
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={reflectivityData} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
-                      <CartesianGrid strokeDasharray="3 3" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
                       <XAxis
                         dataKey="wavelength"
                         type="number"
@@ -7665,7 +7746,7 @@ const ThinFilmDesigner = () => {
                           position: "insideBottom",
                           offset: -10,
                         }}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fill: theme.chartAxisText }}
                         allowDataOverflow={false}
                       />
                       <YAxis
@@ -7683,7 +7764,7 @@ const ThinFilmDesigner = () => {
                         }}
                         domain={[reflectivityRange.min, reflectivityRange.max]}
                         ticks={calculateYAxisTicks()}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fill: theme.chartAxisText }}
                         allowDataOverflow={true}
                       />
                       {showPhase && (
@@ -7693,12 +7774,12 @@ const ThinFilmDesigner = () => {
                           label={{ value: "Phase (\u00B0)", angle: 90, position: "insideRight" }}
                           domain={[-180, 180]}
                           ticks={[-180, -90, 0, 90, 180]}
-                          tick={{ fontSize: 10 }}
+                          tick={{ fontSize: 10, fill: theme.chartAxisText }}
                           allowDataOverflow={true}
                         />
                       )}
-                      <Tooltip />
-                      <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px" }} />
+                      <Tooltip contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
+                      <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} />
 
                       {targets.map((target) => {
                         // Clip target to visible chart range
@@ -8345,14 +8426,14 @@ const ThinFilmDesigner = () => {
                       {displayMode === "admittance" ? renderAdmittanceChart() : displayMode === "efield" ? renderEfieldChart() : (
                       <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={reflectivityData} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
+                          <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
                           <XAxis
                             dataKey="wavelength"
                             type="number"
                             domain={[wavelengthRange.min, wavelengthRange.max]}
                             ticks={calculateXAxisTicks()}
                             label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -10 }}
-                            tick={{ fontSize: 10 }}
+                            tick={{ fontSize: 10, fill: theme.chartAxisText }}
                             allowDataOverflow={false}
                           />
                           <YAxis
@@ -8360,7 +8441,7 @@ const ThinFilmDesigner = () => {
                             label={{ value: `${displayMode === "transmission" ? "Transmission" : displayMode === "absorption" ? "Absorption" : "Reflectivity"} (%)`, angle: -90, position: "insideLeft" }}
                             domain={[reflectivityRange.min, reflectivityRange.max]}
                             ticks={calculateYAxisTicks()}
-                            tick={{ fontSize: 10 }}
+                            tick={{ fontSize: 10, fill: theme.chartAxisText }}
                             allowDataOverflow={true}
                           />
                           {showPhase && (
@@ -8370,12 +8451,12 @@ const ThinFilmDesigner = () => {
                               label={{ value: "Phase (\u00B0)", angle: 90, position: "insideRight" }}
                               domain={[-180, 180]}
                               ticks={[-180, -90, 0, 90, 180]}
-                              tick={{ fontSize: 10 }}
+                              tick={{ fontSize: 10, fill: theme.chartAxisText }}
                               allowDataOverflow={true}
                             />
                           )}
-                          <Tooltip />
-                          <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px" }} />
+                          <Tooltip contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
+                          <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} />
                           {targets.map((target) => {
                             const x1 = Math.max(target.wavelengthMin, wavelengthRange.min);
                             const x2 = Math.min(target.wavelengthMax, wavelengthRange.max);
@@ -8428,7 +8509,7 @@ const ThinFilmDesigner = () => {
                     </div>
 
                     {/* Resizable Divider */}
-                    <div className="flex items-center justify-center flex-shrink-0" style={{ height: '11px', padding: '4px 0', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: '#d1d5db', cursor: 'row-resize' }} onMouseDown={handleDividerMouseDown} title="Drag to resize" onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#818cf8'; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#d1d5db'; }}>
+                    <div className="flex items-center justify-center flex-shrink-0" style={{ height: '11px', padding: '4px 0', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'row-resize' }} onMouseDown={handleDividerMouseDown} title="Drag to resize" onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = theme.accentHover; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = theme.borderStrong; }}>
                     </div>
 
                     {/* Layers section */}
@@ -8509,7 +8590,7 @@ const ThinFilmDesigner = () => {
                             key={layer.id}
                             className={`grid grid-cols-12 gap-1 p-1 border-b border-gray-200 text-xs items-center hover:bg-gray-50 ${layer.locked ? "border-l-2 border-l-red-400" : ""}`}
                             style={{
-                              backgroundColor: allMaterials[layer.material]?.color || "#fff",
+                              backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || (darkMode ? '#1a1c38' : '#fff')),
                               transform: getDragTransform(idx, dragIndex, dragOverIndex),
                               transition: 'transform 0.2s ease',
                               position: 'relative',
@@ -10035,12 +10116,13 @@ const ThinFilmDesigner = () => {
                               <LineChart data={solution.chartData}>
                                 <CartesianGrid
                                   strokeDasharray="3 3"
-                                  stroke="#e5e7eb"
+                                  stroke={theme.chartGrid}
+                                  strokeOpacity={0.6}
                                 />
                                 <XAxis
                                   dataKey="wavelength"
-                                  tick={{ fontSize: 8 }}
-                                  stroke="#9ca3af"
+                                  tick={{ fontSize: 8, fill: theme.chartAxisText }}
+                                  stroke={theme.chartAxisText}
                                 />
                                 <YAxis
                                   domain={[
@@ -10065,12 +10147,12 @@ const ThinFilmDesigner = () => {
                                       return Math.max(paddedMax, 10); // Minimum of 10 to avoid too compressed charts
                                     },
                                   ]}
-                                  tick={{ fontSize: 8 }}
-                                  stroke="#9ca3af"
+                                  tick={{ fontSize: 8, fill: theme.chartAxisText }}
+                                  stroke={theme.chartAxisText}
                                 />
                                 <Tooltip
-                                  contentStyle={{ fontSize: "10px" }}
-                                  labelStyle={{ fontSize: "10px" }}
+                                  contentStyle={{ fontSize: "10px", backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6 }}
+                                  labelStyle={{ fontSize: "10px", color: theme.chartTooltipText }}
                                 />
                                 <Line
                                   type="monotone"
@@ -10680,10 +10762,10 @@ const ThinFilmDesigner = () => {
                           return (
                             <ResponsiveContainer width="100%" height="100%">
                               <LineChart data={mergedStats}>
-                                <CartesianGrid strokeDasharray="3 3" />
+                                <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
                                 <XAxis dataKey="wavelength" type="number" domain={["dataMin", "dataMax"]}
-                                  label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -5, style: { fontSize: 12 } }} />
-                                <YAxis label={{ value: "Reflectivity (%)", angle: -90, position: "insideLeft", style: { fontSize: 12 } }} />
+                                  label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -5, style: { fontSize: 12, fill: theme.chartAxisText } }} />
+                                <YAxis label={{ value: "Reflectivity (%)", angle: -90, position: "insideLeft", style: { fontSize: 12, fill: theme.chartAxisText } }} />
                                 <Tooltip
                                   content={({ active, payload, label }) => {
                                     if (!active || !payload || !payload.length) return null;
@@ -10693,11 +10775,11 @@ const ThinFilmDesigner = () => {
                                     const upperEntry = payload.find(p => p.dataKey === 'upperBound');
                                     const sigma = (upperEntry && meanEntry) ? (upperEntry.value - meanEntry.value) : null;
                                     return (
-                                      <div style={{ background: '#fff', border: '1px solid #d1d5db', borderRadius: 4, padding: '4px 8px', fontSize: 11, lineHeight: 1.4, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                                        <div style={{ fontWeight: 600, color: '#374151' }}>{label} nm</div>
-                                        {meanVal != null && <div style={{ color: '#4f46e5' }}>Mean: {meanVal.toFixed(2)}%</div>}
-                                        {sigma != null && <div style={{ color: '#6b7280' }}>{'\u00B1'}{'\u03C3'}: {sigma.toFixed(2)}%</div>}
-                                        {targetEntry && targetEntry.value != null && <div style={{ color: '#dc2626' }}>Target: {targetEntry.value.toFixed(2)}%</div>}
+                                      <div style={{ background: theme.chartTooltipBg, border: `1px solid ${theme.chartTooltipBorder}`, borderRadius: 6, padding: '4px 8px', fontSize: 11, lineHeight: 1.4, boxShadow: theme.shadow, color: theme.chartTooltipText }}>
+                                        <div style={{ fontWeight: 600, color: theme.textPrimary }}>{label} nm</div>
+                                        {meanVal != null && <div style={{ color: theme.accentText }}>Mean: {meanVal.toFixed(2)}%</div>}
+                                        {sigma != null && <div style={{ color: theme.textTertiary }}>{'\u00B1'}{'\u03C3'}: {sigma.toFixed(2)}%</div>}
+                                        {targetEntry && targetEntry.value != null && <div style={{ color: theme.error }}>Target: {targetEntry.value.toFixed(2)}%</div>}
                                       </div>
                                     );
                                   }}
@@ -10712,8 +10794,8 @@ const ThinFilmDesigner = () => {
                                 ))}
 
                                 <Line type="monotone" dataKey="mean" stroke="#4f46e5" strokeWidth={3} name="Mean" dot={false} />
-                                <Line type="monotone" dataKey="upperBound" stroke="#9ca3af" strokeWidth={1} strokeDasharray="5 5" name="Mean + σ" dot={false} />
-                                <Line type="monotone" dataKey="lowerBound" stroke="#9ca3af" strokeWidth={1} strokeDasharray="5 5" name="Mean - σ" dot={false} />
+                                <Line type="monotone" dataKey="upperBound" stroke={theme.chartAxisText} strokeWidth={1} strokeDasharray="5 5" name="Mean + σ" dot={false} />
+                                <Line type="monotone" dataKey="lowerBound" stroke={theme.chartAxisText} strokeWidth={1} strokeDasharray="5 5" name="Mean - σ" dot={false} />
 
                                 {/* Design target overlay */}
                                 {trackingOverlayEnabled && trackingOverlayStackId && (
@@ -10752,16 +10834,16 @@ const ThinFilmDesigner = () => {
                               <div className="flex-1">
                                 <ResponsiveContainer width="100%" height="100%">
                                   <LineChart data={trendData}>
-                                    <CartesianGrid strokeDasharray="3 3" />
-                                    <XAxis dataKey="runIndex" label={{ value: "Run #", position: "insideBottom", offset: -5, style: { fontSize: 12 } }} />
-                                    <YAxis label={{ value: "Reflectivity (%)", angle: -90, position: "insideLeft", style: { fontSize: 12 } }} />
+                                    <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                                    <XAxis dataKey="runIndex" label={{ value: "Run #", position: "insideBottom", offset: -5, style: { fontSize: 12, fill: theme.chartAxisText } }} />
+                                    <YAxis label={{ value: "Reflectivity (%)", angle: -90, position: "insideLeft", style: { fontSize: 12, fill: theme.chartAxisText } }} />
                                     <Tooltip
                                       content={({ active, payload, label }) => {
                                         if (!active || !payload || !payload.length) return null;
                                         const run = sortedRuns[label - 1];
                                         return (
-                                          <div style={{ background: '#fff', border: '1px solid #d1d5db', borderRadius: 4, padding: '4px 8px', fontSize: 11, lineHeight: 1.4, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                                            <div style={{ fontWeight: 600, color: '#374151' }}>{run?.filename || `Run ${label}`}</div>
+                                          <div style={{ background: theme.chartTooltipBg, border: `1px solid ${theme.chartTooltipBorder}`, borderRadius: 6, padding: '4px 8px', fontSize: 11, lineHeight: 1.4, boxShadow: theme.shadow, color: theme.chartTooltipText }}>
+                                            <div style={{ fontWeight: 600, color: theme.textPrimary }}>{run?.filename || `Run ${label}`}</div>
                                             {payload.map(p => (
                                               <div key={p.dataKey} style={{ color: p.color }}>{p.dataKey.replace('wl_', '')}nm: {p.value?.toFixed(2)}%</div>
                                             ))}
@@ -10827,24 +10909,24 @@ const ThinFilmDesigner = () => {
                           return (
                             <ResponsiveContainer width="100%" height="100%">
                               <LineChart data={diffData}>
-                                <CartesianGrid strokeDasharray="3 3" />
+                                <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
                                 <XAxis dataKey="wavelength" type="number" domain={["dataMin", "dataMax"]}
-                                  label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -5, style: { fontSize: 12 } }} />
-                                <YAxis label={{ value: "Reflectivity Difference (%)", angle: -90, position: "insideLeft", style: { fontSize: 12 } }} />
+                                  label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -5, style: { fontSize: 12, fill: theme.chartAxisText } }} />
+                                <YAxis label={{ value: "Reflectivity Difference (%)", angle: -90, position: "insideLeft", style: { fontSize: 12, fill: theme.chartAxisText } }} />
                                 <Tooltip
                                   content={({ active, payload, label }) => {
                                     if (!active || !payload || !payload.length) return null;
                                     const diff = payload.find(p => p.dataKey === 'difference');
                                     return (
-                                      <div style={{ background: '#fff', border: '1px solid #d1d5db', borderRadius: 4, padding: '4px 8px', fontSize: 11, lineHeight: 1.4, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-                                        <div style={{ fontWeight: 600, color: '#374151' }}>{label} nm</div>
-                                        {diff && <div style={{ color: '#4f46e5' }}>Δ: {diff.value?.toFixed(3)}%</div>}
+                                      <div style={{ background: theme.chartTooltipBg, border: `1px solid ${theme.chartTooltipBorder}`, borderRadius: 6, padding: '4px 8px', fontSize: 11, lineHeight: 1.4, boxShadow: theme.shadow, color: theme.chartTooltipText }}>
+                                        <div style={{ fontWeight: 600, color: theme.textPrimary }}>{label} nm</div>
+                                        {diff && <div style={{ color: theme.accentText }}>Δ: {diff.value?.toFixed(3)}%</div>}
                                       </div>
                                     );
                                   }}
                                 />
                                 <Legend />
-                                <ReferenceLine y={0} stroke="#9ca3af" strokeDasharray="3 3" />
+                                <ReferenceLine y={0} stroke={theme.chartAxisText} strokeDasharray="3 3" />
                                 <Line type="monotone" dataKey="difference" stroke="#4f46e5" strokeWidth={2}
                                   name={`${runA.filename.substring(0, 12)} − ${runB.filename.substring(0, 12)}`} dot={false} connectNulls />
                               </LineChart>
@@ -10913,21 +10995,21 @@ const ThinFilmDesigner = () => {
                           {trackingColor.colorName}
                         </div>
                         <div className="bg-blue-50 rounded p-1.5 mb-1">
-                          <div style={{ fontSize: 9, fontWeight: 600, color: '#1e40af', marginBottom: 2 }}>CIE Lab</div>
-                          <div style={{ fontSize: 10, color: '#374151' }}>
+                          <div style={{ fontSize: 9, fontWeight: 600, color: darkMode ? '#60a5fa' : '#1e40af', marginBottom: 2 }}>CIE Lab</div>
+                          <div style={{ fontSize: 10, color: theme.textPrimary }}>
                             <div className="flex justify-between"><span>L*:</span><span className="font-semibold">{trackingColor.L}</span></div>
                             <div className="flex justify-between"><span>a*:</span><span className="font-semibold">{trackingColor.a_star}</span></div>
                             <div className="flex justify-between"><span>b*:</span><span className="font-semibold">{trackingColor.b_star}</span></div>
                           </div>
                         </div>
                         <div className="bg-purple-50 rounded p-1.5 mb-1">
-                          <div style={{ fontSize: 9, fontWeight: 600, color: '#6b21a8', marginBottom: 2 }}>LCh</div>
-                          <div style={{ fontSize: 10, color: '#374151' }}>
+                          <div style={{ fontSize: 9, fontWeight: 600, color: darkMode ? '#c084fc' : '#6b21a8', marginBottom: 2 }}>LCh</div>
+                          <div style={{ fontSize: 10, color: theme.textPrimary }}>
                             <div className="flex justify-between"><span>C:</span><span className="font-semibold">{trackingColor.C}</span></div>
                             <div className="flex justify-between"><span>h:</span><span className="font-semibold">{trackingColor.h}°</span></div>
                           </div>
                         </div>
-                        <div style={{ fontSize: 10, color: '#374151' }}>
+                        <div style={{ fontSize: 10, color: theme.textPrimary }}>
                           <div className="flex justify-between"><span>Dom. λ:</span><span className="font-semibold">{trackingColor.dominantWavelength}nm</span></div>
                           <div className="flex justify-between"><span>Avg R:</span><span className="font-semibold">{trackingColor.avgReflectivity}%</span></div>
                           <div className="flex justify-between"><span>Hex:</span><span className="font-mono" style={{ fontSize: 9 }}>{trackingColor.hex}</span></div>
@@ -11132,7 +11214,7 @@ const ThinFilmDesigner = () => {
                         <div className="space-y-0.5">
                           {runDeltaEs.map(({ run, deltaE, color }) => (
                             <div key={run.id} className="flex items-center gap-1 text-[10px]">
-                              <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: color?.rgb || '#ccc', flexShrink: 0, border: '1px solid #d1d5db' }} />
+                              <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: color?.rgb || '#ccc', flexShrink: 0, border: `1px solid ${theme.borderStrong}` }} />
                               <span className="truncate flex-1" title={run.filename}>{run.filename.substring(0, 12)}</span>
                               <span className="font-bold" style={{ color: deltaE == null ? '#9ca3af' : deltaE > 3 ? '#dc2626' : deltaE > 1 ? '#f59e0b' : '#16a34a', flexShrink: 0 }}>
                                 {deltaE != null ? deltaE.toFixed(1) : '—'}
@@ -11570,15 +11652,16 @@ const ThinFilmDesigner = () => {
                               <BarChart
                                 data={mcResults.colorStats.deltaEDistribution}
                               >
-                                <CartesianGrid strokeDasharray="3 3" />
-                                <XAxis dataKey="range" tick={{ fontSize: 9 }} />
-                                <YAxis tick={{ fontSize: 9 }} />
+                                <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                                <XAxis dataKey="range" tick={{ fontSize: 9, fill: theme.chartAxisText }} />
+                                <YAxis tick={{ fontSize: 9, fill: theme.chartAxisText }} />
                                 <Tooltip
                                   formatter={(value, name, props) => [
                                     value,
                                     props.payload.label,
                                   ]}
                                   labelFormatter={(label) => `ΔE*: ${label}`}
+                                  contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }}
                                 />
                                 <Bar dataKey="count" fill="#8b5cf6" />
                               </BarChart>
@@ -11617,16 +11700,16 @@ const ThinFilmDesigner = () => {
                       <div className="bg-white border rounded p-2">
                         <ResponsiveContainer width="100%" height={150}>
                           <BarChart data={mcResults.errorDistribution}>
-                            <CartesianGrid strokeDasharray="3 3" />
+                            <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
                             <XAxis
                               dataKey="range"
-                              tick={{ fontSize: 8 }}
+                              tick={{ fontSize: 8, fill: theme.chartAxisText }}
                               angle={-45}
                               textAnchor="end"
                               height={60}
                             />
-                            <YAxis tick={{ fontSize: 10 }} />
-                            <Tooltip />
+                            <YAxis tick={{ fontSize: 10, fill: theme.chartAxisText }} />
+                            <Tooltip contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
                             <Bar dataKey="count" fill="#4f46e5" />
                           </BarChart>
                         </ResponsiveContainer>
@@ -11846,10 +11929,10 @@ const ThinFilmDesigner = () => {
                               layout="vertical"
                               margin={{ left: 70, right: 20, top: 5, bottom: 5 }}
                             >
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis type="number" tick={{ fontSize: 10 }} />
-                              <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={65} />
-                              <Tooltip formatter={(value) => [`${value}`, "Sensitivity"]} />
+                              <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                              <XAxis type="number" tick={{ fontSize: 10, fill: theme.chartAxisText }} />
+                              <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: theme.chartAxisText }} width={65} />
+                              <Tooltip formatter={(value) => [`${value}`, "Sensitivity"]} contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
                               <Bar dataKey="sensitivity">
                                 {saResults.layers.map((l, idx) => (
                                   <Cell
@@ -11968,20 +12051,21 @@ const ThinFilmDesigner = () => {
                               <div className="bg-white border rounded p-2">
                                 <ResponsiveContainer width="100%" height={180}>
                                   <LineChart data={layerData.wavelengthData}>
-                                    <CartesianGrid strokeDasharray="3 3" />
+                                    <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
                                     <XAxis
                                       dataKey="wavelength"
                                       type="number"
                                       domain={[wavelengthRange.min, wavelengthRange.max]}
-                                      tick={{ fontSize: 10 }}
+                                      tick={{ fontSize: 10, fill: theme.chartAxisText }}
                                     />
-                                    <YAxis tick={{ fontSize: 10 }} />
+                                    <YAxis tick={{ fontSize: 10, fill: theme.chartAxisText }} />
                                     <Tooltip
                                       formatter={(value) => [
                                         parseFloat(value).toFixed(4),
                                         "|dR/dt|",
                                       ]}
                                       labelFormatter={(label) => `${label} nm`}
+                                      contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }}
                                     />
                                     <Line
                                       type="monotone"
@@ -12354,7 +12438,7 @@ const ThinFilmDesigner = () => {
                       onClick={() => setColorCompareSelected(prev => selected ? prev.filter(id => id !== stackId) : [...prev, stackId])}
                       className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${selected ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-gray-300 bg-white text-gray-500 hover:border-gray-400'}`}
                     >
-                      <div className="w-4 h-4 rounded border flex-shrink-0" style={{ backgroundColor: color.rgb, borderColor: selected ? '#6366f1' : '#d1d5db' }}></div>
+                      <div className="w-4 h-4 rounded border flex-shrink-0" style={{ backgroundColor: color.rgb, borderColor: selected ? theme.accent : theme.borderStrong }}></div>
                       <span className="truncate" style={{ maxWidth: '120px' }}>{color.stackName}</span>
                     </button>
                   );
@@ -12366,7 +12450,7 @@ const ThinFilmDesigner = () => {
                       onClick={() => setColorCompareSelected(prev => selected ? prev.filter(id => id !== 'experimental') : [...prev, 'experimental'])}
                       className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-colors ${selected ? 'border-red-500 bg-red-50 text-red-800' : 'border-gray-300 bg-white text-gray-500 hover:border-gray-400'}`}
                     >
-                      <div className="w-4 h-4 rounded border-2 flex-shrink-0" style={{ backgroundColor: experimentalColorData.rgb, borderColor: selected ? '#ef4444' : '#d1d5db' }}></div>
+                      <div className="w-4 h-4 rounded border-2 flex-shrink-0" style={{ backgroundColor: experimentalColorData.rgb, borderColor: selected ? theme.error : theme.borderStrong }}></div>
                       <span>Experimental</span>
                     </button>
                   );
@@ -12521,7 +12605,7 @@ const ThinFilmDesigner = () => {
                     const mat = materialDispersion[name];
                     const n550 = getRefractiveIndex(name, 550);
                     return (
-                      <div key={name} className="flex items-center gap-1 px-2 py-1 border rounded text-xs" style={{ backgroundColor: mat.color }}>
+                      <div key={name} className="flex items-center gap-1 px-2 py-1 border rounded text-xs" style={{ backgroundColor: getMaterialBg(mat.color) }}>
                         <Lock size={10} className="text-gray-400 flex-shrink-0" />
                         <span className="font-medium truncate">{name}</span>
                         <span className="text-gray-500 ml-auto flex-shrink-0">{n550.toFixed(3)}</span>
@@ -12542,7 +12626,7 @@ const ThinFilmDesigner = () => {
                       const mat = customMaterials[name];
                       const n550 = getRefractiveIndex(name, 550);
                       return (
-                        <div key={name} className="flex items-center justify-between px-2 py-1 border rounded text-xs" style={{ backgroundColor: mat.color }}>
+                        <div key={name} className="flex items-center justify-between px-2 py-1 border rounded text-xs" style={{ backgroundColor: getMaterialBg(mat.color) }}>
                           <div className="min-w-0">
                             <span className="font-medium">{name}</span>
                             <span className="text-gray-500 ml-1">{mat.type} | n: {n550.toFixed(3)}</span>
@@ -13058,36 +13142,36 @@ const ThinFilmDesigner = () => {
                 <thead>
                   {/* Plan headers - sticky */}
                   <tr>
-                    <th style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 2, textAlign: 'left', padding: '10px 8px 6px', width: '20%', fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Feature</th>
+                    <th style={{ position: 'sticky', top: 0, background: theme.surface, zIndex: 2, textAlign: 'left', padding: '10px 8px 6px', width: '20%', fontSize: 11, fontWeight: 600, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Feature</th>
                     {[
                       { key: 'free', name: 'Explorer', price: 'Free', sub: 'Get started' },
                       { key: 'starter', name: 'Starter', price: '$49/mo', sub: 'Individual engineers' },
                       { key: 'professional', name: 'Professional', price: '$149/mo', sub: 'Full-featured' },
                       { key: 'enterprise', name: 'Enterprise', price: '$349/mo', sub: 'For teams' },
                     ].map((tier) => (
-                      <th key={tier.key} style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 2, textAlign: 'center', padding: '10px 8px 6px', width: '20%', verticalAlign: 'bottom' }}>
+                      <th key={tier.key} style={{ position: 'sticky', top: 0, background: theme.surface, zIndex: 2, textAlign: 'center', padding: '10px 8px 6px', width: '20%', verticalAlign: 'bottom' }}>
                         <div style={{ position: 'relative', paddingTop: tier.key === 'professional' ? 6 : 0 }}>
                           {tier.key === 'professional' && (
-                            <div style={{ position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)', background: '#4f46e5', color: '#fff', fontSize: 9, fontWeight: 700, padding: '2px 10px', borderRadius: 10, whiteSpace: 'nowrap', lineHeight: '14px' }}>MOST POPULAR</div>
+                            <div style={{ position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)', background: theme.accent, color: '#fff', fontSize: 9, fontWeight: 700, padding: '2px 10px', borderRadius: 10, whiteSpace: 'nowrap', lineHeight: '14px' }}>MOST POPULAR</div>
                           )}
-                          <div style={{ fontWeight: 700, color: '#1f2937', fontSize: 13 }}>{tier.name}</div>
-                          <div style={{ fontWeight: 700, color: '#1f2937', fontSize: 17 }}>{tier.price}</div>
-                          <div style={{ fontSize: 10, color: '#9ca3af' }}>{tier.sub}</div>
+                          <div style={{ fontWeight: 700, color: theme.textPrimary, fontSize: 13 }}>{tier.name}</div>
+                          <div style={{ fontWeight: 700, color: theme.textPrimary, fontSize: 17 }}>{tier.price}</div>
+                          <div style={{ fontSize: 10, color: theme.textMuted }}>{tier.sub}</div>
                           {userTier === tier.key ? (
-                            <div style={{ marginTop: 6, padding: '4px 0', fontSize: 11, fontWeight: 600, color: '#4f46e5', border: '1px solid #a5b4fc', borderRadius: 4, textAlign: 'center' }}>Current Plan</div>
+                            <div style={{ marginTop: 6, padding: '4px 0', fontSize: 11, fontWeight: 600, color: theme.accentText, border: '1px solid #a5b4fc', borderRadius: 4, textAlign: 'center' }}>Current Plan</div>
                           ) : TIER_ORDER[userTier] >= TIER_ORDER[tier.key] ? (
                             <div style={{ marginTop: 6, height: 28 }}></div>
                           ) : isSignedIn ? (
-                            <button onClick={() => { setShowPricingModal(false); handleCheckout(tier.key); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Upgrade</button>
+                            <button onClick={() => { setShowPricingModal(false); handleCheckout(tier.key); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Upgrade</button>
                           ) : (
-                            <div style={{ marginTop: 6, fontSize: 10, color: '#9ca3af', textAlign: 'center', padding: '4px 0' }}>Sign in to upgrade</div>
+                            <div style={{ marginTop: 6, fontSize: 10, color: theme.textMuted, textAlign: 'center', padding: '4px 0' }}>Sign in to upgrade</div>
                           )}
                         </div>
                       </th>
                     ))}
                   </tr>
                   {/* Divider below sticky header */}
-                  <tr><td colSpan={5} style={{ position: 'sticky', top: 96, background: '#fff', zIndex: 2, padding: 0, borderBottom: '2px solid #e5e7eb', height: 0 }}></td></tr>
+                  <tr><td colSpan={5} style={{ position: 'sticky', top: 96, background: theme.surface, zIndex: 2, padding: 0, borderBottom: `2px solid ${theme.border}`, height: 0 }}></td></tr>
                 </thead>
                 <tbody>
                   {/* Section: Core Limits */}
@@ -13122,8 +13206,8 @@ const ThinFilmDesigner = () => {
                       <td className="py-1.5 px-2 text-xs font-medium text-gray-700">{row.label}</td>
                       {row.values.map((v, j) => (
                         <td key={j} className="py-1.5 px-2 text-center text-xs">
-                          {v === true ? <span style={{ color: '#16a34a', fontWeight: 600 }}>&#10003;</span>
-                           : v === false ? <span style={{ color: '#d4d4d8' }}>{'\u2717'}</span>
+                          {v === true ? <span style={{ color: theme.success, fontWeight: 600 }}>&#10003;</span>
+                           : v === false ? <span style={{ color: theme.textMuted }}>{'\u2717'}</span>
                            : <span className="text-gray-600">{v}</span>}
                         </td>
                       ))}
@@ -13142,8 +13226,8 @@ const ThinFilmDesigner = () => {
                       <td className="py-1.5 px-2 text-xs font-medium text-gray-700">{row.label}</td>
                       {row.values.map((v, j) => (
                         <td key={j} className="py-1.5 px-2 text-center text-xs">
-                          {v === true ? <span style={{ color: '#16a34a', fontWeight: 600 }}>&#10003;</span>
-                           : v === false ? <span style={{ color: '#d4d4d8' }}>{'\u2717'}</span>
+                          {v === true ? <span style={{ color: theme.success, fontWeight: 600 }}>&#10003;</span>
+                           : v === false ? <span style={{ color: theme.textMuted }}>{'\u2717'}</span>
                            : <span className="text-gray-600">{v}</span>}
                         </td>
                       ))}
@@ -13171,8 +13255,8 @@ const ThinFilmDesigner = () => {
                       <td className="py-1.5 px-2 text-xs font-medium text-gray-700">{row.label}</td>
                       {row.values.map((v, j) => (
                         <td key={j} className="py-1.5 px-2 text-center text-xs">
-                          {v === true ? <span style={{ color: '#16a34a', fontWeight: 600 }}>&#10003;</span>
-                           : v === false ? <span style={{ color: '#d4d4d8' }}>{'\u2717'}</span>
+                          {v === true ? <span style={{ color: theme.success, fontWeight: 600 }}>&#10003;</span>
+                           : v === false ? <span style={{ color: theme.textMuted }}>{'\u2717'}</span>
                            : <span className="text-gray-600">{v}</span>}
                         </td>
                       ))}
@@ -13191,8 +13275,8 @@ const ThinFilmDesigner = () => {
                       <td className="py-1.5 px-2 text-xs font-medium text-gray-700">{row.label}</td>
                       {row.values.map((v, j) => (
                         <td key={j} className="py-1.5 px-2 text-center text-xs">
-                          {v === true ? <span style={{ color: '#16a34a', fontWeight: 600 }}>&#10003;</span>
-                           : v === false ? <span style={{ color: '#d4d4d8' }}>{'\u2717'}</span>
+                          {v === true ? <span style={{ color: theme.success, fontWeight: 600 }}>&#10003;</span>
+                           : v === false ? <span style={{ color: theme.textMuted }}>{'\u2717'}</span>
                            : <span className="text-gray-600">{v}</span>}
                         </td>
                       ))}
@@ -13236,8 +13320,8 @@ const ThinFilmDesigner = () => {
             right: '10px',
             height: '24px',
             borderRadius: '12px',
-            background: '#eef2ff',
-            border: '1px solid #c7d2fe',
+            background: theme.accentLight,
+            border: `1px solid ${darkMode ? '#363860' : '#c7d2fe'}`,
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
@@ -13253,8 +13337,8 @@ const ThinFilmDesigner = () => {
             fontWeight: 700,
             letterSpacing: '0.5px',
           }}
-          onMouseEnter={e => { e.currentTarget.style.width = '82px'; e.currentTarget.style.background = '#dbeafe'; e.currentTarget.style.boxShadow = '0 2px 6px rgba(79,70,229,0.2)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'ASK LUMI'; }}
-          onMouseLeave={e => { e.currentTarget.style.width = '46px'; e.currentTarget.style.background = '#eef2ff'; e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.08)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'LUMI'; }}
+          onMouseEnter={e => { e.currentTarget.style.width = '82px'; e.currentTarget.style.background = darkMode ? '#22244a' : '#dbeafe'; e.currentTarget.style.boxShadow = '0 2px 6px rgba(79,70,229,0.2)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'ASK LUMI'; }}
+          onMouseLeave={e => { e.currentTarget.style.width = '46px'; e.currentTarget.style.background = darkMode ? '#1e1f3a' : '#eef2ff'; e.currentTarget.style.boxShadow = darkMode ? '0 1px 3px rgba(0,0,0,0.3)' : '0 1px 3px rgba(0,0,0,0.08)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'LUMI'; }}
         >
           <span data-lumi="" style={{
             whiteSpace: 'nowrap',
@@ -13282,8 +13366,8 @@ const ThinFilmDesigner = () => {
           right: 0,
           width: '380px',
           height: '100vh',
-          background: '#ffffff',
-          boxShadow: '-4px 0 20px rgba(0,0,0,0.15)',
+          background: theme.surface,
+          boxShadow: darkMode ? '-4px 0 20px rgba(0,0,0,0.4)' : '-4px 0 20px rgba(0,0,0,0.15)',
           zIndex: 9999,
           display: 'flex',
           flexDirection: 'column',
@@ -13295,13 +13379,13 @@ const ThinFilmDesigner = () => {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '14px 16px',
-              borderBottom: '1px solid #e5e7eb',
-              background: '#f9fafb',
+              borderBottom: `1px solid ${theme.border}`,
+              background: theme.surfaceAlt,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <MessageCircle size={18} style={{ color: '#4f46e5' }} />
-                <span style={{ fontWeight: 600, fontSize: '14px', color: '#1f2937' }}>Lumi</span>
-                <span style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 400 }}>AI Design Assistant</span>
+                <MessageCircle size={18} style={{ color: theme.accentText }} />
+                <span style={{ fontWeight: 600, fontSize: '14px', color: theme.textPrimary }}>Lumi</span>
+                <span style={{ fontSize: '11px', color: theme.textMuted, fontWeight: 400 }}>AI Design Assistant</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <button
@@ -13318,12 +13402,12 @@ const ThinFilmDesigner = () => {
                     border: 'none',
                     cursor: 'pointer',
                     padding: '4px',
-                    color: '#6b7280',
+                    color: theme.textTertiary,
                     display: 'flex',
                     alignItems: 'center',
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.color = '#1f2937'; }}
-                  onMouseLeave={e => { e.currentTarget.style.color = '#6b7280'; }}
+                  onMouseEnter={e => { e.currentTarget.style.color = theme.textPrimary; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = theme.textTertiary; }}
                 >
                   <X size={18} />
                 </button>
@@ -13345,10 +13429,10 @@ const ThinFilmDesigner = () => {
               <div style={{
                 textAlign: 'center',
                 padding: '32px 16px',
-                color: '#6b7280',
+                color: theme.textTertiary,
               }}>
-                <MessageCircle size={32} style={{ margin: '0 auto 12px', color: '#c7d2fe' }} />
-                <p style={{ fontSize: '14px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>
+                <MessageCircle size={32} style={{ margin: '0 auto 12px', color: darkMode ? '#363860' : '#c7d2fe' }} />
+                <p style={{ fontSize: '14px', fontWeight: 600, color: theme.textPrimary, marginBottom: '8px' }}>
                   Hi, I'm Lumi!
                 </p>
                 <p style={{ fontSize: '12px', lineHeight: '1.5' }}>
@@ -13369,16 +13453,16 @@ const ThinFilmDesigner = () => {
                   maxWidth: '85%',
                   padding: '10px 14px',
                   borderRadius: msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                  background: msg.role === 'user' ? '#eef2ff' : '#f9fafb',
-                  border: msg.role === 'user' ? '1px solid #c7d2fe' : '1px solid #e5e7eb',
+                  background: msg.role === 'user' ? theme.accentLight : theme.surfaceAlt,
+                  border: `1px solid ${msg.role === 'user' ? (darkMode ? '#363860' : '#c7d2fe') : theme.border}`,
                   fontSize: '13px',
                   lineHeight: '1.5',
-                  color: '#1f2937',
+                  color: theme.textPrimary,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                 }}>
                   {msg.thinking && !msg.content ? (
-                    <span style={{ color: '#6b7280', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ color: theme.textTertiary, fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <span style={{ display: 'inline-flex', gap: '3px' }}>
                         <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#a78bfa', animation: 'lumiBounce 1.4s ease-in-out infinite' }} />
                         <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#818cf8', animation: 'lumiBounce 1.4s ease-in-out 0.2s infinite' }} />
@@ -13394,7 +13478,7 @@ const ThinFilmDesigner = () => {
                           display: 'inline-block',
                           width: '2px',
                           height: '14px',
-                          background: '#4f46e5',
+                          background: theme.accent,
                           marginLeft: '2px',
                           verticalAlign: 'text-bottom',
                           animation: 'chatCursorBlink 1s step-end infinite',
@@ -13411,8 +13495,8 @@ const ThinFilmDesigner = () => {
           {/* Chat Input */}
           <div style={{
             padding: '12px 16px',
-            borderTop: '1px solid #e5e7eb',
-            background: '#f9fafb',
+            borderTop: `1px solid ${theme.border}`,
+            background: theme.surfaceAlt,
             display: 'flex',
             gap: '8px',
             alignItems: 'flex-end',
@@ -13427,15 +13511,15 @@ const ThinFilmDesigner = () => {
               style={{
                 flex: 1,
                 padding: '10px 12px',
-                border: '1px solid #d1d5db',
+                border: `1px solid ${theme.inputBorder}`,
                 borderRadius: '8px',
                 fontSize: '13px',
                 outline: 'none',
-                background: chatStreaming ? '#f3f4f6' : '#fff',
-                color: '#1f2937',
+                background: chatStreaming ? theme.surfaceAlt : theme.inputBg,
+                color: theme.inputText,
               }}
-              onFocus={e => { e.currentTarget.style.borderColor = '#818cf8'; e.currentTarget.style.boxShadow = '0 0 0 2px rgba(129,140,248,0.2)'; }}
-              onBlur={e => { e.currentTarget.style.borderColor = '#d1d5db'; e.currentTarget.style.boxShadow = 'none'; }}
+              onFocus={e => { e.currentTarget.style.borderColor = theme.accentHover; e.currentTarget.style.boxShadow = `0 0 0 2px ${darkMode ? 'rgba(129,140,248,0.15)' : 'rgba(129,140,248,0.2)'}`; }}
+              onBlur={e => { e.currentTarget.style.borderColor = theme.inputBorder; e.currentTarget.style.boxShadow = 'none'; }}
             />
             <button
               onClick={sendChatMessage}
@@ -13445,7 +13529,7 @@ const ThinFilmDesigner = () => {
                 height: '38px',
                 borderRadius: '8px',
                 border: 'none',
-                background: (chatStreaming || !chatInput.trim()) ? '#c7d2fe' : '#4f46e5',
+                background: (chatStreaming || !chatInput.trim()) ? (darkMode ? '#363860' : '#c7d2fe') : theme.accent,
                 color: '#fff',
                 cursor: (chatStreaming || !chatInput.trim()) ? 'default' : 'pointer',
                 display: 'flex',
@@ -13454,8 +13538,8 @@ const ThinFilmDesigner = () => {
                 flexShrink: 0,
                 transition: 'background 0.2s',
               }}
-              onMouseEnter={e => { if (!chatStreaming && chatInput.trim()) e.currentTarget.style.background = '#4338ca'; }}
-              onMouseLeave={e => { if (!chatStreaming && chatInput.trim()) e.currentTarget.style.background = '#4f46e5'; else e.currentTarget.style.background = '#c7d2fe'; }}
+              onMouseEnter={e => { if (!chatStreaming && chatInput.trim()) e.currentTarget.style.background = theme.accentHover; }}
+              onMouseLeave={e => { if (!chatStreaming && chatInput.trim()) e.currentTarget.style.background = theme.accent; else e.currentTarget.style.background = darkMode ? '#363860' : '#c7d2fe'; }}
             >
               <Send size={16} />
             </button>
