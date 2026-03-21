@@ -12546,7 +12546,7 @@ const ThinFilmDesigner = () => {
                             <span>ΔL*={comp.dL}</span>
                             <span>Δa*={comp.da}</span>
                             <span>Δb*={comp.db}</span>
-                            <span className="ml-auto font-medium" style={{ color: comp.deltaE < 1 ? '#16a34a' : comp.deltaE < 2 ? '#ca8a04' : comp.deltaE < 3 ? '#ea580c' : '#dc2626' }}>
+                            <span className="ml-auto font-medium" style={{ color: comp.deltaE < 1 ? theme.success : comp.deltaE < 2 ? theme.warning : comp.deltaE < 3 ? (darkMode ? '#fb923c' : '#ea580c') : theme.error }}>
                               {comp.deltaE < 0.5 ? "Imperceptible" : comp.deltaE < 1 ? "Slight" : comp.deltaE < 2 ? "Noticeable" : comp.deltaE < 3 ? "Visible" : comp.deltaE < 5 ? "Significant" : "Large"}
                             </span>
                           </div>
