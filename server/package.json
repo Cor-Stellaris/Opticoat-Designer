@@ -10,6 +10,9 @@
     "db:generate": "npx prisma generate",
     "db:studio": "npx prisma studio"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
