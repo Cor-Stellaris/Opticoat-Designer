@@ -7,8 +7,8 @@ const TIER_LIMITS = {
     allowedAngles: [0],
     allowedDisplayModes: ['reflectivity', 'transmission'],
     allowedIlluminants: ['D65'],
-    designAssistant: 'target',       // Target mode only (no reverse engineer, color target, or CSV upload)
-    designAssistantMaxLayers: 6,
+    designAssistant: false,           // No optimizer access on free tier
+    designAssistantMaxLayers: 0,
     reverseEngineer: false,
     colorTargetMode: false,
     csvUpload: false,
@@ -32,7 +32,7 @@ const TIER_LIMITS = {
     maxTeamSeats: 0,
     aiChat: false,
     maxChatMessagesPerDay: 0,
-    coatingTemplates: 'basic',        // 'basic' = AR single + V-coat only, 'all' = full catalog, false = none
+    coatingTemplates: false,           // No templates on free tier
   },
   starter: {
     maxStacks: 3,
@@ -132,10 +132,9 @@ const TIER_LIMITS = {
     trackingExportPng: true,
     trackingExportCsv: true,
     trackingRunComparison: true,
-    teamCollaboration: true,
-    maxTeams: 3,
-    maxTeamSeats: 5,
-    additionalSeatPrice: 49,
+    teamCollaboration: false,
+    maxSeats: 5,                      // 5 seats included
+    additionalSeatPrice: 49,          // +$49 per additional seat
     apiAccess: true,
     aiChat: 'full',
     maxChatMessagesPerDay: -1,

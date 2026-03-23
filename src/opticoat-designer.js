@@ -78,7 +78,7 @@ const FREE_TIER_LIMITS = {
   allowedAngles: [0],
   allowedDisplayModes: ['reflectivity', 'transmission'],
   allowedIlluminants: ['D65'],
-  designAssistant: 'target', designAssistantMaxLayers: 6,
+  designAssistant: false, designAssistantMaxLayers: 0,
   reverseEngineer: false, colorTargetMode: false, csvUpload: false,
   recipeTracking: true, maxTrackingRuns: 3, yieldCalculator: true,
   maxMonteCarloIterations: 100, yieldColorSimulation: false, layerSensitivity: false,
@@ -90,7 +90,7 @@ const FREE_TIER_LIMITS = {
   teamCollaboration: false,
   maxTeams: 0,
   maxTeamSeats: 0,
-  coatingTemplates: 'basic',
+  coatingTemplates: false,
 };
 
 const admittanceColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be185d", "#65a30d", "#7c3aed", "#d97706"];
@@ -14653,10 +14653,11 @@ const ThinFilmDesigner = () => {
                   {/* Section header */}
                   <tr><td colSpan={5} className="pt-4 pb-1 px-2 text-xs font-bold text-gray-800 uppercase tracking-wider border-b border-gray-200">Design Assistant</td></tr>
                   {[
-                    { label: 'Target Optimizer', values: [true, true, true, true] },
-                    { label: 'Max Optimization Layers', values: ['6', '15', '50', '100'] },
+                    { label: 'Target Optimizer', values: [false, true, true, true] },
+                    { label: 'Max Optimization Layers', values: ['\u2014', '15', '50', '100'] },
                     { label: 'Reverse Engineer', values: [false, false, true, true] },
                     { label: 'CSV Upload', values: [false, false, true, true] },
+                    { label: 'Coating Templates', values: [false, true, true, true] },
                   ].map((row, i) => (
                     <tr key={row.label} style={{ background: i % 2 === 0 ? '#f9fafb' : '#fff' }}>
                       <td className="py-1.5 px-2 text-xs font-medium text-gray-700">{row.label}</td>
@@ -14704,7 +14705,7 @@ const ThinFilmDesigner = () => {
                   {[
                     { label: 'Lumi AI Assistant', values: [false, false, true, true] },
                     { label: 'IAD Modeling', values: [false, false, true, true] },
-                    { label: 'Team Seats', values: ['\u2014', '\u2014', '\u2014', '5 (+$49/seat)'] },
+                    { label: 'User Seats', values: ['\u2014', '\u2014', '\u2014', '5 (+$49/seat)'] },
                     { label: 'API Access', values: [false, false, false, true] },
                     { label: 'Priority Support', values: [false, false, false, true] },
                   ].map((row, i) => (
