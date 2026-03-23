@@ -72,18 +72,19 @@ function useClerkAuth() {
 const TIER_ORDER = { free: 0, starter: 1, professional: 2, enterprise: 3 };
 
 // DEV MODE: All features unlocked for testing. Restore original limits before production.
+// Must match server/src/services/tierLimits.js free tier exactly
 const FREE_TIER_LIMITS = {
   maxStacks: 1, maxLayersPerStack: 6, maxSavedDesigns: 3, maxCustomMaterials: 0,
   allowedAngles: [0],
   allowedDisplayModes: ['reflectivity', 'transmission'],
   allowedIlluminants: ['D65'],
-  designAssistant: false, designAssistantMaxLayers: 0,
+  designAssistant: 'target', designAssistantMaxLayers: 6,
   reverseEngineer: false, colorTargetMode: false, csvUpload: false,
-  recipeTracking: false, maxTrackingRuns: 0, yieldCalculator: false,
-  maxMonteCarloIterations: 0, yieldColorSimulation: false, layerSensitivity: false,
+  recipeTracking: true, maxTrackingRuns: 3, yieldCalculator: true,
+  maxMonteCarloIterations: 100, yieldColorSimulation: false, layerSensitivity: false,
   iad: false, maxMachines: 0,
   trackingDesignOverlay: false, trackingToleranceBands: false, trackingColorDrift: false,
-  trackingTrendView: false, trackingExportPng: false, trackingExportCsv: false,
+  trackingTrendView: false, trackingExportPng: false, trackingExportCsv: true,
   trackingRunComparison: false,
   aiChat: false,
   teamCollaboration: false,
