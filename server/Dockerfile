@@ -12,7 +12,8 @@ COPY . .
 RUN npx prisma generate
 
 ENV NODE_ENV=production
+ENV PORT=3001
 
 EXPOSE 3001
 
-CMD ["node", "src/index.js"]
+ENTRYPOINT ["node", "src/index.js"]
