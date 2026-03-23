@@ -2,6 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
+console.log('[BOOT] Starting OptiCoat Server...');
+console.log('[BOOT] Node version:', process.version);
+console.log('[BOOT] PORT:', process.env.PORT || '3001 (default)');
+console.log('[BOOT] DATABASE_URL:', process.env.DATABASE_URL ? 'set' : 'NOT SET');
+console.log('[BOOT] CLERK_SECRET_KEY:', process.env.CLERK_SECRET_KEY ? 'set' : 'NOT SET');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 const hasDatabase = !!process.env.DATABASE_URL;
@@ -33,27 +39,35 @@ app.use(express.json({ limit: '10mb' }));
 
 // Full routes only load when database + Clerk are configured
 if (hasDatabase) {
-  const { clerkMiddleware } = require('@clerk/express');
-  app.use(clerkMiddleware());
+  try {
+    console.log('[BOOT] Loading Clerk middleware...');
+    const { clerkMiddleware } = require('@clerk/express');
+    app.use(clerkMiddleware());
 
-  // Chat route — requires auth, registered directly on app (not Router)
-  // Express 5 Router doesn't track async handler Promises, causing premature disconnects
-  const { chatHandler } = require('./routes/chat');
-  const { requireUser } = require('./middleware/auth');
-  app.post('/api/chat', ...requireUser, chatHandler);
+    console.log('[BOOT] Loading auth middleware...');
+    const { requireUser } = require('./middleware/auth');
 
-  const authRouter = require('./routes/auth');
-  const designsRouter = require('./routes/designs');
-  const materialsRouter = require('./routes/materials');
-  const billingRouter = require('./routes/billing');
-  const trackingRouter = require('./routes/tracking');
-  const machinesRouter = require('./routes/machines');
-  app.use('/api/auth', authRouter);
-  app.use('/api/designs', designsRouter);
-  app.use('/api/materials', materialsRouter);
-  app.use('/api/billing', billingRouter);
-  app.use('/api/tracking', trackingRouter);
-  app.use('/api/machines', machinesRouter);
+    console.log('[BOOT] Loading route handlers...');
+    const { chatHandler } = require('./routes/chat');
+    app.post('/api/chat', ...requireUser, chatHandler);
+
+    const authRouter = require('./routes/auth');
+    const designsRouter = require('./routes/designs');
+    const materialsRouter = require('./routes/materials');
+    const billingRouter = require('./routes/billing');
+    const trackingRouter = require('./routes/tracking');
+    const machinesRouter = require('./routes/machines');
+    app.use('/api/auth', authRouter);
+    app.use('/api/designs', designsRouter);
+    app.use('/api/materials', materialsRouter);
+    app.use('/api/billing', billingRouter);
+    app.use('/api/tracking', trackingRouter);
+    app.use('/api/machines', machinesRouter);
+    console.log('[BOOT] All routes loaded successfully');
+  } catch (err) {
+    console.error('[BOOT] FATAL: Failed to load routes:', err);
+    process.exit(1);
+  }
 } else {
   console.log('⚡ Running in dev mode (no DATABASE_URL set) — chat-only, no auth');
   // Dev-only chat without auth
