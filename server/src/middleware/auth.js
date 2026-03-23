@@ -45,8 +45,6 @@ const requireUser = [
       }
 
       req.user = user;
-      // DEV OVERRIDE: Force enterprise tier for testing. Remove before production.
-      req.user = { ...req.user, tier: 'enterprise' };
       next();
     } catch (error) {
       console.error('Auth middleware error:', error);

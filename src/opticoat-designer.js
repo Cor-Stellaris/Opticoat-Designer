@@ -89,6 +89,7 @@ const FREE_TIER_LIMITS = {
   teamCollaboration: true,
   maxTeams: -1,
   maxTeamSeats: -1,
+  coatingTemplates: 'all',
 };
 
 const admittanceColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be185d", "#65a30d", "#7c3aed", "#d97706"];
@@ -226,6 +227,708 @@ const materialDispersion = {
   },
 };
 
+// =====================================================================
+// COATING TEMPLATES — Parameterized optical coating structure generators
+// =====================================================================
+// Each type has subtypes with declarative params and pure generate/generateTargets functions.
+// generate(params, materials, getN) → [{material, thickness}]
+// generateTargets(params) → [{wavelengthMin, wavelengthMax, rMin, rMax}]
+
+// Helper: find material in palette closest to target refractive index at wavelength
+function findClosestMaterial(targetN, wavelength, materials, getN, exclude = []) {
+  let best = null, bestDiff = Infinity;
+  for (const name of Object.keys(materials)) {
+    if (exclude.includes(name)) continue;
+    const n = getN(name, wavelength);
+    const diff = Math.abs(n - targetN);
+    if (diff < bestDiff) { bestDiff = diff; best = name; }
+  }
+  return best;
+}
+
+// Helper: find the highest-index material in palette at wavelength
+function findHighIndexMaterial(wavelength, materials, getN) {
+  let best = null, bestN = 0;
+  for (const name of Object.keys(materials)) {
+    const n = getN(name, wavelength);
+    if (n > bestN) { bestN = n; best = name; }
+  }
+  return best;
+}
+
+// Helper: find the lowest-index material in palette at wavelength (excluding substrate-like indices)
+function findLowIndexMaterial(wavelength, materials, getN) {
+  let best = null, bestN = Infinity;
+  for (const name of Object.keys(materials)) {
+    const n = getN(name, wavelength);
+    if (n < bestN) { bestN = n; best = name; }
+  }
+  return best;
+}
+
+const COATING_TEMPLATES = {
+  ar: {
+    id: 'ar',
+    name: 'Anti-Reflection (AR)',
+    icon: 'ar',
+    category: 'common',
+    description: 'Minimize reflection across a wavelength range',
+    subtypes: [
+      {
+        id: 'ar_single',
+        name: 'Single-Layer QWOT',
+        description: 'Quarter-wave optical thickness — simplest AR for one wavelength',
+        tierRequired: 'free',
+        params: [
+          { key: 'centerWavelength', label: 'Center Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 550, step: 10 },
+          { key: 'substrateN', label: 'Substrate Index', type: 'number', min: 1.0, max: 4.0, default: 1.52, step: 0.01, autoFill: 'substrate.n', readOnly: true },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.centerWavelength || 550;
+          const nSub = params.substrateN || 1.52;
+          const idealN = Math.sqrt(nSub); // sqrt(n_sub * n_air) where n_air ≈ 1
+          const mat = findClosestMaterial(idealN, wl, materials, getN);
+          if (!mat) return [];
+          const n = getN(mat, wl);
+          const thickness = wl / (4 * n);
+          return [{ material: mat, thickness: Math.round(thickness * 10) / 10 }];
+        },
+        generateTargets: (params) => {
+          const wl = params.centerWavelength || 550;
+          const hw = 25;
+          return [{ wavelengthMin: wl - hw, wavelengthMax: wl + hw, rMin: 0, rMax: 0.5 }];
+        },
+      },
+      {
+        id: 'ar_vcoat',
+        name: 'V-Coat (2-layer)',
+        description: 'Two-layer design for minimum reflectance at a single wavelength',
+        tierRequired: 'free',
+        params: [
+          { key: 'centerWavelength', label: 'Center Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 550, step: 10 },
+          { key: 'substrateN', label: 'Substrate Index', type: 'number', min: 1.0, max: 4.0, default: 1.52, step: 0.01, autoFill: 'substrate.n', readOnly: true },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.centerWavelength || 550;
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          // V-coat: each layer is approximately QWOT
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          return [
+            { material: hMat, thickness: Math.round(dH * 10) / 10 },
+            { material: lMat, thickness: Math.round(dL * 10) / 10 },
+          ];
+        },
+        generateTargets: (params) => {
+          const wl = params.centerWavelength || 550;
+          return [{ wavelengthMin: wl - 15, wavelengthMax: wl + 15, rMin: 0, rMax: 0.3 }];
+        },
+      },
+      {
+        id: 'ar_broadband',
+        name: 'Broadband AR (3-6 layers)',
+        description: 'Multi-layer graded index for wide spectral range — good optimizer seed',
+        tierRequired: 'starter',
+        params: [
+          { key: 'wavelengthMin', label: 'Wavelength Min (nm)', type: 'number', min: 200, max: 2400, default: 400, step: 10 },
+          { key: 'wavelengthMax', label: 'Wavelength Max (nm)', type: 'number', min: 300, max: 2500, default: 700, step: 10 },
+          { key: 'layerCount', label: 'Number of Layers', type: 'select', options: [3, 4, 5, 6], default: 4 },
+          { key: 'substrateN', label: 'Substrate Index', type: 'number', min: 1.0, max: 4.0, default: 1.52, step: 0.01, autoFill: 'substrate.n', readOnly: true },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wlMin = params.wavelengthMin || 400;
+          const wlMax = params.wavelengthMax || 700;
+          const wlCenter = (wlMin + wlMax) / 2;
+          const nSub = params.substrateN || 1.52;
+          const N = params.layerCount || 4;
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          // Geometric index progression: ideal n_i = n_sub^((N-i)/(N+1))
+          const layers = [];
+          for (let i = 0; i < N; i++) {
+            const idealN = Math.pow(nSub, (N - i) / (N + 1));
+            // Alternate H/L materials, picking whichever is closer to idealN
+            const nH = getN(hMat, wlCenter);
+            const nL = getN(lMat, wlCenter);
+            const mat = Math.abs(nH - idealN) < Math.abs(nL - idealN) ? hMat : lMat;
+            const n = getN(mat, wlCenter);
+            const thickness = wlCenter / (4 * n);
+            layers.push({ material: mat, thickness: Math.round(thickness * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wlMin = params.wavelengthMin || 400;
+          const wlMax = params.wavelengthMax || 700;
+          return [{ wavelengthMin: wlMin, wavelengthMax: wlMax, rMin: 0, rMax: 1.0 }];
+        },
+      },
+    ],
+  },
+  hr: {
+    id: 'hr',
+    name: 'High Reflector (HR)',
+    icon: 'hr',
+    category: 'common',
+    description: 'Maximize reflectance at a design wavelength using quarter-wave stacks',
+    subtypes: [
+      {
+        id: 'hr_standard',
+        name: 'Quarter-Wave Stack',
+        description: 'Alternating high/low index layers, each λ/4 optical thickness',
+        tierRequired: 'free',
+        params: [
+          { key: 'centerWavelength', label: 'Center Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 1064, step: 10 },
+          { key: 'numPairs', label: 'Number of Pairs', type: 'number', min: 2, max: 25, default: 7, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.centerWavelength || 1064;
+          const pairs = Math.max(2, Math.min(25, params.numPairs || 7));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const layers = [];
+          for (let i = 0; i < pairs; i++) {
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.centerWavelength || 1064;
+          return [
+            { wavelengthMin: wl - 50, wavelengthMax: wl + 50, rMin: 99.0, rMax: 100 },
+          ];
+        },
+      },
+    ],
+  },
+  bandpass: {
+    id: 'bandpass',
+    name: 'Bandpass Filter',
+    icon: 'bandpass',
+    category: 'common',
+    description: 'Pass a narrow wavelength band using Fabry-Perot cavity design',
+    subtypes: [
+      {
+        id: 'bandpass_single',
+        name: 'Single Cavity',
+        description: 'One Fabry-Perot cavity — wider passband, simpler structure',
+        tierRequired: 'starter',
+        params: [
+          { key: 'centerWavelength', label: 'Center Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 550, step: 10 },
+          { key: 'numPairs', label: 'Mirror Pairs', type: 'number', min: 2, max: 12, default: 4, step: 1 },
+          { key: 'spacerOrder', label: 'Spacer Order', type: 'select', options: [1, 2, 3], default: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.centerWavelength || 550;
+          const p = Math.max(2, Math.min(12, params.numPairs || 4));
+          const m = params.spacerOrder || 1;
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const spacerD = m * wl / (2 * nH); // Half-wave spacer in H material
+          const layers = [];
+          // Front mirror: (HL)^p
+          for (let i = 0; i < p; i++) {
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          // Spacer (half-wave in H material)
+          layers.push({ material: hMat, thickness: Math.round(spacerD * 10) / 10 });
+          // Back mirror: (LH)^p
+          for (let i = 0; i < p; i++) {
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.centerWavelength || 550;
+          return [
+            { wavelengthMin: wl - 10, wavelengthMax: wl + 10, rMin: 0, rMax: 10 },
+            { wavelengthMin: wl - 80, wavelengthMax: wl - 30, rMin: 90, rMax: 100 },
+            { wavelengthMin: wl + 30, wavelengthMax: wl + 80, rMin: 90, rMax: 100 },
+          ];
+        },
+      },
+      {
+        id: 'bandpass_double',
+        name: 'Double Cavity',
+        description: 'Two coupled cavities — steeper edges, flatter passband',
+        tierRequired: 'professional',
+        params: [
+          { key: 'centerWavelength', label: 'Center Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 550, step: 10 },
+          { key: 'numPairs', label: 'Mirror Pairs per Cavity', type: 'number', min: 2, max: 10, default: 3, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.centerWavelength || 550;
+          const p = Math.max(2, Math.min(10, params.numPairs || 3));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const spacerD = wl / (2 * nH);
+          const layers = [];
+          // Cavity 1: (HL)^p H (LH)^p
+          for (let i = 0; i < p; i++) { layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 }); layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 }); }
+          layers.push({ material: hMat, thickness: Math.round(spacerD * 10) / 10 });
+          for (let i = 0; i < p; i++) { layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 }); layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 }); }
+          // Coupling layer
+          layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          // Cavity 2: (HL)^p H (LH)^p
+          for (let i = 0; i < p; i++) { layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 }); layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 }); }
+          layers.push({ material: hMat, thickness: Math.round(spacerD * 10) / 10 });
+          for (let i = 0; i < p; i++) { layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 }); layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 }); }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.centerWavelength || 550;
+          return [
+            { wavelengthMin: wl - 8, wavelengthMax: wl + 8, rMin: 0, rMax: 8 },
+            { wavelengthMin: wl - 60, wavelengthMax: wl - 20, rMin: 95, rMax: 100 },
+            { wavelengthMin: wl + 20, wavelengthMax: wl + 60, rMin: 95, rMax: 100 },
+          ];
+        },
+      },
+      {
+        id: 'bandpass_triple',
+        name: 'Triple Cavity',
+        description: 'Three coupled cavities — near-rectangular passband profile',
+        tierRequired: 'professional',
+        params: [
+          { key: 'centerWavelength', label: 'Center Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 550, step: 10 },
+          { key: 'numPairs', label: 'Mirror Pairs per Cavity', type: 'number', min: 2, max: 8, default: 3, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.centerWavelength || 550;
+          const p = Math.max(2, Math.min(8, params.numPairs || 3));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const spacerD = wl / (2 * nH);
+          const buildCavity = () => {
+            const c = [];
+            for (let i = 0; i < p; i++) { c.push({ material: hMat, thickness: Math.round(dH * 10) / 10 }); c.push({ material: lMat, thickness: Math.round(dL * 10) / 10 }); }
+            c.push({ material: hMat, thickness: Math.round(spacerD * 10) / 10 });
+            for (let i = 0; i < p; i++) { c.push({ material: lMat, thickness: Math.round(dL * 10) / 10 }); c.push({ material: hMat, thickness: Math.round(dH * 10) / 10 }); }
+            return c;
+          };
+          const coupling = { material: lMat, thickness: Math.round(dL * 10) / 10 };
+          return [...buildCavity(), coupling, ...buildCavity(), coupling, ...buildCavity()];
+        },
+        generateTargets: (params) => {
+          const wl = params.centerWavelength || 550;
+          return [
+            { wavelengthMin: wl - 6, wavelengthMax: wl + 6, rMin: 0, rMax: 5 },
+            { wavelengthMin: wl - 50, wavelengthMax: wl - 15, rMin: 97, rMax: 100 },
+            { wavelengthMin: wl + 15, wavelengthMax: wl + 50, rMin: 97, rMax: 100 },
+          ];
+        },
+      },
+    ],
+  },
+  edge: {
+    id: 'edge',
+    name: 'Edge Filter',
+    icon: 'edge',
+    category: 'common',
+    description: 'Sharp wavelength cutoff — long-pass or short-pass',
+    subtypes: [
+      {
+        id: 'edge_longpass',
+        name: 'Long-Pass',
+        description: 'Passes wavelengths longer than edge, reflects shorter',
+        tierRequired: 'starter',
+        params: [
+          { key: 'edgeWavelength', label: 'Edge Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 500, step: 10 },
+          { key: 'numPairs', label: 'Number of Pairs', type: 'number', min: 3, max: 20, default: 8, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.edgeWavelength || 500;
+          const pairs = Math.max(3, Math.min(20, params.numPairs || 8));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const layers = [];
+          // Quarter-wave stack centered at edge wavelength — reflects the short side
+          for (let i = 0; i < pairs; i++) {
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.edgeWavelength || 500;
+          return [
+            { wavelengthMin: wl - 100, wavelengthMax: wl - 20, rMin: 90, rMax: 100 },
+            { wavelengthMin: wl + 20, wavelengthMax: wl + 100, rMin: 0, rMax: 5 },
+          ];
+        },
+      },
+      {
+        id: 'edge_shortpass',
+        name: 'Short-Pass',
+        description: 'Passes wavelengths shorter than edge, reflects longer',
+        tierRequired: 'starter',
+        params: [
+          { key: 'edgeWavelength', label: 'Edge Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 600, step: 10 },
+          { key: 'numPairs', label: 'Number of Pairs', type: 'number', min: 3, max: 20, default: 8, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.edgeWavelength || 600;
+          const pairs = Math.max(3, Math.min(20, params.numPairs || 8));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const layers = [];
+          // Same structure as LP — QW stack reflects around center; optimizer refines
+          for (let i = 0; i < pairs; i++) {
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.edgeWavelength || 600;
+          return [
+            { wavelengthMin: wl - 100, wavelengthMax: wl - 20, rMin: 0, rMax: 5 },
+            { wavelengthMin: wl + 20, wavelengthMax: wl + 100, rMin: 90, rMax: 100 },
+          ];
+        },
+      },
+    ],
+  },
+  notch: {
+    id: 'notch',
+    name: 'Notch Filter',
+    icon: 'notch',
+    category: 'specialty',
+    description: 'Block a narrow wavelength band, pass everything else',
+    subtypes: [
+      {
+        id: 'notch_single',
+        name: 'Single Notch',
+        description: 'Quarter-wave stack for single-wavelength rejection',
+        tierRequired: 'starter',
+        params: [
+          { key: 'rejectWavelength', label: 'Rejection Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 532, step: 1 },
+          { key: 'numPairs', label: 'Number of Pairs', type: 'number', min: 3, max: 20, default: 7, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.rejectWavelength || 532;
+          const pairs = Math.max(3, Math.min(20, params.numPairs || 7));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const layers = [];
+          for (let i = 0; i < pairs; i++) {
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.rejectWavelength || 532;
+          return [
+            { wavelengthMin: wl - 15, wavelengthMax: wl + 15, rMin: 99, rMax: 100 },
+            { wavelengthMin: wl - 100, wavelengthMax: wl - 40, rMin: 0, rMax: 5 },
+            { wavelengthMin: wl + 40, wavelengthMax: wl + 100, rMin: 0, rMax: 5 },
+          ];
+        },
+      },
+      {
+        id: 'notch_multi',
+        name: 'Multi-Notch',
+        description: 'Multiple rejection bands — concatenated QW stacks',
+        tierRequired: 'professional',
+        params: [
+          { key: 'rejectWavelength1', label: 'Rejection λ₁ (nm)', type: 'number', min: 200, max: 2500, default: 532, step: 1 },
+          { key: 'rejectWavelength2', label: 'Rejection λ₂ (nm)', type: 'number', min: 200, max: 2500, default: 1064, step: 1 },
+          { key: 'numPairs', label: 'Pairs per Notch', type: 'number', min: 3, max: 15, default: 5, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wls = [params.rejectWavelength1 || 532, params.rejectWavelength2 || 1064];
+          const pairs = Math.max(3, Math.min(15, params.numPairs || 5));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const layers = [];
+          for (const wl of wls) {
+            const nH = getN(hMat, wl);
+            const nL = getN(lMat, wl);
+            const dH = wl / (4 * nH);
+            const dL = wl / (4 * nL);
+            for (let i = 0; i < pairs; i++) {
+              layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+              layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+            }
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl1 = params.rejectWavelength1 || 532;
+          const wl2 = params.rejectWavelength2 || 1064;
+          return [
+            { wavelengthMin: wl1 - 15, wavelengthMax: wl1 + 15, rMin: 99, rMax: 100 },
+            { wavelengthMin: wl2 - 15, wavelengthMax: wl2 + 15, rMin: 99, rMax: 100 },
+          ];
+        },
+      },
+    ],
+  },
+  dichroic: {
+    id: 'dichroic',
+    name: 'Dichroic / Beamsplitter',
+    icon: 'dichroic',
+    category: 'specialty',
+    description: 'Split spectrum at a target wavelength with controlled R/T ratio',
+    subtypes: [
+      {
+        id: 'dichroic_standard',
+        name: 'Dichroic Beamsplitter',
+        description: 'Edge filter tuned for a target reflection/transmission split',
+        tierRequired: 'starter',
+        params: [
+          { key: 'splitWavelength', label: 'Split Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 550, step: 10 },
+          { key: 'numPairs', label: 'Number of Pairs', type: 'number', min: 3, max: 15, default: 6, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.splitWavelength || 550;
+          const pairs = Math.max(3, Math.min(15, params.numPairs || 6));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          const dH = wl / (4 * nH);
+          const dL = wl / (4 * nL);
+          const layers = [];
+          for (let i = 0; i < pairs; i++) {
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.splitWavelength || 550;
+          return [
+            { wavelengthMin: wl - 80, wavelengthMax: wl - 10, rMin: 90, rMax: 100 },
+            { wavelengthMin: wl + 10, wavelengthMax: wl + 80, rMin: 0, rMax: 10 },
+          ];
+        },
+      },
+    ],
+  },
+  nd: {
+    id: 'nd',
+    name: 'Neutral Density (ND)',
+    icon: 'nd',
+    category: 'specialty',
+    description: 'Uniform partial reflection across a wavelength range (dielectric only)',
+    subtypes: [
+      {
+        id: 'nd_dielectric',
+        name: 'Dielectric Partial Reflector',
+        description: 'Symmetric stack for ~uniform partial reflection. Limited OD without metals.',
+        tierRequired: 'starter',
+        params: [
+          { key: 'targetReflectance', label: 'Target Reflectance (%)', type: 'number', min: 5, max: 80, default: 30, step: 5 },
+          { key: 'wavelengthMin', label: 'Wavelength Min (nm)', type: 'number', min: 200, max: 2400, default: 400, step: 10 },
+          { key: 'wavelengthMax', label: 'Wavelength Max (nm)', type: 'number', min: 300, max: 2500, default: 700, step: 10 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wlCenter = ((params.wavelengthMin || 400) + (params.wavelengthMax || 700)) / 2;
+          const targetR = (params.targetReflectance || 30) / 100;
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wlCenter);
+          const nL = getN(lMat, wlCenter);
+          // Estimate pairs needed: R ≈ ((nH/nL)^(2N) - 1)^2 / ((nH/nL)^(2N) + 1)^2
+          // Solve for N, clamped to reasonable range
+          const ratio = nH / nL;
+          let pairs = 1;
+          for (let N = 1; N <= 10; N++) {
+            const r2N = Math.pow(ratio, 2 * N);
+            const R = Math.pow((r2N - 1) / (r2N + 1), 2);
+            if (R >= targetR) { pairs = N; break; }
+            pairs = N;
+          }
+          const dH = wlCenter / (4 * nH);
+          const dL = wlCenter / (4 * nL);
+          const layers = [];
+          for (let i = 0; i < pairs; i++) {
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            if (i < pairs - 1) layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wlMin = params.wavelengthMin || 400;
+          const wlMax = params.wavelengthMax || 700;
+          const r = params.targetReflectance || 30;
+          return [{ wavelengthMin: wlMin, wavelengthMax: wlMax, rMin: r - 5, rMax: r + 5 }];
+        },
+      },
+    ],
+  },
+  polarizing: {
+    id: 'polarizing',
+    name: 'Polarizing',
+    icon: 'polarizing',
+    category: 'specialty',
+    description: 'Separate s and p polarization using thin-film stack at Brewster\'s angle',
+    subtypes: [
+      {
+        id: 'polarizing_standard',
+        name: 'MacNeille Polarizer',
+        description: 'Quarter-wave stack at Brewster\'s angle — reflects s, transmits p',
+        tierRequired: 'professional',
+        params: [
+          { key: 'centerWavelength', label: 'Center Wavelength (nm)', type: 'number', min: 200, max: 2500, default: 632, step: 10 },
+          { key: 'numPairs', label: 'Number of Pairs', type: 'number', min: 3, max: 20, default: 8, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wl = params.centerWavelength || 632;
+          const pairs = Math.max(3, Math.min(20, params.numPairs || 8));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const nH = getN(hMat, wl);
+          const nL = getN(lMat, wl);
+          // Brewster's angle at H/L interface: arctan(nH/nL)
+          const brewsterAngle = Math.atan(nH / nL);
+          // QWOT adjusted for angle: d = lambda / (4 * n * cos(theta_in_layer))
+          const cosH = Math.cos(Math.asin(Math.sin(brewsterAngle) / nH * nL)); // Snell's in H
+          const cosL = Math.cos(brewsterAngle); // angle in L layer
+          const dH = wl / (4 * nH * cosH);
+          const dL = wl / (4 * nL * cosL);
+          const layers = [];
+          for (let i = 0; i < pairs; i++) {
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wl = params.centerWavelength || 632;
+          return [
+            { wavelengthMin: wl - 30, wavelengthMax: wl + 30, rMin: 45, rMax: 55 },
+          ];
+        },
+      },
+    ],
+  },
+  chirped: {
+    id: 'chirped',
+    name: 'Chirped Mirror',
+    icon: 'chirped',
+    category: 'specialty',
+    description: 'Aperiodic stack for broadband reflection and dispersion compensation',
+    subtypes: [
+      {
+        id: 'chirped_standard',
+        name: 'Linear Chirp',
+        description: 'Layer thicknesses vary linearly across a wavelength range — ultrafast optics seed',
+        tierRequired: 'professional',
+        params: [
+          { key: 'wavelengthMin', label: 'Wavelength Min (nm)', type: 'number', min: 200, max: 2000, default: 700, step: 10 },
+          { key: 'wavelengthMax', label: 'Wavelength Max (nm)', type: 'number', min: 400, max: 2500, default: 900, step: 10 },
+          { key: 'numPairs', label: 'Number of Pairs', type: 'number', min: 5, max: 30, default: 15, step: 1 },
+          { key: 'highMaterial', label: 'High-Index Material', type: 'material_select', filter: 'high', default: 'TiO2' },
+          { key: 'lowMaterial', label: 'Low-Index Material', type: 'material_select', filter: 'low', default: 'SiO2' },
+        ],
+        generate: (params, materials, getN) => {
+          const wlMin = params.wavelengthMin || 700;
+          const wlMax = params.wavelengthMax || 900;
+          const pairs = Math.max(5, Math.min(30, params.numPairs || 15));
+          const hMat = params.highMaterial || 'TiO2';
+          const lMat = params.lowMaterial || 'SiO2';
+          const layers = [];
+          for (let i = 0; i < pairs; i++) {
+            // Linear chirp: wavelength varies from wlMin to wlMax across pairs
+            const wl = wlMin + (wlMax - wlMin) * i / (pairs - 1);
+            const nH = getN(hMat, wl);
+            const nL = getN(lMat, wl);
+            const dH = wl / (4 * nH);
+            const dL = wl / (4 * nL);
+            layers.push({ material: hMat, thickness: Math.round(dH * 10) / 10 });
+            layers.push({ material: lMat, thickness: Math.round(dL * 10) / 10 });
+          }
+          return layers;
+        },
+        generateTargets: (params) => {
+          const wlMin = params.wavelengthMin || 700;
+          const wlMax = params.wavelengthMax || 900;
+          return [{ wavelengthMin: wlMin, wavelengthMax: wlMax, rMin: 99, rMax: 100 }];
+        },
+      },
+    ],
+  },
+};
+
+// Ordered list for UI display
+const COATING_TEMPLATE_ORDER = ['ar', 'hr', 'bandpass', 'edge', 'notch', 'dichroic', 'nd', 'polarizing', 'chirped'];
+
+// Template icon labels for the UI grid
+const COATING_ICONS = {
+  ar: { emoji: '🔍', label: 'AR' },
+  hr: { emoji: '🪞', label: 'HR' },
+  bandpass: { emoji: '🎯', label: 'BP' },
+  edge: { emoji: '📐', label: 'Edge' },
+  notch: { emoji: '🚫', label: 'Notch' },
+  dichroic: { emoji: '🔀', label: 'Split' },
+  nd: { emoji: '⬛', label: 'ND' },
+  polarizing: { emoji: '↕️', label: 'Pol' },
+  chirped: { emoji: '🌊', label: 'Chirp' },
+};
+
 // Standalone reflectivity calculator for rendering mini-charts from design data JSON
 function computeReflectivityFromData(designData, customMats = {}) {
   if (!designData) return [];
@@ -303,6 +1006,10 @@ const ThinFilmDesigner = () => {
   const [darkMode, setDarkMode] = useState(() => {
     try { return localStorage.getItem('opticoat-darkMode') === 'true'; } catch { return false; }
   });
+
+  // Chart zoom state (drag-to-zoom)
+  const [chartZoom, setChartZoom] = useState(null); // { x1, x2 } or null
+  const [zoomSelecting, setZoomSelecting] = useState(null); // { startX } during drag
 
   const [layers, setLayers] = useState([
     { id: 1, material: "SiO2", thickness: 148.42, iad: null, packingDensity: 1.0 },
@@ -384,7 +1091,7 @@ const ThinFilmDesigner = () => {
     step: 5,
   });
   const [qwotReference, setQwotReference] = useState(550);
-  const [layoutMode, setLayoutMode] = useState("vertical"); // "vertical" or "horizontal"
+  const [layoutMode, setLayoutMode] = useState("tall"); // "tall" or "wide"
   const [chartWidth, setChartWidth] = useState(60); // percentage for horizontal mode
   const [reflectivityRange, setReflectivityRange] = useState({
     min: 0,
@@ -463,6 +1170,13 @@ const ThinFilmDesigner = () => {
   const [adhesionThickness, setAdhesionThickness] = useState(10);
   const [maxErrorThreshold, setMaxErrorThreshold] = useState(5.0);
   const [matchTolerance, setMatchTolerance] = useState(1.0);
+
+  // Coating Template State — Designer tab picker
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [selectedTemplateType, setSelectedTemplateType] = useState(null);
+  const [selectedSubtype, setSelectedSubtype] = useState(null);
+  const [templateParams, setTemplateParams] = useState({});
+  const [templateInsertConfirm, setTemplateInsertConfirm] = useState(null); // null or generated layers array
 
   // Recipe Tracking State
   const [trackingRuns, setTrackingRuns] = useState([]);
@@ -617,11 +1331,84 @@ const ThinFilmDesigner = () => {
   };
 
   // Helper: adjust material pastel colors for dark mode (reduce lightness for dark bg)
-  const getMaterialBg = (hexColor, opacity = 0.15) => {
+  const getMaterialBg = (hexColor) => {
     if (!darkMode) return hexColor;
-    // In dark mode, use the material color at low opacity over dark surface
-    return `${hexColor}${Math.round(opacity * 255).toString(16).padStart(2, '0')}`;
+    // Dark mode: convert to HSL, boost saturation and set lightness to ~30%
+    const r = parseInt(hexColor.slice(1, 3), 16) / 255;
+    const g = parseInt(hexColor.slice(3, 5), 16) / 255;
+    const b = parseInt(hexColor.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    let h = 0, s = 0;
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / d + 2) / 6;
+      else h = ((r - g) / d + 4) / 6;
+    }
+    const newS = Math.min(1, s * 1.8 + 0.15);
+    const newL = 0.30;
+    const hue2rgb = (p, q, t) => { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1/6) return p + (q - p) * 6 * t; if (t < 1/2) return q; if (t < 2/3) return p + (q - p) * (2/3 - t) * 6; return p; };
+    const q2 = newL < 0.5 ? newL * (1 + newS) : newL + newS - newL * newS;
+    const p2 = 2 * newL - q2;
+    const nr = Math.round(hue2rgb(p2, q2, h + 1/3) * 255);
+    const ng = Math.round(hue2rgb(p2, q2, h) * 255);
+    const nb = Math.round(hue2rgb(p2, q2, h - 1/3) * 255);
+    return `#${nr.toString(16).padStart(2,'0')}${ng.toString(16).padStart(2,'0')}${nb.toString(16).padStart(2,'0')}`;
   };
+
+  // Custom chart tooltip renderer
+  const ChartTooltip = ({ active, payload, label, suffix = '%', labelPrefix = '' }) => {
+    if (!active || !payload || !payload.length) return null;
+    return (
+      <div style={{
+        background: theme.chartTooltipBg,
+        border: `1px solid ${theme.chartTooltipBorder}`,
+        borderRadius: 8,
+        padding: '8px 12px',
+        boxShadow: darkMode ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.1)',
+        fontSize: 12,
+        color: theme.chartTooltipText,
+        lineHeight: 1.5,
+      }}>
+        <div style={{ fontWeight: 600, marginBottom: 4, color: theme.textSecondary, fontSize: 11 }}>
+          {labelPrefix}{typeof label === 'number' ? label.toFixed(1) : label}{labelPrefix ? '' : ' nm'}
+        </div>
+        {payload.map((entry, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: entry.color, display: 'inline-block', flexShrink: 0 }} />
+            <span style={{ color: theme.textTertiary, fontSize: 11 }}>{entry.name}:</span>
+            <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+              {typeof entry.value === 'number' ? entry.value.toFixed(2) : entry.value}{suffix}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // Shared chart axis label style
+  const axisLabelStyle = { fill: theme.chartAxisText, fontSize: 11, fontWeight: 500 };
+
+  // Chart zoom handlers
+  const handleChartMouseDown = (e) => {
+    if (e && e.activeLabel != null) setZoomSelecting({ startX: e.activeLabel });
+  };
+  const handleChartMouseMove = (e) => {
+    if (zoomSelecting && e && e.activeLabel != null) {
+      setZoomSelecting(prev => prev ? { ...prev, endX: e.activeLabel } : null);
+    }
+  };
+  const handleChartMouseUp = () => {
+    if (zoomSelecting && zoomSelecting.endX != null) {
+      const x1 = Math.min(zoomSelecting.startX, zoomSelecting.endX);
+      const x2 = Math.max(zoomSelecting.startX, zoomSelecting.endX);
+      if (x2 - x1 > 5) setChartZoom({ x1, x2 });
+    }
+    setZoomSelecting(null);
+  };
+  const resetChartZoom = () => { setChartZoom(null); setZoomSelecting(null); };
 
   // Dark mode: sync class on <html> and persist to localStorage
   useEffect(() => {
@@ -697,12 +1484,16 @@ const ThinFilmDesigner = () => {
   const [showColorCompareModal, setShowColorCompareModal] = useState(false);
   const [colorCompareSelected, setColorCompareSelected] = useState([]);
 
-  // Save/Load designs state
+  // Workspace save/load state
   const [savedDesigns, setSavedDesigns] = useState([]);
-  const [showSaveModal, setShowSaveModal] = useState(false);
-  const [showLoadModal, setShowLoadModal] = useState(false);
-  const [saveDesignName, setSaveDesignName] = useState('');
+  const [showSaveWorkspaceModal, setShowSaveWorkspaceModal] = useState(false);
+  const [showLoadWorkspaceModal, setShowLoadWorkspaceModal] = useState(false);
+  const [saveWorkspaceName, setSaveWorkspaceName] = useState('');
   const [designsLoading, setDesignsLoading] = useState(false);
+  const [expandedWorkspaceId, setExpandedWorkspaceId] = useState(null);
+  const [workspaceDataCache, setWorkspaceDataCache] = useState({});
+  const [showReplaceConfirmDialog, setShowReplaceConfirmDialog] = useState(null);
+  const [pendingReplaceData, setPendingReplaceData] = useState(null);
 
   // Upgrade prompt state
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false);
@@ -2319,6 +3110,14 @@ const ThinFilmDesigner = () => {
 
   const calculateReflectivity = useCallback(() => {
     try {
+      // If no stacks with layers exist, clear all chart data and return
+      const stacksWithLayers = layerStacks.filter(s => s.visible && s.layers.length > 0);
+      if (stacksWithLayers.length === 0) {
+        setReflectivityData([]);
+        setStackColorData({});
+        return;
+      }
+
       const { min, max, step } = wavelengthRange;
       const data = [];
 
@@ -2333,9 +3132,9 @@ const ThinFilmDesigner = () => {
       for (let lambda = min; lambda <= max; lambda += step) {
         const dataPoint = { wavelength: lambda };
 
-        // Calculate for all visible layer stacks
+        // Calculate for all visible layer stacks (skip empty stacks — bare substrate reflection is not useful)
         layerStacks.forEach((stack) => {
-          if (stack.visible) {
+          if (stack.visible && stack.layers.length > 0) {
             // Calculate for each enabled angle
             anglesToCalculate.forEach((angleData) => {
               if (
@@ -2438,10 +3237,10 @@ const ThinFilmDesigner = () => {
         }
       }
 
-      // Calculate color data for ALL visible stacks
+      // Calculate color data for ALL visible stacks (skip empty stacks)
       const newStackColorData = {};
       layerStacks.forEach((stack) => {
-        if (stack.visible) {
+        if (stack.visible && stack.layers.length > 0) {
           const stackData = data.map((d) => ({
             wavelength: d.wavelength,
             theoretical: d[`stack_${stack.id}`] || 0,
@@ -3542,8 +4341,9 @@ const ThinFilmDesigner = () => {
         toolingFactors: virtualToolingFactors,
       };
 
-      const originalStacks = [...layerStacks];
-      const originalMachines = [...machines];
+      // Temporarily add virtual stack/machine for calculateReflectivityAtWavelength
+      // which reads layerStacks/machines from the closure.
+      // We push/splice on a per-iteration basis and clean up immediately after.
       layerStacks.push(virtualStack);
       machines.push(virtualMachine);
 
@@ -3617,8 +4417,8 @@ const ThinFilmDesigner = () => {
         }
       }
 
-      layerStacks.splice(layerStacks.indexOf(virtualStack), 1);
-      machines.splice(machines.indexOf(virtualMachine), 1);
+      layerStacks.pop();
+      machines.pop();
 
       allErrors.push(maxError);
 
@@ -3768,11 +4568,14 @@ const ThinFilmDesigner = () => {
 
         const session = await loadSession();
         if (session && !cancelled) {
-          if (session.layers?.length > 0) setLayers(session.layers);
-          if (session.layerStacks?.length > 0) setLayerStacks(session.layerStacks);
-          if (session.currentStackId != null) setCurrentStackId(session.currentStackId);
-          if (session.machines?.length > 0) setMachines(session.machines);
-          if (session.currentMachineId != null) setCurrentMachineId(session.currentMachineId);
+          // Use Array.isArray to properly restore empty arrays (not just non-empty ones).
+          // Without this, deleting all stacks then reloading would skip the empty-array
+          // restore and fall back to the 5-layer default from useState initialization.
+          if (Array.isArray(session.layerStacks)) setLayerStacks(session.layerStacks);
+          if (Array.isArray(session.layers)) setLayers(session.layers);
+          if ('currentStackId' in session) setCurrentStackId(session.currentStackId);
+          if (Array.isArray(session.machines) && session.machines.length > 0) setMachines(session.machines);
+          if ('currentMachineId' in session) setCurrentMachineId(session.currentMachineId);
           if (session.substrate) setSubstrate(session.substrate);
           if (session.incident) setIncident(session.incident);
           if (session.wavelengthRange) setWavelengthRange(session.wavelengthRange);
@@ -3790,7 +4593,7 @@ const ThinFilmDesigner = () => {
           }
           if (session.matchTolerance !== undefined) setMatchTolerance(session.matchTolerance);
           if (session.layerTemplate) setLayerTemplate(session.layerTemplate);
-          if (session.layoutMode) setLayoutMode(session.layoutMode);
+          if (session.layoutMode) setLayoutMode(session.layoutMode === "horizontal" ? "wide" : session.layoutMode === "vertical" ? "tall" : session.layoutMode);
           if (session.displayMode) setDisplayMode(session.displayMode);
           if (session.selectedIlluminant) setSelectedIlluminant(session.selectedIlluminant);
           if (session.customMaterials && !migrated) setCustomMaterials(session.customMaterials);
@@ -3860,7 +4663,7 @@ const ThinFilmDesigner = () => {
       designPoints, designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate, layoutMode,
       displayMode, selectedIlluminant, customMaterials]);
 
-  // ============ Save/Load Designs ============
+  // ============ Workspace Save/Load ============
 
   const loadDesignsList = useCallback(async () => {
     setDesignsLoading(true);
@@ -3873,17 +4676,73 @@ const ThinFilmDesigner = () => {
         setSavedDesigns(local || []);
       }
     } catch (e) {
-      console.warn('Failed to load designs:', e);
+      console.warn('Failed to load workspaces:', e);
       const local = await getLocalDesigns();
       setSavedDesigns(local || []);
     }
     setDesignsLoading(false);
   }, [isSignedIn]);
 
-  const handleSaveDesign = useCallback(async (name) => {
+  // Fetch full workspace data for the expanded view
+  const fetchWorkspaceData = useCallback(async (design) => {
+    if (workspaceDataCache[design.id]) return workspaceDataCache[design.id];
+    if (design.data) {
+      setWorkspaceDataCache(prev => ({ ...prev, [design.id]: design.data }));
+      return design.data;
+    }
+    try {
+      const full = await apiGet(`/api/designs/${design.id}`);
+      setWorkspaceDataCache(prev => ({ ...prev, [design.id]: full.data }));
+      return full.data;
+    } catch (e) {
+      showToast('Failed to fetch workspace data', 'error');
+      return null;
+    }
+  }, [workspaceDataCache]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Full workspace replace (after confirmation)
+  const executeWorkspaceReplace = useCallback(async (d) => {
+    if (!d) return;
+    isUpdatingStackRef.current = true;
+
+    if (Array.isArray(d.layerStacks)) setLayerStacks(d.layerStacks);
+    if (Array.isArray(d.layers)) setLayers(d.layers);
+    if (d.currentStackId !== undefined) setCurrentStackId(d.currentStackId);
+    if (Array.isArray(d.machines) && d.machines.length > 0) setMachines(d.machines);
+    if (d.currentMachineId !== undefined) setCurrentMachineId(d.currentMachineId);
+    if (d.substrate) setSubstrate(d.substrate);
+    if (d.incident) setIncident(d.incident);
+    if (d.wavelengthRange) setWavelengthRange(d.wavelengthRange);
+    if (d.recipes) setRecipes(d.recipes);
+    if (d.targets) setTargets(d.targets);
+    if (Array.isArray(d.trackingRuns)) setTrackingRuns(d.trackingRuns);
+    if (Array.isArray(d.designPoints)) setDesignPoints(d.designPoints);
+    if (Array.isArray(d.designMaterials)) setDesignMaterials(d.designMaterials);
+    if (d.minDesignLayers !== undefined) setMinDesignLayers(d.minDesignLayers);
+    if (d.maxDesignLayers !== undefined) setMaxDesignLayers(d.maxDesignLayers);
+    if (d.matchTolerance !== undefined) setMatchTolerance(d.matchTolerance);
+    if (d.layerTemplate) setLayerTemplate(d.layerTemplate);
+    if (d.displayMode) setDisplayMode(d.displayMode);
+    if (d.selectedIlluminant) setSelectedIlluminant(d.selectedIlluminant);
+    if (d.customMaterials) setCustomMaterials(d.customMaterials);
+
+    const activeLayers = d.layers || (d.layerStacks?.find(s => s.id === d.currentStackId)?.layers) || [];
+    prevLayersRef.current = JSON.stringify(activeLayers);
+
+    Promise.resolve().then(() => { isUpdatingStackRef.current = false; });
+
+    setShowReplaceConfirmDialog(null);
+    setPendingReplaceData(null);
+    setShowLoadWorkspaceModal(false);
+    setActiveTab('designer');
+    showToast('Workspace loaded', 'success');
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSaveWorkspace = useCallback(async (name) => {
     if (!name.trim()) return;
-    if (!checkLimit('maxSavedDesigns', savedDesigns.length, 'Saved Designs')) return;
-    const designData = {
+    if (!checkLimit('maxSavedDesigns', savedDesigns.length, 'Saved Workspaces')) return;
+    const workspaceData = {
+      version: 2,
       layers, layerStacks, currentStackId, machines, currentMachineId,
       substrate, incident, wavelengthRange, recipes, targets, trackingRuns,
       designPoints, designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate,
@@ -3891,94 +4750,106 @@ const ThinFilmDesigner = () => {
     };
     try {
       if (isSignedIn) {
-        await apiPost('/api/designs', { name: name.trim(), data: designData });
+        await apiPost('/api/designs', { name: name.trim(), data: workspaceData });
       } else {
         await saveDesignLocally({
           id: 'local_' + Date.now(),
           name: name.trim(),
-          data: designData,
+          data: workspaceData,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         });
       }
-      setShowSaveModal(false);
-      setSaveDesignName('');
+      setShowSaveWorkspaceModal(false);
+      setSaveWorkspaceName('');
       loadDesignsList();
+      showToast(`Workspace "${name.trim()}" saved`, 'success');
+
+      // If there's a pending workspace replace (user clicked "Save First"), execute it now
+      if (pendingReplaceData) {
+        const design = pendingReplaceData;
+        const d = workspaceDataCache[design.id] || design.data;
+        if (d) {
+          setTimeout(() => executeWorkspaceReplace(d), 100);
+        } else {
+          fetchWorkspaceData(design).then(fetched => { if (fetched) executeWorkspaceReplace(fetched); });
+        }
+      }
     } catch (e) {
-      console.warn('Failed to save design:', e);
+      console.warn('Failed to save workspace:', e);
       showToast('Failed to save: ' + e.message, 'error');
     }
   }, [isSignedIn, layers, layerStacks, currentStackId, machines, currentMachineId,
       substrate, incident, wavelengthRange, recipes, targets, designPoints,
       designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate, displayMode, selectedIlluminant,
-      customMaterials, loadDesignsList, checkLimit, savedDesigns, trackingRuns]);
+      customMaterials, loadDesignsList, checkLimit, savedDesigns, trackingRuns,
+      pendingReplaceData, workspaceDataCache, executeWorkspaceReplace, fetchWorkspaceData]);
 
-  const handleLoadDesign = useCallback(async (design) => {
-    try {
-      // If data isn't included (list endpoint omits it), fetch the full design
-      let d = design.data;
-      if (!d) {
-        const full = await apiGet(`/api/designs/${design.id}`);
-        d = full.data;
-      }
-      if (!d) { showToast('Design data is empty', 'error'); return; }
+  // Cherry-pick: Add a machine (with its stacks) from a workspace
+  const handleAddMachineFromWorkspace = useCallback((machine, wsData) => {
+    const newMachineId = Math.max(...machines.map(m => m.id), 0) + 1;
+    const newMachine = { ...machine, id: newMachineId };
+    setMachines(prev => [...prev, newMachine]);
 
-      const designName = design.name || 'Loaded Design';
-
-      // Add the loaded design's layers as a NEW stack instead of replacing existing stacks
-      const loadedLayers = d.layers || (d.layerStacks?.length > 0
-        ? d.layerStacks.find(s => s.id === d.currentStackId)?.layers || d.layerStacks[0].layers
-        : [{ id: 1, material: "SiO2", thickness: 100, iad: null }]);
-
-      const newStackId = Math.max(...layerStacks.map(s => s.id), 0) + 1;
-      const newStack = {
-        id: newStackId,
-        machineId: currentMachineId,
-        name: designName,
-        layers: loadedLayers,
-        visible: true,
-        color: `hsl(${(newStackId * 60) % 360}, 70%, 50%)`,
-      };
-
-      if (d.machines?.length > 0) {
-        const sourceMachine = d.machines[0];
-        if (sourceMachine.toolingFactors) {
-          setMachines(prev => prev.map(m =>
-            m.id === currentMachineId ? { ...m, toolingFactors: { ...m.toolingFactors, ...sourceMachine.toolingFactors } } : m
-          ));
-        }
-      }
-
-      // Use isUpdatingStackRef to prevent the layers→layerStacks sync useEffect from interfering
-      isUpdatingStackRef.current = true;
-
-      setLayerStacks(prev => [...prev, newStack]);
-      setCurrentStackId(newStackId);
-      setLayers(loadedLayers);
-      prevLayersRef.current = JSON.stringify(loadedLayers);
-
-      // Merge custom materials from loaded design (doesn't overwrite existing)
-      if (d.customMaterials) {
-        setCustomMaterials(prev => ({ ...prev, ...d.customMaterials }));
-      }
-
-      // Restore design settings if present
-      if (d.substrate) setSubstrate(d.substrate);
-      if (d.incident) setIncident(d.incident);
-      if (d.wavelengthRange) setWavelengthRange(d.wavelengthRange);
-      if (d.selectedIlluminant) setSelectedIlluminant(d.selectedIlluminant);
-      if (d.targets) setTargets(d.targets);
-
-      // Release the guard after state updates flush
-      Promise.resolve().then(() => { isUpdatingStackRef.current = false; });
-
-      setShowLoadModal(false);
-      setActiveTab('designer');
-      showToast(`"${designName}" added as new stack — settings restored`, 'success');
-    } catch (e) {
-      showToast('Failed to load design: ' + e.message, 'error');
+    // Find stacks belonging to this machine in the workspace
+    const machineStacks = (wsData.layerStacks || []).filter(s => s.machineId === machine.id);
+    if (machineStacks.length > 0) {
+      const maxStackId = Math.max(...layerStacks.map(s => s.id), 0);
+      const remappedStacks = machineStacks.map((s, i) => ({
+        ...s,
+        id: maxStackId + i + 1,
+        machineId: newMachineId,
+      }));
+      setLayerStacks(prev => [...prev, ...remappedStacks]);
     }
-  }, [showToast, layerStacks, currentMachineId]); // eslint-disable-line react-hooks/exhaustive-deps
+    showToast(`Machine "${machine.name || 'Machine ' + machine.id}" added with ${(wsData.layerStacks || []).filter(s => s.machineId === machine.id).length} stack(s)`, 'success');
+  }, [machines, layerStacks]);
+
+  // Cherry-pick: Add a single stack from a workspace
+  const handleAddStackFromWorkspace = useCallback((stack) => {
+    const newStackId = Math.max(...layerStacks.map(s => s.id), 0) + 1;
+    const newStack = {
+      ...stack,
+      id: newStackId,
+      machineId: currentMachineId,
+      color: `hsl(${(newStackId * 60) % 360}, 70%, 50%)`,
+    };
+
+    isUpdatingStackRef.current = true;
+    setLayerStacks(prev => [...prev, newStack]);
+    setCurrentStackId(newStackId);
+    setLayers(newStack.layers);
+    prevLayersRef.current = JSON.stringify(newStack.layers);
+    Promise.resolve().then(() => { isUpdatingStackRef.current = false; });
+
+    showToast(`Stack "${stack.name || 'Stack'}" added`, 'success');
+  }, [layerStacks, currentMachineId]);
+
+  // Cherry-pick: Add custom materials from a workspace
+  const handleAddMaterialsFromWorkspace = useCallback((materials) => {
+    setCustomMaterials(prev => ({ ...prev, ...materials }));
+    showToast(`${Object.keys(materials).length} material(s) added`, 'success');
+  }, []);
+
+  // Cherry-pick: Add optimizer targets from a workspace
+  const handleAddTargetsFromWorkspace = useCallback((wsData) => {
+    if (wsData.targets) setTargets(wsData.targets);
+    if (Array.isArray(wsData.designPoints)) setDesignPoints(wsData.designPoints);
+    if (Array.isArray(wsData.designMaterials)) setDesignMaterials(wsData.designMaterials);
+    if (wsData.minDesignLayers !== undefined) setMinDesignLayers(wsData.minDesignLayers);
+    if (wsData.maxDesignLayers !== undefined) setMaxDesignLayers(wsData.maxDesignLayers);
+    if (wsData.matchTolerance !== undefined) setMatchTolerance(wsData.matchTolerance);
+    if (wsData.layerTemplate) setLayerTemplate(wsData.layerTemplate);
+    showToast('Optimizer targets loaded', 'success');
+  }, []);
+
+  // Cherry-pick: Add tracking runs from a workspace
+  const handleAddTrackingRunsFromWorkspace = useCallback((runs) => {
+    const maxId = Math.max(...trackingRuns.map(r => r.id || 0), 0);
+    const remapped = runs.map((r, i) => ({ ...r, id: maxId + i + 1 }));
+    setTrackingRuns(prev => [...prev, ...remapped]);
+    showToast(`${runs.length} tracking run(s) added`, 'success');
+  }, [trackingRuns]);
 
   const handleDeleteDesign = useCallback(async (designId) => {
     try {
@@ -3987,9 +4858,10 @@ const ThinFilmDesigner = () => {
       } else {
         await deleteLocalDesign(designId);
       }
+      setWorkspaceDataCache(prev => { const next = { ...prev }; delete next[designId]; return next; });
       loadDesignsList();
     } catch (e) {
-      console.warn('Failed to delete design:', e);
+      console.warn('Failed to delete workspace:', e);
     }
   }, [isSignedIn, loadDesignsList]);
 
@@ -4105,7 +4977,9 @@ const ThinFilmDesigner = () => {
           calculateReflectivity();
         });
       }
-    } else if (activeTab === "designer" && layerStacks.length === 0) {
+    } else if (activeTab === "designer" && (layerStacks.length === 0 || currentStackId === null)) {
+      // Also handle: stacks exist on other machines but no current stack selected.
+      // Without this, the chart would show stale data from a previous calculation.
       if (displayMode !== "admittance" && displayMode !== "efield") {
         if (calcRafRef.current) cancelAnimationFrame(calcRafRef.current);
         calcRafRef.current = requestAnimationFrame(() => {
@@ -4188,6 +5062,13 @@ const ThinFilmDesigner = () => {
       }
 
       setLayerStacks(newStacks);
+
+      // If no stacks with layers remain, immediately clear chart data
+      // (the useEffect is blocked by isDeletingRef so won't recalculate)
+      if (newStacks.filter(s => s.visible && s.layers.length > 0).length === 0) {
+        setReflectivityData([]);
+        setStackColorData({});
+      }
     } finally {
       // Reset the deleting flag after state updates are queued
       // Use setTimeout to ensure state updates have been processed
@@ -4228,6 +5109,69 @@ const ThinFilmDesigner = () => {
 
     // Update the ref to match new layers
     prevLayersRef.current = JSON.stringify(newStack.layers);
+  };
+
+  // Check if a template subtype is accessible at the current tier
+  const isTemplateAccessible = (subtype) => {
+    const templateAccess = tierLimits.coatingTemplates;
+    if (!templateAccess) return false;
+    if (templateAccess === 'all') return true;
+    if (templateAccess === 'basic') return subtype.tierRequired === 'free';
+    return false;
+  };
+
+  // Insert template-generated layers into a stack
+  const insertTemplateLayers = (generatedLayers, mode) => {
+    // Layer count validation against tier limit
+    const maxLayers = tierLimits.maxLayersPerStack;
+    if (maxLayers > 0 && generatedLayers.length > maxLayers) {
+      showToast(`Template generates ${generatedLayers.length} layers but your plan allows ${maxLayers}. Try fewer pairs or upgrade.`, 'error');
+      return;
+    }
+    // mode: 'replace' = replace current stack, 'new' = create new stack
+    const fullLayers = generatedLayers.map((l, i) => ({
+      id: i + 1,
+      material: l.material,
+      thickness: l.thickness,
+      iad: null,
+      packingDensity: 1.0,
+    }));
+
+    if (mode === 'new') {
+      const newId = Math.max(0, ...layerStacks.map((s) => s.id)) + 1;
+      const machineStacks = layerStacks.filter(s => s.machineId === currentMachineId);
+      const newStack = {
+        id: newId,
+        machineId: currentMachineId,
+        name: `Layer Stack ${machineStacks.length + 1}`,
+        layers: fullLayers,
+        visible: true,
+        color: `hsl(${(newId * 60) % 360}, 70%, 50%)`,
+      };
+      setLayerStacks([...layerStacks, newStack]);
+      setCurrentStackId(newId);
+      setLayers(fullLayers);
+      prevLayersRef.current = JSON.stringify(fullLayers);
+    } else {
+      // Replace current stack
+      setLayers(fullLayers);
+      setLayerStacks(prev => prev.map(stack =>
+        stack.id === currentStackId ? { ...stack, layers: fullLayers } : stack
+      ));
+      prevLayersRef.current = JSON.stringify(fullLayers);
+    }
+    setShowTemplatePicker(false);
+    setTemplateInsertConfirm(null);
+    setSelectedTemplateType(null);
+    setSelectedSubtype(null);
+    setTemplateParams({});
+    showToast(`Template inserted: ${fullLayers.length} layers`, 'success');
+  };
+
+  // Generate layers from a template subtype with current params
+  const generateTemplatePreview = (subtype, params) => {
+    const getN = (material, wavelength) => getRefractiveIndex(material, wavelength);
+    return subtype.generate(params, allMaterials, getN);
   };
 
   const switchLayerStack = (id) => {
@@ -4506,7 +5450,11 @@ const ThinFilmDesigner = () => {
   const addLayer = () => {
     if (!checkLimit('maxLayersPerStack', layers.length, 'Layers per Stack')) return;
     const newId = Math.max(...layers.map((l) => l.id), 0) + 1;
-    setLayers([...layers, { id: newId, material: "SiO2", thickness: 100, iad: null, packingDensity: 1.0 }]);
+    const newLayers = [...layers, { id: newId, material: "SiO2", thickness: 100, iad: null, packingDensity: 1.0 }];
+    setLayers(newLayers);
+    setLayerStacks(prev => prev.map(stack =>
+      stack.id === currentStackId ? { ...stack, layers: newLayers } : stack
+    ));
   };
 
   const insertLayerAfter = (index) => {
@@ -4516,10 +5464,19 @@ const ThinFilmDesigner = () => {
     const newLayers = [...layers];
     newLayers.splice(index + 1, 0, newLayer);
     setLayers(newLayers);
+    setLayerStacks(prev => prev.map(stack =>
+      stack.id === currentStackId ? { ...stack, layers: newLayers } : stack
+    ));
   };
 
   const removeLayer = (id) => {
-    if (layers.length > 1) setLayers(layers.filter((l) => l.id !== id));
+    if (layers.length > 1) {
+      const newLayers = layers.filter((l) => l.id !== id);
+      setLayers(newLayers);
+      setLayerStacks(prev => prev.map(stack =>
+        stack.id === currentStackId ? { ...stack, layers: newLayers } : stack
+      ));
+    }
   };
 
   // Compute translateY for rows during drag to animate them shifting apart
@@ -5020,6 +5977,9 @@ const ThinFilmDesigner = () => {
       originalThickness: undefined,
     }));
     setLayers(updatedLayers);
+    setLayerStacks(prev => prev.map(stack =>
+      stack.id === currentStackId ? { ...stack, layers: updatedLayers } : stack
+    ));
     setPreviousLastThicknesses([]);
     setShowFactorPreview(false);
     setFactorPreviewData([]);
@@ -5120,8 +6080,8 @@ const ThinFilmDesigner = () => {
   };
 
   const updateRecipeTargets = (recipeId, newTargets) => {
-    setRecipes(
-      recipes.map((r) => {
+    setRecipes(prev =>
+      prev.map((r) => {
         if (r.id === recipeId) {
           return { ...r, targets: newTargets };
         }
@@ -6894,25 +7854,27 @@ const ThinFilmDesigner = () => {
   const renderAdmittanceChart = () => (
     <ResponsiveContainer width="100%" height="100%">
       <ScatterChart margin={{ top: 10, right: 20, bottom: 40, left: 30 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+        <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
         <XAxis
           dataKey="re"
           type="number"
           name="Re(Y)"
-          label={{ value: "Re(Y) — Admittance", position: "insideBottom", offset: -5 }}
-          tick={{ fontSize: 10, fill: theme.chartAxisText }}
+          label={{ value: "Re(Y) — Admittance", position: "insideBottom", offset: -5, ...axisLabelStyle }}
+          tick={{ fontSize: 11, fill: theme.chartAxisText }}
+          stroke={theme.chartGrid}
           domain={["auto", "auto"]}
         />
         <YAxis
           dataKey="im"
           type="number"
           name="Im(Y)"
-          label={{ value: "Im(Y)", angle: -90, position: "insideLeft", offset: -10 }}
-          tick={{ fontSize: 10, fill: theme.chartAxisText }}
+          label={{ value: "Im(Y)", angle: -90, position: "insideLeft", offset: -10, ...axisLabelStyle }}
+          tick={{ fontSize: 11, fill: theme.chartAxisText }}
+          stroke={theme.chartGrid}
           domain={["auto", "auto"]}
         />
         <Tooltip content={admittanceTooltipContent} />
-        <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} verticalAlign="bottom" />
+        <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px", color: theme.textSecondary }} verticalAlign="bottom" />
         {admittanceData.map((locus) => (
           <Scatter
             key={`adm-${locus.wavelength}`}
@@ -6933,7 +7895,7 @@ const ThinFilmDesigner = () => {
   const renderEfieldChart = () => (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={efieldData.data || []} margin={{ top: 10, right: 20, bottom: 40, left: 30 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+        <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
         {efieldData.layers.map((layer, idx) => (
           <ReferenceArea
             key={`efield-layer-${idx}`}
@@ -6947,25 +7909,39 @@ const ThinFilmDesigner = () => {
         <XAxis
           dataKey="depth"
           type="number"
-          label={{ value: "Depth (nm)", position: "insideBottom", offset: -5 }}
-          tick={{ fontSize: 10, fill: theme.chartAxisText }}
+          label={{ value: "Depth (nm)", position: "insideBottom", offset: -5, ...axisLabelStyle }}
+          tick={{ fontSize: 11, fill: theme.chartAxisText }}
+          stroke={theme.chartGrid}
           domain={["auto", "auto"]}
         />
         <YAxis
-          label={{ value: "|E|\u00B2 / |E\u2080|\u00B2", angle: -90, position: "insideLeft", offset: -10 }}
-          tick={{ fontSize: 10, fill: theme.chartAxisText }}
+          label={{ value: "|E|\u00B2 / |E\u2080|\u00B2", angle: -90, position: "insideLeft", offset: -10, ...axisLabelStyle }}
+          tick={{ fontSize: 11, fill: theme.chartAxisText }}
+          stroke={theme.chartGrid}
           domain={[0, "auto"]}
         />
         <Tooltip
-          content={({ payload, label }) => {
+          content={({ payload }) => {
             if (payload && payload.length > 0) {
               const d = payload[0].payload;
               return (
-                <div className="bg-white border rounded p-2 text-xs shadow">
-                  <div className="font-semibold">{d.material || ""}</div>
-                  <div>Depth: {d.depth?.toFixed(1)} nm</div>
+                <div style={{
+                  background: theme.chartTooltipBg,
+                  border: `1px solid ${theme.chartTooltipBorder}`,
+                  borderRadius: 8,
+                  padding: '8px 12px',
+                  boxShadow: darkMode ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.1)',
+                  fontSize: 12,
+                  color: theme.chartTooltipText,
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{d.material || ""}</div>
+                  <div style={{ color: theme.textTertiary, fontSize: 11 }}>Depth: {d.depth?.toFixed(1)} nm</div>
                   {payload.map((p, i) => (
-                    <div key={i} style={{ color: p.color }}>{p.name}: {p.value?.toFixed(4)}</div>
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, display: 'inline-block' }} />
+                      <span style={{ color: theme.textTertiary, fontSize: 11 }}>{p.name}:</span>
+                      <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{p.value?.toFixed(4)}</span>
+                    </div>
                   ))}
                 </div>
               );
@@ -6973,7 +7949,7 @@ const ThinFilmDesigner = () => {
             return null;
           }}
         />
-        <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} verticalAlign="bottom" />
+        <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px", color: theme.textSecondary }} verticalAlign="bottom" />
         {efieldData.lines.map((line) => (
           <Line
             key={`efield-${line.wavelength}`}
@@ -7017,70 +7993,53 @@ const ThinFilmDesigner = () => {
       )}
       <div className="h-full flex flex-col">
         {/* Tabs */}
-        <div className="flex gap-1 mb-2 flex-shrink-0">
-          <button
-            onClick={() => setActiveTab("designer")}
-            className={`px-4 py-2 rounded-t font-semibold transition-colors ${
-              activeTab === "designer"
-                ? "bg-white text-indigo-600 shadow"
-                : "bg-indigo-100 text-gray-600 hover:bg-indigo-200"
-            }`}
-          >
-            Thin-Film Designer
-          </button>
-          <button
-            onClick={() => setActiveTab("assistant")}
-            className={`px-4 py-2 rounded-t font-semibold transition-colors flex items-center gap-2 ${
-              activeTab === "assistant"
-                ? "bg-white text-indigo-600 shadow"
-                : "bg-indigo-100 text-gray-600 hover:bg-indigo-200"
-            }`}
-          >
-            <Zap size={16} />
-            Design Assistant
-          </button>
-          <button
-            onClick={() => setActiveTab("tracking")}
-            className={`px-4 py-2 rounded-t font-semibold transition-colors flex items-center gap-2 ${
-              activeTab === "tracking"
-                ? "bg-white text-indigo-600 shadow"
-                : "bg-indigo-100 text-gray-600 hover:bg-indigo-200"
-            }`}
-          >
-            <Upload size={16} />
-            Recipe Tracking
-          </button>
-          <button
-            onClick={() => setActiveTab("yield")}
-            className={`px-4 py-2 rounded-t font-semibold transition-colors flex items-center gap-2 ${
-              activeTab === "yield"
-                ? "bg-white text-indigo-600 shadow"
-                : "bg-indigo-100 text-gray-600 hover:bg-indigo-200"
-            }`}
-          >
-            <TrendingUp size={16} />
-            Yield Analysis
-          </button>
-          {/* Right side controls */}
-          <div className="ml-auto flex items-center gap-2">
-            {/* Save/Load buttons */}
+        <div className="flex gap-1 mb-2 flex-shrink-0 items-center" style={{ background: darkMode ? '#111225' : '#e0e7ff', borderRadius: 10, padding: '3px 4px' }}>
+          {[
+            { id: 'designer', label: 'Thin-Film Designer', icon: null },
+            { id: 'assistant', label: 'Design Assistant', icon: <Zap size={14} /> },
+            { id: 'tracking', label: 'Recipe Tracking', icon: <Upload size={14} /> },
+            { id: 'yield', label: 'Yield Analysis', icon: <TrendingUp size={14} /> },
+          ].map(tab => (
             <button
-              onClick={() => setShowSaveModal(true)}
-              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-indigo-100 text-indigo-700 hover:bg-indigo-200"
-              title="Save current design"
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className="flex items-center gap-1.5 transition-all"
+              style={{
+                padding: '6px 14px',
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: activeTab === tab.id ? 600 : 500,
+                background: activeTab === tab.id
+                  ? (darkMode ? 'var(--accent)' : '#ffffff')
+                  : 'transparent',
+                color: activeTab === tab.id
+                  ? (darkMode ? '#ffffff' : 'var(--accent)')
+                  : (darkMode ? 'var(--text-tertiary)' : '#6b7280'),
+                boxShadow: activeTab === tab.id
+                  ? (darkMode ? '0 1px 4px rgba(99,102,241,0.3)' : '0 1px 3px rgba(0,0,0,0.1)')
+                  : 'none',
+                cursor: 'pointer',
+                border: 'none',
+              }}
+              onMouseEnter={e => {
+                if (activeTab !== tab.id) {
+                  e.currentTarget.style.background = darkMode ? 'rgba(99,102,241,0.15)' : 'rgba(79,70,229,0.08)';
+                  e.currentTarget.style.color = darkMode ? '#a5b4fc' : 'var(--accent)';
+                }
+              }}
+              onMouseLeave={e => {
+                if (activeTab !== tab.id) {
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.color = darkMode ? 'var(--text-tertiary)' : '#6b7280';
+                }
+              }}
             >
-              <Save size={12} />
-              <span>Save</span>
+              {tab.icon}
+              {tab.label}
             </button>
-            <button
-              onClick={() => { loadDesignsList(); setShowLoadModal(true); }}
-              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-indigo-100 text-indigo-700 hover:bg-indigo-200"
-              title="Load a saved design"
-            >
-              <FolderOpen size={12} />
-              <span>Load</span>
-            </button>
-
+          ))}
+          {/* Middle controls — pushed right of tabs */}
+          <div className="flex items-center gap-2" style={{ marginLeft: 'auto' }}>
             {/* Dark mode toggle */}
             <button
               onClick={() => setDarkMode(prev => !prev)}
@@ -7101,6 +8060,10 @@ const ThinFilmDesigner = () => {
               {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
             </div>
 
+          </div>
+
+          {/* Far right group — Auth + Workspace Save/Load */}
+          <div className="flex items-center gap-2" style={{ marginLeft: 'auto' }}>
             {/* Auth button */}
             {CLERK_ENABLED ? (
               isSignedIn ? (
@@ -7116,17 +8079,59 @@ const ThinFilmDesigner = () => {
                   <UserButton afterSignOutUrl={window.location.href} />
                 </div>
               ) : (
-                <SignInButton mode="modal">
-                  <button className="flex items-center gap-1 px-3 py-1.5 rounded text-xs bg-indigo-600 text-white hover:bg-indigo-700 font-medium">
-                    <LogIn size={12} />
-                    <span>Sign In</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setShowPricingModal(true)}
+                    className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium"
+                    style={{ background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer' }}
+                    title="View plans and pricing"
+                  >
+                    <Crown size={12} />
+                    <span>Plans</span>
                   </button>
-                </SignInButton>
+                  <SignInButton mode="modal">
+                    <button className="flex items-center gap-1 px-3 py-1.5 rounded text-xs bg-indigo-600 text-white hover:bg-indigo-700 font-medium">
+                      <LogIn size={12} />
+                      <span>Sign In</span>
+                    </button>
+                  </SignInButton>
+                </div>
               )
             ) : (
-              <div className="flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400">
-                <User size={14} />
-              </div>
+              <button
+                onClick={() => setShowPricingModal(true)}
+                className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium"
+                style={{ background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer' }}
+                title="View plans and pricing"
+              >
+                <Crown size={12} />
+                <span>Plans</span>
+              </button>
+            )}
+
+            {/* Workspace Save/Load */}
+            {(activeTab === 'designer' || activeTab === 'assistant') && (
+              <>
+                <div style={{ width: 1, height: 20, background: theme.border }}></div>
+                <button
+                  onClick={() => setShowSaveWorkspaceModal(true)}
+                  className="flex items-center gap-1 rounded text-xs"
+                  style={{ padding: '4px 10px', background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer', fontWeight: 500 }}
+                  title="Save all machines, stacks, materials, and settings as a workspace"
+                >
+                  <Save size={12} />
+                  <span>Save Workspace</span>
+                </button>
+                <button
+                  onClick={() => { loadDesignsList(); setShowLoadWorkspaceModal(true); }}
+                  className="flex items-center gap-1 rounded text-xs"
+                  style={{ padding: '4px 10px', background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer', fontWeight: 500 }}
+                  title="Load a saved workspace or individual items"
+                >
+                  <FolderOpen size={12} />
+                  <span>Load Workspace</span>
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -7270,12 +8275,12 @@ const ThinFilmDesigner = () => {
                   <span>Targets</span>
                 </button>
                 <button
-                  onClick={() => setLayoutMode(layoutMode === "vertical" ? "horizontal" : "vertical")}
-                  className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center gap-1 flex-shrink-0"
-                  title={layoutMode === "vertical" ? "Switch to side-by-side layout" : "Switch to stacked layout"}
+                  onClick={() => setLayoutMode(layoutMode === "tall" ? "wide" : "tall")}
+                  className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center justify-center flex-shrink-0"
+                  title={layoutMode === "tall" ? "Side-by-side layout" : "Stacked layout"}
+                  style={{ fontSize: 16, lineHeight: 1, width: 32 }}
                 >
-                  <span>{layoutMode === "vertical" ? "⬌" : "⬍"}</span>
-                  <span>{layoutMode === "vertical" ? "Wide" : "Tall"}</span>
+                  {layoutMode === "tall" ? "⬌" : "⬍"}
                 </button>
                 <div className="bg-white px-2 py-1 rounded shadow flex-shrink-0">
                   {!experimentalData ? (
@@ -7311,10 +8316,10 @@ const ThinFilmDesigner = () => {
               </div>
             </div>
 
-            <div className={`flex-1 bg-white rounded-lg shadow-lg p-2 flex overflow-hidden designer-container min-h-0 ${layoutMode === "horizontal" ? "flex-row" : "flex-col"}`}>
+            <div className={`flex-1 bg-white rounded-lg shadow-lg p-2 flex overflow-hidden designer-container min-h-0 ${layoutMode === "wide" ? "flex-row" : "flex-col"}`}>
               
               {/* In horizontal mode: Layers first (left side) */}
-              {layoutMode === "horizontal" && (
+              {layoutMode === "wide" && (
                 <div
                   style={{ width: `${100 - chartWidth}%`, height: "100%", paddingRight: 8 }}
                   className="flex flex-col overflow-hidden min-h-0 min-w-0"
@@ -7323,6 +8328,7 @@ const ThinFilmDesigner = () => {
                     <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
                     <button onClick={addLayerStack} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"><Plus size={10} /> New Stack</button>
                     <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"><Trash2 size={10} /> Delete Stack</button>
+                    <button onClick={() => setShowTemplatePicker(true)} style={{ background: theme.accent, color: '#fff', padding: '1px 8px', borderRadius: 4, fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, border: 'none', cursor: 'pointer' }}><Zap size={10} /> Template</button>
                   </div>
 
                   {/* Stack Tabs */}
@@ -7373,7 +8379,7 @@ const ThinFilmDesigner = () => {
                   </div>
 
                   {/* Compact Grid Header for horizontal mode */}
-                  <div className="grid gap-x-1 bg-gray-100 p-1 rounded text-xs font-semibold text-gray-700 border-b-2 border-gray-300 flex-shrink-0 items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 3.5rem' }}>
+                  <div className="grid gap-x-1 bg-gray-100 p-1 rounded text-xs font-semibold text-gray-700 border-b-2 border-gray-300 flex-shrink-0 items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
                     <div></div>
                     <div className="text-center">#</div>
                     <div className="truncate">Material</div>
@@ -7401,7 +8407,7 @@ const ThinFilmDesigner = () => {
                     ) : (
                       <>
                         {/* Substrate Row */}
-                        <div className="grid gap-x-1 p-1 bg-amber-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 3.5rem' }}>
+                        <div className="grid gap-x-1 p-1 bg-amber-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
                           <div></div>
                           <div className="text-center font-medium">S</div>
                           <div className="min-w-0 overflow-hidden">
@@ -7468,16 +8474,22 @@ const ThinFilmDesigner = () => {
                             <React.Fragment key={layer.id}>
                             <div
                               data-layer-row
-                              className={`grid gap-x-1 p-1 border-b border-gray-200 text-xs items-center hover:bg-gray-50 ${layer.locked ? "border-l-2 border-l-red-400" : ""}`}
+                              className="grid gap-x-1 p-1 border-b text-xs items-center"
                               style={{
-                                backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || (darkMode ? '#1a1c38' : '#fff')),
-                                gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 3.5rem',
+                                backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || '#e5e7eb'),
+                                borderColor: darkMode ? '#2a2c4a' : '#e5e7eb',
+                                borderLeft: layer.locked
+                                  ? '3px solid #f87171'
+                                  : `3px solid ${allMaterials[layer.material]?.color || '#9ca3af'}`,
+                                gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem',
                                 transform: getDragTransform(idx, dragIndex, dragOverIndex),
-                                transition: 'transform 0.2s ease',
+                                transition: 'transform 0.2s ease, background-color 0.15s',
                                 position: 'relative',
                                 zIndex: dragIndex === idx ? 2 : 0,
-                                boxShadow: dragIndex === idx ? '0 2px 8px rgba(0,0,0,0.18)' : 'none',
+                                boxShadow: dragIndex === idx ? (darkMode ? '0 2px 10px rgba(0,0,0,0.5)' : '0 2px 8px rgba(0,0,0,0.18)') : 'none',
                               }}
+                              onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(0.93)'; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.filter = ''; }}
                               onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
                             >
                               <div
@@ -7627,7 +8639,7 @@ const ThinFilmDesigner = () => {
                         </div>
 
                         {/* Incident Row */}
-                        <div className="grid gap-x-1 p-1 bg-sky-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 3.5rem' }}>
+                        <div className="grid gap-x-1 p-1 bg-sky-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
                           <div></div>
                           <div className="text-center font-medium">I</div>
                           <div className="truncate">{incident.material}</div>
@@ -7713,7 +8725,7 @@ const ThinFilmDesigner = () => {
               )}
 
               {/* Horizontal mode divider */}
-              {layoutMode === "horizontal" && (
+              {layoutMode === "wide" && (
                 <div
                   className="flex items-center justify-center flex-shrink-0"
                   style={{ width: '11px', padding: '0 4px', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'col-resize' }}
@@ -7726,27 +8738,56 @@ const ThinFilmDesigner = () => {
               )}
 
               {/* Chart container - horizontal mode only */}
-              {layoutMode === "horizontal" && (
+              {layoutMode === "wide" && (
               <div
                 style={{ flex: 1, height: "100%" }}
                 className="min-h-0 flex gap-2 flex-shrink-0"
               >
-                <div className="flex-1 min-w-0 min-h-0" style={{ height: "100%" }}>
-                  {displayMode === "admittance" ? renderAdmittanceChart() : displayMode === "efield" ? renderEfieldChart() : (
+                <div className="flex-1 min-w-0 min-h-0" style={{ height: "100%", position: 'relative' }}>
+                  {chartZoom && displayMode !== "admittance" && displayMode !== "efield" && (
+                    <button
+                      onClick={resetChartZoom}
+                      style={{
+                        position: 'absolute', top: 4, right: 24, zIndex: 10,
+                        padding: '2px 8px', borderRadius: 6, fontSize: 10, fontWeight: 600,
+                        background: darkMode ? 'var(--accent)' : '#4f46e5',
+                        color: '#fff', border: 'none', cursor: 'pointer',
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+                      }}
+                    >
+                      Reset Zoom
+                    </button>
+                  )}
+                  {layerStacks.filter(s => s.visible && s.layers.length > 0).length === 0 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: theme.textMuted }}>
+                      <div style={{ textAlign: 'center' }}>
+                        <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>No layer stacks</p>
+                        <p style={{ fontSize: 12 }}>Create a layer stack to see the reflectivity chart</p>
+                      </div>
+                    </div>
+                  ) : displayMode === "admittance" ? renderAdmittanceChart() : displayMode === "efield" ? renderEfieldChart() : (
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={reflectivityData} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                    <LineChart
+                      data={reflectivityData}
+                      margin={{ top: 5, right: 20, bottom: 20, left: 10 }}
+                      onMouseDown={handleChartMouseDown}
+                      onMouseMove={handleChartMouseMove}
+                      onMouseUp={handleChartMouseUp}
+                    >
+                      <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                       <XAxis
                         dataKey="wavelength"
                         type="number"
-                        domain={[wavelengthRange.min, wavelengthRange.max]}
+                        domain={chartZoom ? [chartZoom.x1, chartZoom.x2] : [wavelengthRange.min, wavelengthRange.max]}
                         ticks={calculateXAxisTicks()}
                         label={{
                           value: "Wavelength (nm)",
                           position: "insideBottom",
                           offset: -10,
+                          ...axisLabelStyle,
                         }}
-                        tick={{ fontSize: 10, fill: theme.chartAxisText }}
+                        tick={{ fontSize: 11, fill: theme.chartAxisText }}
+                        stroke={theme.chartGrid}
                         allowDataOverflow={false}
                       />
                       <YAxis
@@ -7761,25 +8802,28 @@ const ThinFilmDesigner = () => {
                           } (%)`,
                           angle: -90,
                           position: "insideLeft",
+                          ...axisLabelStyle,
                         }}
                         domain={[reflectivityRange.min, reflectivityRange.max]}
                         ticks={calculateYAxisTicks()}
-                        tick={{ fontSize: 10, fill: theme.chartAxisText }}
+                        tick={{ fontSize: 11, fill: theme.chartAxisText }}
+                        stroke={theme.chartGrid}
                         allowDataOverflow={true}
                       />
                       {showPhase && (
                         <YAxis
                           yAxisId="right"
                           orientation="right"
-                          label={{ value: "Phase (\u00B0)", angle: 90, position: "insideRight" }}
+                          label={{ value: "Phase (\u00B0)", angle: 90, position: "insideRight", ...axisLabelStyle }}
                           domain={[-180, 180]}
                           ticks={[-180, -90, 0, 90, 180]}
-                          tick={{ fontSize: 10, fill: theme.chartAxisText }}
+                          tick={{ fontSize: 11, fill: theme.chartAxisText }}
+                          stroke={theme.chartGrid}
                           allowDataOverflow={true}
                         />
                       )}
-                      <Tooltip contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
-                      <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px", color: theme.textSecondary }} />
 
                       {targets.map((target) => {
                         // Clip target to visible chart range
@@ -7794,6 +8838,7 @@ const ThinFilmDesigner = () => {
                         return (
                           <ReferenceArea
                             key={target.id}
+                            yAxisId="left"
                             x1={x1}
                             x2={x2}
                             y1={y1}
@@ -7805,7 +8850,7 @@ const ThinFilmDesigner = () => {
                             label={{
                               value: target.name,
                               position: "insideTopLeft",
-                              fill: "#15803d",
+                              fill: darkMode ? '#4ade80' : '#15803d',
                               fontSize: 11,
                               fontWeight: "bold",
                             }}
@@ -7814,7 +8859,7 @@ const ThinFilmDesigner = () => {
                       })}
 
                       {layerStacks
-                        .filter((s) => s.visible)
+                        .filter((s) => s.visible && s.layers.length > 0)
                         .map((stack) => {
                           const dataKey =
                             displayMode === "transmission"
@@ -7936,6 +8981,8 @@ const ThinFilmDesigner = () => {
                           const dataKey =
                             displayMode === "transmission"
                               ? `stack_${currentStackId}_${angleData.key}_transmission`
+                              : displayMode === "absorption"
+                              ? `stack_${currentStackId}_${angleData.key}_absorption`
                               : `stack_${currentStackId}_${angleData.key}`;
                           const currentStack = layerStacks.find(
                             (s) => s.id === currentStackId
@@ -7960,7 +9007,7 @@ const ThinFilmDesigner = () => {
                         })}
 
                       {/* Phase Shift Overlay Lines */}
-                      {showPhase && layerStacks.filter((s) => s.visible).map((stack) => (
+                      {showPhase && layerStacks.filter((s) => s.visible && s.layers.length > 0).map((stack) => (
                         <Line
                           key={`phase-${stack.id}`}
                           yAxisId="right"
@@ -7975,6 +9022,19 @@ const ThinFilmDesigner = () => {
                           isAnimationActive={false}
                         />
                       ))}
+
+                      {/* Zoom selection overlay */}
+                      {zoomSelecting && zoomSelecting.endX != null && (
+                        <ReferenceArea
+                          yAxisId="left"
+                          x1={zoomSelecting.startX}
+                          x2={zoomSelecting.endX}
+                          fill={darkMode ? 'rgba(99,102,241,0.2)' : 'rgba(79,70,229,0.15)'}
+                          stroke={darkMode ? '#6366f1' : '#4f46e5'}
+                          strokeWidth={1}
+                          strokeDasharray="3 3"
+                        />
+                      )}
                     </LineChart>
                   </ResponsiveContainer>
                   )}
@@ -7982,7 +9042,7 @@ const ThinFilmDesigner = () => {
 
 
                 {/* Enhanced Color Analysis Sidebar */}
-                <div className={`bg-gray-50 rounded p-2 border flex-shrink-0 flex flex-col overflow-y-auto ${layoutMode === "horizontal" ? "w-36" : "w-48"}`} style={{ maxHeight: "100%" }}>
+                <div className={`bg-gray-50 rounded p-2 border flex-shrink-0 flex flex-col overflow-y-auto ${layoutMode === "wide" ? "w-36" : "w-48"}`} style={{ maxHeight: "100%" }}>
                   <div className="text-xs font-bold text-gray-800 mb-2">
                     Color Analysis
                   </div>
@@ -8417,46 +9477,70 @@ const ThinFilmDesigner = () => {
               )}
 
               {/* VERTICAL MODE - Complete layout with sidebar on right */}
-              {layoutMode === "vertical" && (
+              {layoutMode === "tall" && (
                 <div className="flex flex-row flex-1 gap-2 min-h-0">
                   {/* Left column: Chart + Divider + Layers */}
                   <div className="flex-1 flex flex-col min-h-0 min-w-0">
                     {/* Chart section */}
-                    <div style={{ height: `${chartHeight}%` }} className="min-h-0 flex-shrink-0">
-                      {displayMode === "admittance" ? renderAdmittanceChart() : displayMode === "efield" ? renderEfieldChart() : (
+                    <div style={{ height: `${chartHeight}%`, position: 'relative' }} className="min-h-0 flex-shrink-0">
+                      {chartZoom && displayMode !== "admittance" && displayMode !== "efield" && (
+                        <button
+                          onClick={resetChartZoom}
+                          style={{
+                            position: 'absolute', top: 4, right: 24, zIndex: 10,
+                            padding: '2px 8px', borderRadius: 6, fontSize: 10, fontWeight: 600,
+                            background: darkMode ? 'var(--accent)' : '#4f46e5',
+                            color: '#fff', border: 'none', cursor: 'pointer',
+                            boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+                          }}
+                        >
+                          Reset Zoom
+                        </button>
+                      )}
+                      {layerStacks.filter(s => s.visible && s.layers.length > 0).length === 0 ? (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: theme.textMuted }}>
+                          <div style={{ textAlign: 'center' }}>
+                            <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>No layer stacks</p>
+                            <p style={{ fontSize: 12 }}>Create a layer stack to see the reflectivity chart</p>
+                          </div>
+                        </div>
+                      ) : displayMode === "admittance" ? renderAdmittanceChart() : displayMode === "efield" ? renderEfieldChart() : (
                       <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={reflectivityData} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                        <LineChart data={reflectivityData} margin={{ top: 5, right: 20, bottom: 20, left: 10 }} onMouseDown={handleChartMouseDown} onMouseMove={handleChartMouseMove} onMouseUp={handleChartMouseUp}>
+                          <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                           <XAxis
                             dataKey="wavelength"
                             type="number"
-                            domain={[wavelengthRange.min, wavelengthRange.max]}
+                            domain={chartZoom ? [chartZoom.x1, chartZoom.x2] : [wavelengthRange.min, wavelengthRange.max]}
                             ticks={calculateXAxisTicks()}
-                            label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -10 }}
-                            tick={{ fontSize: 10, fill: theme.chartAxisText }}
+                            label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -10, ...axisLabelStyle }}
+                            tick={{ fontSize: 11, fill: theme.chartAxisText }}
+                            stroke={theme.chartGrid}
                             allowDataOverflow={false}
                           />
                           <YAxis
                             yAxisId="left"
-                            label={{ value: `${displayMode === "transmission" ? "Transmission" : displayMode === "absorption" ? "Absorption" : "Reflectivity"} (%)`, angle: -90, position: "insideLeft" }}
+                            label={{ value: `${displayMode === "transmission" ? "Transmission" : displayMode === "absorption" ? "Absorption" : "Reflectivity"} (%)`, angle: -90, position: "insideLeft", ...axisLabelStyle }}
                             domain={[reflectivityRange.min, reflectivityRange.max]}
                             ticks={calculateYAxisTicks()}
-                            tick={{ fontSize: 10, fill: theme.chartAxisText }}
+                            tick={{ fontSize: 11, fill: theme.chartAxisText }}
+                            stroke={theme.chartGrid}
                             allowDataOverflow={true}
                           />
                           {showPhase && (
                             <YAxis
                               yAxisId="right"
                               orientation="right"
-                              label={{ value: "Phase (\u00B0)", angle: 90, position: "insideRight" }}
+                              label={{ value: "Phase (\u00B0)", angle: 90, position: "insideRight", ...axisLabelStyle }}
                               domain={[-180, 180]}
                               ticks={[-180, -90, 0, 90, 180]}
-                              tick={{ fontSize: 10, fill: theme.chartAxisText }}
+                              tick={{ fontSize: 11, fill: theme.chartAxisText }}
+                              stroke={theme.chartGrid}
                               allowDataOverflow={true}
                             />
                           )}
-                          <Tooltip contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
-                          <Legend wrapperStyle={{ fontSize: "10px", paddingTop: "10px", color: theme.textSecondary }} />
+                          <Tooltip content={<ChartTooltip />} />
+                          <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px", color: theme.textSecondary }} />
                           {targets.map((target) => {
                             const x1 = Math.max(target.wavelengthMin, wavelengthRange.min);
                             const x2 = Math.min(target.wavelengthMax, wavelengthRange.max);
@@ -8464,10 +9548,10 @@ const ThinFilmDesigner = () => {
                             const y2 = Math.min(target.reflectivityMax, reflectivityRange.max);
                             if (x1 >= x2 || y1 >= y2) return null;
                             return (
-                              <ReferenceArea key={target.id} x1={x1} x2={x2} y1={y1} y2={y2} fill="rgba(34, 197, 94, 0.1)" stroke="rgba(34, 197, 94, 0.6)" strokeWidth={2} strokeDasharray="5 5" label={{ value: target.name, position: "insideTopLeft", fill: "#15803d", fontSize: 11, fontWeight: "bold" }} />
+                              <ReferenceArea key={target.id} yAxisId="left" x1={x1} x2={x2} y1={y1} y2={y2} fill="rgba(34, 197, 94, 0.1)" stroke="rgba(34, 197, 94, 0.6)" strokeWidth={2} strokeDasharray="5 5" label={{ value: target.name, position: "insideTopLeft", fill: darkMode ? '#4ade80' : '#15803d', fontSize: 11, fontWeight: "bold" }} />
                             );
                           })}
-                          {layerStacks.filter((s) => s.visible).map((stack) => {
+                          {layerStacks.filter((s) => s.visible && s.layers.length > 0).map((stack) => {
                             const dataKey = displayMode === "transmission" ? `stack_${stack.id}_transmission` : displayMode === "absorption" ? `stack_${stack.id}_absorption` : `stack_${stack.id}`;
                             return (<Line key={stack.id} yAxisId="left" type="monotone" dataKey={dataKey} stroke={stack.color} strokeWidth={stack.id === currentStackId ? 3 : 2} dot={false} name={getStackDisplayName(stack)} isAnimationActive={false} />);
                           })}
@@ -8500,9 +9584,21 @@ const ThinFilmDesigner = () => {
                             );
                           })}
                           {/* Phase Shift Overlay Lines */}
-                          {showPhase && layerStacks.filter((s) => s.visible).map((stack) => (
+                          {showPhase && layerStacks.filter((s) => s.visible && s.layers.length > 0).map((stack) => (
                             <Line key={`phase-${stack.id}`} yAxisId="right" type="monotone" dataKey={`stack_${stack.id}_phase`} stroke={stack.color} strokeWidth={1.5} strokeDasharray="6 3" strokeOpacity={0.6} dot={false} name={`${getStackDisplayName(stack)} Phase`} isAnimationActive={false} />
                           ))}
+                          {/* Zoom selection overlay */}
+                          {zoomSelecting && zoomSelecting.endX != null && (
+                            <ReferenceArea
+                              yAxisId="left"
+                              x1={zoomSelecting.startX}
+                              x2={zoomSelecting.endX}
+                              fill={darkMode ? 'rgba(99,102,241,0.2)' : 'rgba(79,70,229,0.15)'}
+                              stroke={darkMode ? '#6366f1' : '#4f46e5'}
+                              strokeWidth={1}
+                              strokeDasharray="3 3"
+                            />
+                          )}
                         </LineChart>
                       </ResponsiveContainer>
                       )}
@@ -8519,6 +9615,7 @@ const ThinFilmDesigner = () => {
                           <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
                           <button onClick={addLayerStack} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"><Plus size={10} /> New Stack</button>
                           <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"><Trash2 size={10} /> Delete Stack</button>
+                          <button onClick={() => setShowTemplatePicker(true)} style={{ background: theme.accent, color: '#fff', padding: '1px 8px', borderRadius: 4, fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, border: 'none', cursor: 'pointer' }}><Zap size={10} /> Template</button>
                         </div>
                       </div>
 
@@ -8562,6 +9659,20 @@ const ThinFilmDesigner = () => {
                       </div>
 
                       <div className="flex-1 min-h-0" style={{ overflowY: 'auto', overflowX: 'hidden' }}>
+                        {layerStacks.filter((s) => s.machineId === currentMachineId).length === 0 ? (
+                          <div className="flex items-center justify-center h-full text-center p-4">
+                            <div className="text-gray-500 text-xs">
+                              <p className="font-semibold mb-2">No layer stacks</p>
+                              <button
+                                onClick={addLayerStack}
+                                className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 text-xs"
+                              >
+                                <Plus size={12} /> Create Stack
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                        <>
                         <div className="grid grid-cols-12 gap-1 p-1 bg-amber-50 border-b border-gray-200 text-xs items-center">
                           <div className="col-span-1 text-center font-medium">-</div>
                           <div className="col-span-1 text-center text-gray-600">Sub</div>
@@ -8588,15 +9699,21 @@ const ThinFilmDesigner = () => {
                           <div
                             data-layer-row
                             key={layer.id}
-                            className={`grid grid-cols-12 gap-1 p-1 border-b border-gray-200 text-xs items-center hover:bg-gray-50 ${layer.locked ? "border-l-2 border-l-red-400" : ""}`}
+                            className="grid grid-cols-12 gap-1 p-1 border-b text-xs items-center"
                             style={{
-                              backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || (darkMode ? '#1a1c38' : '#fff')),
+                              backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || '#e5e7eb'),
+                              borderColor: darkMode ? '#2a2c4a' : '#e5e7eb',
+                              borderLeft: layer.locked
+                                ? '3px solid #f87171'
+                                : `3px solid ${allMaterials[layer.material]?.color || '#9ca3af'}`,
                               transform: getDragTransform(idx, dragIndex, dragOverIndex),
-                              transition: 'transform 0.2s ease',
+                              transition: 'transform 0.2s ease, background-color 0.15s',
                               position: 'relative',
                               zIndex: dragIndex === idx ? 2 : 0,
-                              boxShadow: dragIndex === idx ? '0 2px 8px rgba(0,0,0,0.18)' : 'none',
+                              boxShadow: dragIndex === idx ? (darkMode ? '0 2px 10px rgba(0,0,0,0.5)' : '0 2px 8px rgba(0,0,0,0.18)') : 'none',
                             }}
+                            onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(0.93)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.filter = ''; }}
                             onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
                           >
                             <div className="col-span-1 text-center font-medium flex items-center justify-center gap-0.5">
@@ -8671,6 +9788,8 @@ const ThinFilmDesigner = () => {
                           <div className="col-span-2 text-left">-</div>
                           <div className="col-span-1"></div>
                         </div>
+                        </>
+                        )}
                       </div>
 
                       <div className="bg-gray-50 rounded p-1.5 border mt-1 flex-shrink-0">
@@ -8962,30 +10081,201 @@ const ThinFilmDesigner = () => {
           </>
         )}
 
+        {/* Coating Template Picker Modal */}
+        {showTemplatePicker && (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: theme.overlay }} onClick={() => { setShowTemplatePicker(false); setSelectedTemplateType(null); setSelectedSubtype(null); setTemplateParams({}); setTemplateInsertConfirm(null); }}>
+            <div style={{ background: theme.surface, borderRadius: 12, padding: 20, width: 520, maxHeight: '80vh', overflowY: 'auto', boxShadow: theme.shadowLg, border: `1px solid ${theme.border}` }} onClick={e => e.stopPropagation()}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, margin: 0 }}>Insert Coating Template</h3>
+                <button onClick={() => { setShowTemplatePicker(false); setSelectedTemplateType(null); setSelectedSubtype(null); setTemplateParams({}); setTemplateInsertConfirm(null); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: theme.textTertiary, padding: 4 }}><X size={16} /></button>
+              </div>
+
+              {/* Insert Confirmation Dialog */}
+              {templateInsertConfirm && (
+                <div style={{ padding: 16, background: theme.accentLight, borderRadius: 8, border: `1px solid ${theme.accent}` }}>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: theme.textPrimary, marginBottom: 12 }}>
+                    Insert {templateInsertConfirm.length} layers — where?
+                  </p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => insertTemplateLayers(templateInsertConfirm, 'replace')} style={{ flex: 1, padding: '8px 12px', background: theme.accent, color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                      Replace Current Stack
+                    </button>
+                    <button onClick={() => insertTemplateLayers(templateInsertConfirm, 'new')} style={{ flex: 1, padding: '8px 12px', background: theme.surfaceAlt, color: theme.textPrimary, border: `1px solid ${theme.border}`, borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                      Create New Stack
+                    </button>
+                  </div>
+                  <button onClick={() => setTemplateInsertConfirm(null)} style={{ marginTop: 8, background: 'none', border: 'none', color: theme.textTertiary, fontSize: 11, cursor: 'pointer' }}>Cancel</button>
+                </div>
+              )}
+
+              {/* Type Selection Grid */}
+              {!templateInsertConfirm && !selectedTemplateType && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                  {COATING_TEMPLATE_ORDER.map(typeId => {
+                    const tmpl = COATING_TEMPLATES[typeId];
+                    const iconData = COATING_ICONS[typeId];
+                    return (
+                      <button key={typeId} onClick={() => {
+                        setSelectedTemplateType(typeId);
+                        // If only one subtype, auto-select it
+                        if (tmpl.subtypes.length === 1) {
+                          setSelectedSubtype(tmpl.subtypes[0].id);
+                          const defaults = {};
+                          tmpl.subtypes[0].params.forEach(p => {
+                            if (p.autoFill === 'substrate.n') defaults[p.key] = substrate.n || 1.52;
+                            else if (p.default !== undefined) defaults[p.key] = p.default;
+                          });
+                          setTemplateParams(defaults);
+                        }
+                      }} style={{ padding: 12, background: theme.surfaceAlt, border: `1px solid ${theme.border}`, borderRadius: 8, cursor: 'pointer', textAlign: 'center', transition: 'border-color 0.15s' }}
+                        onMouseEnter={e => e.currentTarget.style.borderColor = theme.accent}
+                        onMouseLeave={e => e.currentTarget.style.borderColor = theme.border}
+                      >
+                        <div style={{ fontSize: 22, marginBottom: 4 }}>{iconData.emoji}</div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: theme.textPrimary }}>{tmpl.name}</div>
+                        <div style={{ fontSize: 9, color: theme.textTertiary, marginTop: 2 }}>{tmpl.description}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Subtype Selection */}
+              {!templateInsertConfirm && selectedTemplateType && !selectedSubtype && (
+                <div>
+                  <button onClick={() => setSelectedTemplateType(null)} style={{ background: 'none', border: 'none', color: theme.accentText, fontSize: 11, cursor: 'pointer', marginBottom: 8, padding: 0 }}>← Back to types</button>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: theme.textPrimary, marginBottom: 8 }}>
+                    {COATING_ICONS[selectedTemplateType]?.emoji} {COATING_TEMPLATES[selectedTemplateType].name} — Select variant:
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {COATING_TEMPLATES[selectedTemplateType].subtypes.map(sub => (
+                      <button key={sub.id} onClick={() => {
+                        setSelectedSubtype(sub.id);
+                        const defaults = {};
+                        sub.params.forEach(p => {
+                          if (p.autoFill === 'substrate.n') defaults[p.key] = substrate.n || 1.52;
+                          else if (p.default !== undefined) defaults[p.key] = p.default;
+                        });
+                        setTemplateParams(defaults);
+                      }} style={{ padding: 10, background: theme.surfaceAlt, border: `1px solid ${theme.border}`, borderRadius: 8, cursor: 'pointer', textAlign: 'left' }}
+                        onMouseEnter={e => e.currentTarget.style.borderColor = theme.accent}
+                        onMouseLeave={e => e.currentTarget.style.borderColor = theme.border}
+                      >
+                        <div style={{ fontSize: 12, fontWeight: 600, color: theme.textPrimary }}>{sub.name}</div>
+                        <div style={{ fontSize: 10, color: theme.textTertiary }}>{sub.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Parameter Form */}
+              {!templateInsertConfirm && selectedTemplateType && selectedSubtype && (() => {
+                const tmpl = COATING_TEMPLATES[selectedTemplateType];
+                const sub = tmpl.subtypes.find(s => s.id === selectedSubtype);
+                if (!sub) return null;
+                return (
+                  <div>
+                    <button onClick={() => {
+                      if (tmpl.subtypes.length > 1) { setSelectedSubtype(null); setTemplateParams({}); }
+                      else { setSelectedTemplateType(null); setSelectedSubtype(null); setTemplateParams({}); }
+                    }} style={{ background: 'none', border: 'none', color: theme.accentText, fontSize: 11, cursor: 'pointer', marginBottom: 8, padding: 0 }}>← Back</button>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: theme.textPrimary, marginBottom: 4 }}>
+                      {COATING_ICONS[selectedTemplateType]?.emoji} {sub.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: theme.textTertiary, marginBottom: 12 }}>{sub.description}</div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {sub.params.map(p => (
+                        <div key={p.key}>
+                          <label style={{ fontSize: 11, fontWeight: 500, color: theme.textSecondary, display: 'block', marginBottom: 2 }}>{p.label}</label>
+                          {p.type === 'number' && (
+                            <input
+                              type="number"
+                              value={templateParams[p.key] ?? p.default ?? ''}
+                              onChange={e => setTemplateParams(prev => ({ ...prev, [p.key]: parseFloat(e.target.value) || 0 }))}
+                              disabled={p.readOnly}
+                              min={p.min} max={p.max} step={p.step}
+                              style={{ width: '100%', padding: '6px 8px', border: `1px solid ${theme.inputBorder}`, borderRadius: 4, fontSize: 12, background: p.readOnly ? theme.surfaceAlt : theme.inputBg, color: theme.inputText }}
+                            />
+                          )}
+                          {p.type === 'select' && (
+                            <select
+                              value={templateParams[p.key] ?? p.default ?? ''}
+                              onChange={e => setTemplateParams(prev => ({ ...prev, [p.key]: parseInt(e.target.value) }))}
+                              style={{ width: '100%', padding: '6px 8px', border: `1px solid ${theme.inputBorder}`, borderRadius: 4, fontSize: 12, background: theme.inputBg, color: theme.inputText }}
+                            >
+                              {p.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                            </select>
+                          )}
+                          {p.type === 'material_select' && (
+                            <select
+                              value={templateParams[p.key] ?? p.default ?? ''}
+                              onChange={e => setTemplateParams(prev => ({ ...prev, [p.key]: e.target.value }))}
+                              style={{ width: '100%', padding: '6px 8px', border: `1px solid ${theme.inputBorder}`, borderRadius: 4, fontSize: 12, background: theme.inputBg, color: theme.inputText }}
+                            >
+                              {Object.keys(allMaterials)
+                                .filter(m => {
+                                  if (!p.filter) return true;
+                                  const n = getRefractiveIndex(m, 550);
+                                  return p.filter === 'high' ? n >= 1.85 : n < 1.85;
+                                })
+                                .map(m => <option key={m} value={m}>{m} (n={getRefractiveIndex(m, 550).toFixed(2)})</option>)}
+                            </select>
+                          )}
+                          {p.autoFill && <div style={{ fontSize: 9, color: theme.textMuted, marginTop: 1 }}>Auto-filled from substrate</div>}
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const generated = generateTemplatePreview(sub, templateParams);
+                        if (!generated || generated.length === 0) {
+                          showToast('Could not generate template — check parameters', 'error');
+                          return;
+                        }
+                        setTemplateInsertConfirm(generated);
+                      }}
+                      style={{ marginTop: 16, width: '100%', padding: '10px 16px', background: theme.accent, color: '#fff', border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                    >
+                      <Zap size={14} /> Generate & Insert ({(() => {
+                        const preview = generateTemplatePreview(sub, templateParams);
+                        return preview ? preview.length : '?';
+                      })()} layers)
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
         {/* Design Assistant Tab Content */}
         {activeTab === "assistant" && (
           <div className="flex-1 bg-white rounded-lg shadow-lg p-4 overflow-hidden flex flex-col min-h-0">
-            <h2 className="text-xl font-bold text-gray-800 mb-3">
-              Design Assistant
-            </h2>
-            <p className="text-sm text-gray-600 mb-4">
-              Define target reflectivity points or upload a CSV file to reverse
-              engineer a layer stack.
-            </p>
+            <div className="flex items-baseline gap-4 mb-3 flex-shrink-0">
+              <h2 className="text-lg font-bold text-gray-800">Design Assistant</h2>
+              <p className="text-xs text-gray-500">Define targets or upload CSV to reverse engineer a layer stack</p>
+            </div>
+            <div className="flex flex-row gap-4 flex-1 overflow-hidden min-h-0">
 
-            {/* Mode Selection */}
-            <div className="mb-4 p-3 bg-blue-50 rounded border border-blue-200">
-              <div className="flex gap-4 flex-wrap">
-                <label className="flex items-center gap-2 cursor-pointer">
+            {/* Left column: Config + Mode Selection + Generate */}
+            <div className="flex flex-col overflow-hidden min-h-0" style={{ width: '45%', flexShrink: 0 }}>
+
+            {/* Mode Selection — compact, inside left column */}
+            <div className="mb-3 p-2 bg-blue-50 rounded border border-blue-200 flex-shrink-0">
+              <div className="flex gap-3 flex-wrap">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="radio"
                     checked={!reverseEngineerMode}
                     onChange={() => { setReverseEngineerMode(false); }}
                     className="cursor-pointer"
                   />
-                  <span className="text-sm font-medium">Target Point Mode</span>
+                  <span className="text-xs font-medium">Target Point Mode</span>
                 </label>
-                <label className={`flex items-center gap-2 ${tierLimits.reverseEngineer ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                <label className={`flex items-center gap-1.5 ${tierLimits.reverseEngineer ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
                   <input
                     type="radio"
                     checked={reverseEngineerMode}
@@ -8996,21 +10286,22 @@ const ThinFilmDesigner = () => {
                     }}
                     className={tierLimits.reverseEngineer ? "cursor-pointer" : "cursor-not-allowed"}
                   />
-                  <span className="text-sm font-medium">
+                  <span className="text-xs font-medium">
                     Reverse Engineer CSV{!tierLimits.reverseEngineer ? ' 🔒' : ''}
                   </span>
                 </label>
               </div>
 
+
               {reverseEngineerMode && (
-                <div className="mt-3 p-2 bg-white rounded border">
-                  <label className="text-xs font-semibold text-gray-700 mb-2 block">
+                <div className="mt-2 p-2 bg-white rounded border">
+                  <label className="text-xs font-semibold text-gray-700 mb-1 block">
                     Upload Reflectivity CSV:
                   </label>
                   {!reverseEngineerData ? (
-                    <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 w-fit">
-                      <Upload size={14} />
-                      <span className="text-sm">Choose CSV File</span>
+                    <label className="cursor-pointer flex items-center gap-2 px-2 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 w-fit text-xs">
+                      <Upload size={12} />
+                      <span>Choose CSV File</span>
                       <input
                         type="file"
                         accept=".csv"
@@ -9020,23 +10311,23 @@ const ThinFilmDesigner = () => {
                     </label>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <span className="text-sm text-green-600 font-medium">
-                        ✓ Loaded {reverseEngineerData.length} data points
+                      <span className="text-xs text-green-600 font-medium">
+                        ✓ Loaded {reverseEngineerData.length} points
                       </span>
                       <button
                         onClick={clearReverseEngineerData}
-                        className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-xs flex items-center gap-1"
+                        className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-[10px] flex items-center gap-1"
                       >
-                        <X size={12} />
+                        <X size={10} />
                         Clear
                       </button>
                     </div>
                   )}
-                  <p className="text-[10px] text-gray-500 mt-2">
+                  <p className="text-[10px] text-gray-500 mt-1">
                     CSV format: wavelength (nm), reflectivity (%)
                   </p>
-                  <div className="mt-2">
-                    <label className="text-xs text-gray-600">
+                  <div className="mt-1">
+                    <label className="text-[10px] text-gray-600">
                       Match Tolerance (±%):
                     </label>
                     <input
@@ -9048,21 +10339,20 @@ const ThinFilmDesigner = () => {
                           setMatchTolerance(1.0);
                         }
                       }}
-                      className="w-full px-2 py-1 border rounded text-sm mt-1"
+                      className="w-full px-2 py-0.5 border rounded text-xs mt-0.5"
                       min="0.1"
                       max="10"
                       step="0.1"
                     />
-                    <p className="text-[10px] text-gray-500 mt-1">
-                      Each CSV point must match within ±{matchTolerance}%
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Each point must match within ±{matchTolerance}%
                     </p>
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-4 flex-1 overflow-hidden min-h-0">
-              {/* Left: Configuration */}
+            <div className="flex flex-col flex-1 overflow-hidden min-h-0">
               <div className="flex flex-col overflow-hidden min-h-0">
                 
                 {/* Scrollable content area */}
@@ -10026,7 +11316,16 @@ const ThinFilmDesigner = () => {
                     (reverseEngineerMode && !reverseEngineerData) ||
                     (!useLayerTemplate && designMaterials.length === 0)
                   }
-                  className="mt-3 w-full py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2 flex-shrink-0"
+                  className="mt-3 w-full py-2 rounded flex items-center justify-center gap-2 flex-shrink-0 font-semibold text-sm"
+                  style={{
+                    background: optimizing ? (darkMode ? '#363860' : '#9ca3af') : (darkMode ? '#6366f1' : '#4f46e5'),
+                    color: '#ffffff',
+                    cursor: optimizing ? 'not-allowed' : 'pointer',
+                    transition: 'background 0.2s, box-shadow 0.2s',
+                    boxShadow: optimizing ? 'none' : (darkMode ? '0 2px 8px rgba(99,102,241,0.3)' : '0 2px 8px rgba(79,70,229,0.25)'),
+                  }}
+                  onMouseEnter={(e) => { if (!optimizing) e.currentTarget.style.background = darkMode ? '#818cf8' : '#4338ca'; }}
+                  onMouseLeave={(e) => { if (!optimizing) e.currentTarget.style.background = darkMode ? '#6366f1' : '#4f46e5'; }}
                 >
                   {optimizing ? (
                     <>
@@ -10064,18 +11363,20 @@ const ThinFilmDesigner = () => {
                   </div>
                 )}
               </div>
+            </div>
+            </div>
 
-              {/* Right: Solutions */}
-              <div className="flex flex-col overflow-hidden min-h-0">
-                <h3 className="text-sm font-semibold mb-2 flex-shrink-0">
-                  Solutions (Top 5, Error &lt; {maxErrorThreshold}%)
-                </h3>
-                <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
-                  {solutions.length === 0 ? (
-                    <div className="text-center text-gray-500 text-sm py-8">
-                      No solutions yet. Configure parameters and click "Generate
-                      Solutions".
-                    </div>
+            {/* Right: Solutions */}
+            <div className="flex flex-col overflow-hidden min-h-0 flex-1 border rounded p-3" style={{ borderColor: darkMode ? '#2a2c4a' : '#e5e7eb', background: darkMode ? '#111225' : '#f9fafb' }}>
+              <h3 className="text-xs font-semibold mb-2 flex-shrink-0" style={{ color: theme.textSecondary }}>
+                Solutions (Top 5, Error &lt; {maxErrorThreshold}%)
+              </h3>
+              <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
+                {solutions.length === 0 ? (
+                  <div className="text-center text-sm py-8" style={{ color: theme.textMuted }}>
+                    No solutions yet. Configure parameters and click "Generate
+                    Solutions".
+                  </div>
                   ) : (
                     solutions.map((solution, idx) => (
                       <div key={idx} className="p-3 border rounded bg-gray-50">
@@ -10150,10 +11451,7 @@ const ThinFilmDesigner = () => {
                                   tick={{ fontSize: 8, fill: theme.chartAxisText }}
                                   stroke={theme.chartAxisText}
                                 />
-                                <Tooltip
-                                  contentStyle={{ fontSize: "10px", backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6 }}
-                                  labelStyle={{ fontSize: "10px", color: theme.chartTooltipText }}
-                                />
+                                <Tooltip content={<ChartTooltip />} />
                                 <Line
                                   type="monotone"
                                   dataKey="reflectivity"
@@ -10215,16 +11513,17 @@ const ThinFilmDesigner = () => {
                               key={lidx}
                               className="text-xs flex justify-between"
                               style={{
-                                backgroundColor:
-                                  allMaterials[layer.material].color,
-                                padding: "2px 4px",
-                                borderRadius: "2px",
+                                backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || '#e5e7eb'),
+                                borderLeft: `3px solid ${allMaterials[layer.material]?.color || '#9ca3af'}`,
+                                padding: "2px 6px",
+                                borderRadius: "3px",
+                                color: theme.textPrimary,
                               }}
                             >
                               <span>
                                 Layer {lidx + 1}: {layer.material}
                               </span>
-                              <span>{layer.thickness.toFixed(1)} nm</span>
+                              <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{layer.thickness.toFixed(1)} nm</span>
                             </div>
                           ))}
                         </div>
@@ -10762,7 +12061,7 @@ const ThinFilmDesigner = () => {
                           return (
                             <ResponsiveContainer width="100%" height="100%">
                               <LineChart data={mergedStats}>
-                                <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                                <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                                 <XAxis dataKey="wavelength" type="number" domain={["dataMin", "dataMax"]}
                                   label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -5, style: { fontSize: 12, fill: theme.chartAxisText } }} />
                                 <YAxis label={{ value: "Reflectivity (%)", angle: -90, position: "insideLeft", style: { fontSize: 12, fill: theme.chartAxisText } }} />
@@ -10834,7 +12133,7 @@ const ThinFilmDesigner = () => {
                               <div className="flex-1">
                                 <ResponsiveContainer width="100%" height="100%">
                                   <LineChart data={trendData}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                                    <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                                     <XAxis dataKey="runIndex" label={{ value: "Run #", position: "insideBottom", offset: -5, style: { fontSize: 12, fill: theme.chartAxisText } }} />
                                     <YAxis label={{ value: "Reflectivity (%)", angle: -90, position: "insideLeft", style: { fontSize: 12, fill: theme.chartAxisText } }} />
                                     <Tooltip
@@ -10909,7 +12208,7 @@ const ThinFilmDesigner = () => {
                           return (
                             <ResponsiveContainer width="100%" height="100%">
                               <LineChart data={diffData}>
-                                <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                                <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                                 <XAxis dataKey="wavelength" type="number" domain={["dataMin", "dataMax"]}
                                   label={{ value: "Wavelength (nm)", position: "insideBottom", offset: -5, style: { fontSize: 12, fill: theme.chartAxisText } }} />
                                 <YAxis label={{ value: "Reflectivity Difference (%)", angle: -90, position: "insideLeft", style: { fontSize: 12, fill: theme.chartAxisText } }} />
@@ -11652,16 +12951,13 @@ const ThinFilmDesigner = () => {
                               <BarChart
                                 data={mcResults.colorStats.deltaEDistribution}
                               >
-                                <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                                <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                                 <XAxis dataKey="range" tick={{ fontSize: 9, fill: theme.chartAxisText }} />
                                 <YAxis tick={{ fontSize: 9, fill: theme.chartAxisText }} />
                                 <Tooltip
-                                  formatter={(value, name, props) => [
-                                    value,
-                                    props.payload.label,
-                                  ]}
+                                  formatter={(value, name, props) => [value, props.payload.label]}
                                   labelFormatter={(label) => `ΔE*: ${label}`}
-                                  contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }}
+                                  contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 8, fontSize: 12, boxShadow: darkMode ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.1)', padding: '8px 12px' }}
                                 />
                                 <Bar dataKey="count" fill="#8b5cf6" />
                               </BarChart>
@@ -11700,7 +12996,7 @@ const ThinFilmDesigner = () => {
                       <div className="bg-white border rounded p-2">
                         <ResponsiveContainer width="100%" height={150}>
                           <BarChart data={mcResults.errorDistribution}>
-                            <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                            <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                             <XAxis
                               dataKey="range"
                               tick={{ fontSize: 8, fill: theme.chartAxisText }}
@@ -11709,7 +13005,7 @@ const ThinFilmDesigner = () => {
                               height={60}
                             />
                             <YAxis tick={{ fontSize: 10, fill: theme.chartAxisText }} />
-                            <Tooltip contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
+                            <Tooltip content={<ChartTooltip suffix="" />} />
                             <Bar dataKey="count" fill="#4f46e5" />
                           </BarChart>
                         </ResponsiveContainer>
@@ -11752,18 +13048,17 @@ const ThinFilmDesigner = () => {
                                             key={lidx}
                                             className="flex justify-between"
                                             style={{
-                                              backgroundColor:
-                                                allMaterials[
-                                                  layer.material
-                                                ].color,
-                                              padding: "1px 2px",
+                                              backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || '#e5e7eb'),
+                                              borderLeft: `3px solid ${allMaterials[layer.material]?.color || '#9ca3af'}`,
+                                              padding: "1px 4px",
                                               borderRadius: "2px",
+                                              color: theme.textPrimary,
                                             }}
                                           >
                                             <span>
                                               L{lidx + 1}: {layer.material}
                                             </span>
-                                            <span>
+                                            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
                                               {layer.thickness.toFixed(1)}nm
                                             </span>
                                           </div>
@@ -11793,18 +13088,17 @@ const ThinFilmDesigner = () => {
                                             key={lidx}
                                             className="flex justify-between"
                                             style={{
-                                              backgroundColor:
-                                                allMaterials[
-                                                  layer.material
-                                                ].color,
-                                              padding: "1px 2px",
+                                              backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || '#e5e7eb'),
+                                              borderLeft: `3px solid ${allMaterials[layer.material]?.color || '#9ca3af'}`,
+                                              padding: "1px 4px",
                                               borderRadius: "2px",
+                                              color: theme.textPrimary,
                                             }}
                                           >
                                             <span>
                                               L{lidx + 1}: {layer.material}
                                             </span>
-                                            <span>
+                                            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
                                               {layer.thickness.toFixed(1)}nm
                                             </span>
                                           </div>
@@ -11929,10 +13223,10 @@ const ThinFilmDesigner = () => {
                               layout="vertical"
                               margin={{ left: 70, right: 20, top: 5, bottom: 5 }}
                             >
-                              <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                              <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                               <XAxis type="number" tick={{ fontSize: 10, fill: theme.chartAxisText }} />
                               <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: theme.chartAxisText }} width={65} />
-                              <Tooltip formatter={(value) => [`${value}`, "Sensitivity"]} contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }} />
+                              <Tooltip content={<ChartTooltip suffix="" labelPrefix="Layer " />} />
                               <Bar dataKey="sensitivity">
                                 {saResults.layers.map((l, idx) => (
                                   <Cell
@@ -12051,7 +13345,7 @@ const ThinFilmDesigner = () => {
                               <div className="bg-white border rounded p-2">
                                 <ResponsiveContainer width="100%" height={180}>
                                   <LineChart data={layerData.wavelengthData}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke={theme.chartGrid} strokeOpacity={0.6} />
+                                    <CartesianGrid strokeDasharray="4 4" stroke={theme.chartGrid} strokeOpacity={0.4} />
                                     <XAxis
                                       dataKey="wavelength"
                                       type="number"
@@ -12060,12 +13354,9 @@ const ThinFilmDesigner = () => {
                                     />
                                     <YAxis tick={{ fontSize: 10, fill: theme.chartAxisText }} />
                                     <Tooltip
-                                      formatter={(value) => [
-                                        parseFloat(value).toFixed(4),
-                                        "|dR/dt|",
-                                      ]}
+                                      formatter={(value) => [parseFloat(value).toFixed(4), "|dR/dt|"]}
                                       labelFormatter={(label) => `${label} nm`}
-                                      contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 6, fontSize: 11 }}
+                                      contentStyle={{ backgroundColor: theme.chartTooltipBg, borderColor: theme.chartTooltipBorder, color: theme.chartTooltipText, borderRadius: 8, fontSize: 12, boxShadow: darkMode ? '0 4px 12px rgba(0,0,0,0.5)' : '0 4px 12px rgba(0,0,0,0.1)', padding: '8px 12px' }}
                                     />
                                     <Line
                                       type="monotone"
@@ -13061,59 +14352,208 @@ const ThinFilmDesigner = () => {
       {/* ========== END STRESS MODAL ========== */}
 
 
-      {/* ========== SAVE DESIGN MODAL ========== */}
-      {showSaveModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
-            <h3 className="text-lg font-bold text-gray-800 mb-4">Save Design</h3>
+      {/* ========== SAVE WORKSPACE MODAL ========== */}
+      {showSaveWorkspaceModal && (
+        <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'rgba(0,0,0,0.5)' }}>
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 400, boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 4 }}>Save Workspace</h3>
+            <p style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 16 }}>Saves all machines, layer stacks, materials, optimizer targets, and settings.</p>
             <input
               type="text"
-              placeholder="Design name..."
-              value={saveDesignName}
-              onChange={(e) => setSaveDesignName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveDesign(saveDesignName); }}
-              className="w-full px-3 py-2 border rounded mb-4 text-sm"
+              placeholder="Workspace name..."
+              value={saveWorkspaceName}
+              onChange={(e) => setSaveWorkspaceName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveWorkspace(saveWorkspaceName); }}
+              style={{ width: '100%', padding: '8px 12px', border: `1px solid ${theme.inputBorder}`, borderRadius: 6, fontSize: 13, background: theme.inputBg, color: theme.inputText, marginBottom: 12, boxSizing: 'border-box' }}
               autoFocus
             />
             {!isSignedIn && (
-              <p className="text-xs text-amber-600 mb-3">Saving locally. Sign in to save to the cloud.</p>
+              <p style={{ fontSize: 11, color: '#d97706', marginBottom: 12 }}>Saving locally. Sign in to save to the cloud.</p>
             )}
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
-              <button onClick={() => handleSaveDesign(saveDesignName)} className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700">Save</button>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button onClick={() => setShowSaveWorkspaceModal(false)} style={{ padding: '6px 16px', fontSize: 13, color: theme.textSecondary, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => handleSaveWorkspace(saveWorkspaceName)} style={{ padding: '6px 16px', fontSize: 13, background: theme.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Save</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ========== LOAD DESIGN MODAL ========== */}
-      {showLoadModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-[500px] max-h-[70vh] flex flex-col">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-gray-800">Load Design</h3>
-              <button onClick={() => setShowLoadModal(false)} className="text-gray-500 hover:text-gray-700"><X size={18} /></button>
+      {/* ========== LOAD WORKSPACE MODAL ========== */}
+      {showLoadWorkspaceModal && (
+        <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'rgba(0,0,0,0.5)' }}>
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 560, maxHeight: '75vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, margin: 0 }}>Load Workspace</h3>
+                <p style={{ fontSize: 11, color: theme.textTertiary, margin: '2px 0 0 0' }}>Load an entire workspace or pick individual items</p>
+              </div>
+              <button onClick={() => { setShowLoadWorkspaceModal(false); setExpandedWorkspaceId(null); }} style={{ background: 'none', border: 'none', color: theme.textSecondary, cursor: 'pointer' }}><X size={18} /></button>
             </div>
             {designsLoading ? (
-              <p className="text-sm text-gray-500 py-8 text-center">Loading designs...</p>
+              <p style={{ fontSize: 13, color: theme.textTertiary, textAlign: 'center', padding: '32px 0' }}>Loading workspaces...</p>
             ) : savedDesigns.length === 0 ? (
-              <p className="text-sm text-gray-500 py-8 text-center">No saved designs yet.</p>
+              <p style={{ fontSize: 13, color: theme.textTertiary, textAlign: 'center', padding: '32px 0' }}>No saved workspaces yet.</p>
             ) : (
-              <div className="overflow-y-auto flex-1 space-y-2">
-                {savedDesigns.map((design) => (
-                  <div key={design.id} className="flex items-center justify-between p-3 border rounded hover:bg-gray-50">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium text-sm truncate">{design.name}</div>
-                      <div className="text-xs text-gray-500">{new Date(design.updatedAt || design.createdAt).toLocaleDateString()}</div>
+              <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+                {savedDesigns.map((design) => {
+                  const isExpanded = expandedWorkspaceId === design.id;
+                  const wsData = workspaceDataCache[design.id];
+                  return (
+                    <div key={design.id} style={{ marginBottom: 8, border: `1px solid ${isExpanded ? theme.accent : theme.border}`, borderRadius: 8, overflow: 'hidden', background: theme.surface }}>
+                      {/* Workspace header row */}
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', cursor: 'pointer', gap: 8 }}
+                        onClick={async () => {
+                          if (isExpanded) { setExpandedWorkspaceId(null); return; }
+                          setExpandedWorkspaceId(design.id);
+                          if (!workspaceDataCache[design.id]) fetchWorkspaceData(design);
+                        }}
+                      >
+                        <span style={{ fontSize: 12, color: theme.textTertiary, transition: 'transform 0.2s', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', display: 'inline-block' }}>&#9654;</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: theme.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{design.name}</div>
+                          <div style={{ fontSize: 10, color: theme.textTertiary }}>{new Date(design.updatedAt || design.createdAt).toLocaleDateString()}</div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => {
+                              setShowReplaceConfirmDialog(design);
+                              if (!workspaceDataCache[design.id]) fetchWorkspaceData(design);
+                            }}
+                            style={{ padding: '4px 10px', fontSize: 11, fontWeight: 600, background: theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                          >Load All</button>
+                          <button
+                            onClick={() => handleDeleteDesign(design.id)}
+                            style={{ padding: '4px 6px', fontSize: 11, background: 'none', border: 'none', color: theme.error || '#ef4444', cursor: 'pointer' }}
+                          ><Trash2 size={14} /></button>
+                        </div>
+                      </div>
+
+                      {/* Expanded contents */}
+                      {isExpanded && (
+                        <div style={{ borderTop: `1px solid ${theme.border}`, padding: 12, background: theme.surfaceAlt || theme.surface }}>
+                          {!wsData ? (
+                            <p style={{ fontSize: 11, color: theme.textTertiary, textAlign: 'center', padding: 8 }}>Loading workspace contents...</p>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                              {/* Machines */}
+                              {wsData.machines?.length > 0 && (
+                                <div>
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Machines</div>
+                                  {wsData.machines.map((machine) => {
+                                    const stackCount = (wsData.layerStacks || []).filter(s => s.machineId === machine.id).length;
+                                    return (
+                                      <div key={machine.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
+                                        <span style={{ fontSize: 12, color: theme.textPrimary }}>{machine.name || `Machine ${machine.id}`} <span style={{ fontSize: 10, color: theme.textTertiary }}>({stackCount} stack{stackCount !== 1 ? 's' : ''})</span></span>
+                                        <button onClick={() => handleAddMachineFromWorkspace(machine, wsData)} style={{ padding: '2px 8px', fontSize: 10, background: theme.accentLight, color: theme.accentText, border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Add</button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {/* Layer Stacks */}
+                              {wsData.layerStacks?.length > 0 && (
+                                <div>
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Layer Stacks</div>
+                                  {wsData.layerStacks.map((stack) => (
+                                    <div key={stack.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
+                                      <span style={{ fontSize: 12, color: theme.textPrimary }}>
+                                        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: stack.color || '#6366f1', marginRight: 6, verticalAlign: 'middle' }}></span>
+                                        {stack.name || `Stack ${stack.id}`} <span style={{ fontSize: 10, color: theme.textTertiary }}>({stack.layers?.length || 0} layer{(stack.layers?.length || 0) !== 1 ? 's' : ''})</span>
+                                      </span>
+                                      <button onClick={() => handleAddStackFromWorkspace(stack)} style={{ padding: '2px 8px', fontSize: 10, background: theme.accentLight, color: theme.accentText, border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Add</button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Custom Materials */}
+                              {wsData.customMaterials && Object.keys(wsData.customMaterials).length > 0 && (
+                                <div>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Custom Materials</div>
+                                    <button onClick={() => handleAddMaterialsFromWorkspace(wsData.customMaterials)} style={{ padding: '2px 8px', fontSize: 10, background: theme.accentLight, color: theme.accentText, border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Add All</button>
+                                  </div>
+                                  <div style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>{Object.keys(wsData.customMaterials).join(', ')}</div>
+                                </div>
+                              )}
+
+                              {/* Optimizer Targets */}
+                              {(wsData.designPoints?.length > 0 || wsData.targets) && (
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <div>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Optimizer Targets</div>
+                                    <div style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>{wsData.designPoints?.length || 0} target point(s), {wsData.designMaterials?.length || 0} material(s)</div>
+                                  </div>
+                                  <button onClick={() => handleAddTargetsFromWorkspace(wsData)} style={{ padding: '2px 8px', fontSize: 10, background: theme.accentLight, color: theme.accentText, border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Add</button>
+                                </div>
+                              )}
+
+                              {/* Tracking Runs */}
+                              {wsData.trackingRuns?.length > 0 && (
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <div>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Tracking Runs</div>
+                                    <div style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>{wsData.trackingRuns.length} run(s)</div>
+                                  </div>
+                                  <button onClick={() => handleAddTrackingRunsFromWorkspace(wsData.trackingRuns)} style={{ padding: '2px 8px', fontSize: 10, background: theme.accentLight, color: theme.accentText, border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Add All</button>
+                                </div>
+                              )}
+
+                              {/* Settings summary */}
+                              <div style={{ fontSize: 10, color: theme.textMuted, borderTop: `1px solid ${theme.border}`, paddingTop: 6, marginTop: 2 }}>
+                                Substrate: {wsData.substrate?.material || 'Glass'} (n={wsData.substrate?.n || '1.52'}) | Range: {wsData.wavelengthRange?.min || 380}-{wsData.wavelengthRange?.max || 780} nm | Illuminant: {wsData.selectedIlluminant || 'D65'}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div className="flex gap-2 ml-3">
-                      <button onClick={() => handleLoadDesign(design)} className="px-3 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700">Load</button>
-                      <button onClick={() => handleDeleteDesign(design.id)} className="px-2 py-1 text-xs text-red-500 hover:text-red-700"><Trash2 size={14} /></button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ========== REPLACE WORKSPACE CONFIRM DIALOG ========== */}
+      {showReplaceConfirmDialog && (
+        <div className="fixed inset-0 flex items-center justify-center z-[60]" style={{ background: 'rgba(0,0,0,0.6)' }}>
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: theme.textPrimary, marginBottom: 8 }}>Replace Current Workspace?</h3>
+            <p style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 6 }}>
+              Loading <strong>"{showReplaceConfirmDialog.name}"</strong> will replace everything in your current workspace.
+            </p>
+            <p style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 16 }}>All unsaved changes will be lost.</p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowReplaceConfirmDialog(null)}
+                style={{ padding: '6px 14px', fontSize: 12, color: theme.textSecondary, background: 'none', border: `1px solid ${theme.border}`, borderRadius: 6, cursor: 'pointer' }}
+              >Cancel</button>
+              <button
+                onClick={() => {
+                  setPendingReplaceData(showReplaceConfirmDialog);
+                  setShowReplaceConfirmDialog(null);
+                  setShowSaveWorkspaceModal(true);
+                }}
+                style={{ padding: '6px 14px', fontSize: 12, color: theme.accentText, background: theme.accentLight, border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              >Save First</button>
+              <button
+                onClick={async () => {
+                  const design = showReplaceConfirmDialog;
+                  const d = workspaceDataCache[design.id] || design.data;
+                  if (!d) {
+                    const fetched = await fetchWorkspaceData(design);
+                    if (fetched) executeWorkspaceReplace(fetched);
+                  } else {
+                    executeWorkspaceReplace(d);
+                  }
+                }}
+                style={{ padding: '6px 14px', fontSize: 12, color: '#fff', background: '#dc2626', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+              >Replace</button>
+            </div>
           </div>
         </div>
       )}
@@ -13121,12 +14561,12 @@ const ThinFilmDesigner = () => {
       {/* ========== PRICING MODAL ========== */}
       {showPricingModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowPricingModal(false)}>
-          <div className="bg-white rounded-xl shadow-2xl" style={{ width: '90vw', maxWidth: 960, height: '90vh', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
+          <div className="rounded-xl shadow-2xl" style={{ width: '90vw', maxWidth: 960, height: '90vh', display: 'flex', flexDirection: 'column', background: theme.surface }} onClick={(e) => e.stopPropagation()}>
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200" style={{ flexShrink: 0 }}>
+            <div className="flex items-center justify-between px-6 py-4" style={{ flexShrink: 0, borderBottom: `1px solid ${theme.border}` }}>
               <div>
-                <h2 className="text-xl font-bold text-gray-800">Choose Your Plan</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Upgrade to unlock the full power of OptiCoat Designer</p>
+                <h2 className="text-xl font-bold" style={{ color: theme.textPrimary }}>Choose Your Plan</h2>
+                <p className="text-xs mt-0.5" style={{ color: theme.textMuted }}>Upgrade to unlock the full power of OptiCoat Designer</p>
               </div>
               <div className="flex items-center gap-3">
                 {userTier !== 'free' && isSignedIn && (
@@ -13266,6 +14706,7 @@ const ThinFilmDesigner = () => {
                   {/* Section header */}
                   <tr><td colSpan={5} className="pt-4 pb-1 px-2 text-xs font-bold text-gray-800 uppercase tracking-wider border-b border-gray-200">Advanced</td></tr>
                   {[
+                    { label: 'Lumi AI Assistant', values: [false, false, true, true] },
                     { label: 'IAD Modeling', values: [false, false, true, true] },
                     { label: 'Team Seats', values: ['\u2014', '\u2014', '\u2014', '5 (+$49/seat)'] },
                     { label: 'API Access', values: [false, false, false, true] },

@@ -111,12 +111,23 @@ router.post('/webhook', async (req, res) => {
         const priceId = subscription.items.data[0]?.price?.id;
         const newTier = getTierFromPriceId(priceId);
 
-        if (newTier && subscription.customer) {
-          await prisma.user.updateMany({
-            where: { stripeCustomerId: subscription.customer },
-            data: { tier: newTier },
-          });
-          console.log(`Subscription updated to ${newTier}`);
+        // Only maintain paid tier for active/trialing subscriptions
+        // Revert to free for past_due, unpaid, incomplete, paused, etc.
+        const activeStatuses = ['active', 'trialing'];
+        if (subscription.customer) {
+          if (newTier && activeStatuses.includes(subscription.status)) {
+            await prisma.user.updateMany({
+              where: { stripeCustomerId: subscription.customer },
+              data: { tier: newTier },
+            });
+            console.log(`Subscription updated to ${newTier} (status: ${subscription.status})`);
+          } else if (!activeStatuses.includes(subscription.status)) {
+            await prisma.user.updateMany({
+              where: { stripeCustomerId: subscription.customer },
+              data: { tier: 'free' },
+            });
+            console.log(`Subscription degraded — status: ${subscription.status}, reverted to free`);
+          }
         }
         break;
       }

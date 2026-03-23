@@ -31,15 +31,16 @@ app.use('/api/billing/webhook', express.raw({ type: 'application/json' }));
 // Parse JSON for all other routes
 app.use(express.json({ limit: '10mb' }));
 
-// Chat route works without database/auth — registered directly on app (not Router)
-// Express 5 Router doesn't track async handler Promises, causing premature disconnects
-const { chatHandler } = require('./routes/chat');
-app.post('/api/chat', chatHandler);
-
 // Full routes only load when database + Clerk are configured
 if (hasDatabase) {
   const { clerkMiddleware } = require('@clerk/express');
   app.use(clerkMiddleware());
+
+  // Chat route — requires auth, registered directly on app (not Router)
+  // Express 5 Router doesn't track async handler Promises, causing premature disconnects
+  const { chatHandler } = require('./routes/chat');
+  const { requireUser } = require('./middleware/auth');
+  app.post('/api/chat', ...requireUser, chatHandler);
 
   const authRouter = require('./routes/auth');
   const designsRouter = require('./routes/designs');
@@ -54,7 +55,10 @@ if (hasDatabase) {
   app.use('/api/tracking', trackingRouter);
   app.use('/api/machines', machinesRouter);
 } else {
-  console.log('⚡ Running in chat-only mode (no DATABASE_URL set)');
+  console.log('⚡ Running in dev mode (no DATABASE_URL set) — chat-only, no auth');
+  // Dev-only chat without auth
+  const { chatHandler } = require('./routes/chat');
+  app.post('/api/chat', chatHandler);
 }
 
 // Health check

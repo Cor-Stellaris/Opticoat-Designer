@@ -32,6 +32,7 @@ const TIER_LIMITS = {
     maxTeamSeats: 0,
     aiChat: false,
     maxChatMessagesPerDay: 0,
+    coatingTemplates: 'basic',        // 'basic' = AR single + V-coat only, 'all' = full catalog, false = none
   },
   starter: {
     maxStacks: 3,
@@ -64,8 +65,9 @@ const TIER_LIMITS = {
     teamCollaboration: false,
     maxTeams: 0,
     maxTeamSeats: 0,
-    aiChat: 'basic',
-    maxChatMessagesPerDay: 20,
+    aiChat: false,
+    maxChatMessagesPerDay: 0,
+    coatingTemplates: 'all',
   },
   professional: {
     maxStacks: -1,
@@ -100,6 +102,7 @@ const TIER_LIMITS = {
     maxTeamSeats: 0,
     aiChat: 'full',
     maxChatMessagesPerDay: -1,
+    coatingTemplates: 'all',
   },
   enterprise: {
     maxStacks: -1,
@@ -136,6 +139,7 @@ const TIER_LIMITS = {
     apiAccess: true,
     aiChat: 'full',
     maxChatMessagesPerDay: -1,
+    coatingTemplates: 'all',
   },
 };
 

@@ -1,7 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk').default;
 const { TIER_LIMITS } = require('../services/tierLimits');
 
-const devMode = !process.env.DATABASE_URL;
 const anthropic = new Anthropic(); // Uses ANTHROPIC_API_KEY env var
 
 // In-memory rate limiting for starter tier
@@ -103,20 +102,20 @@ Be concise, practical, and specific. When suggesting designs, give concrete laye
 const chatHandler = async (req, res) => {
   console.log('[CHAT] Request received, body keys:', Object.keys(req.body || {}));
   try {
-    const userTier = devMode ? 'professional' : (req.user.tier || 'free');
+    const userTier = req.user?.tier || 'free';
     const tierConfig = TIER_LIMITS[userTier];
     console.log('[CHAT] Tier:', userTier, 'aiChat:', tierConfig?.aiChat);
 
-    // Check if AI chat is available for this tier
-    if (!tierConfig?.aiChat) {
+    // AI chat requires professional or enterprise tier (aiChat: 'full')
+    if (!tierConfig?.aiChat || tierConfig.aiChat !== 'full') {
       return res.status(403).json({
-        error: 'AI Design Assistant is not available on your plan. Please upgrade to access this feature.',
+        error: 'Lumi AI is available for Professional and Enterprise plans only. Please upgrade to access this feature.',
         feature: 'aiChat',
       });
     }
 
     // Rate limiting for non-unlimited tiers
-    if (!checkRateLimit(req.user?.id || 'dev', userTier)) {
+    if (!checkRateLimit(req.user.id, userTier)) {
       return res.status(429).json({
         error: `Daily message limit reached (${tierConfig.maxChatMessagesPerDay} messages/day). Upgrade your plan for unlimited access.`,
       });

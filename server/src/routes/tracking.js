@@ -51,6 +51,34 @@ router.post('/runs', ...requireUser, async (req, res) => {
       return res.status(400).json({ error: 'Runs array is required' });
     }
 
+    // Enforce maxTrackingRuns limit
+    if (limits.maxTrackingRuns !== -1) {
+      const existingCount = await prisma.trackingRun.count({ where: { userId: req.user.id } });
+      if (existingCount + runs.length > limits.maxTrackingRuns) {
+        return res.status(403).json({
+          error: 'Tracking run limit reached',
+          current: existingCount,
+          adding: runs.length,
+          max: limits.maxTrackingRuns,
+          currentTier: req.user.tier,
+        });
+      }
+    }
+
+    // Validate machineId ownership if provided
+    const machineIds = [...new Set(runs.map(r => r.machineId).filter(Boolean))];
+    if (machineIds.length > 0) {
+      const ownedMachines = await prisma.machine.findMany({
+        where: { id: { in: machineIds }, userId: req.user.id },
+        select: { id: true },
+      });
+      const ownedIds = new Set(ownedMachines.map(m => m.id));
+      const invalidIds = machineIds.filter(id => !ownedIds.has(id));
+      if (invalidIds.length > 0) {
+        return res.status(403).json({ error: 'Invalid machine ID — machine does not belong to your account' });
+      }
+    }
+
     const created = await prisma.trackingRun.createMany({
       data: runs.map(run => ({
         userId: req.user.id,
