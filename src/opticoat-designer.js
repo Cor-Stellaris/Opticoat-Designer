@@ -7998,7 +7998,12 @@ const ThinFilmDesigner = () => {
           ].map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                if (tab.id === 'assistant' && !tierLimits.designAssistant) {
+                  setUpgradeFeature('Design Assistant'); setShowUpgradePrompt(true); return;
+                }
+                setActiveTab(tab.id);
+              }}
               className="flex items-center gap-1.5 transition-all"
               style={{
                 padding: '6px 14px',
@@ -8324,7 +8329,7 @@ const ThinFilmDesigner = () => {
                     <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
                     <button onClick={addLayerStack} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"><Plus size={10} /> New Stack</button>
                     <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"><Trash2 size={10} /> Delete Stack</button>
-                    <button onClick={() => setShowTemplatePicker(true)} style={{ background: theme.accent, color: '#fff', padding: '1px 8px', borderRadius: 4, fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, border: 'none', cursor: 'pointer' }}><Zap size={10} /> Template</button>
+                    <button onClick={() => { if (!tierLimits.coatingTemplates) { setUpgradeFeature('Coating Templates'); setShowUpgradePrompt(true); return; } setShowTemplatePicker(true); }} style={{ background: theme.accent, color: '#fff', padding: '1px 8px', borderRadius: 4, fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, border: 'none', cursor: 'pointer' }}><Zap size={10} /> Template</button>
                   </div>
 
                   {/* Stack Tabs */}
@@ -9611,7 +9616,7 @@ const ThinFilmDesigner = () => {
                           <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
                           <button onClick={addLayerStack} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"><Plus size={10} /> New Stack</button>
                           <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"><Trash2 size={10} /> Delete Stack</button>
-                          <button onClick={() => setShowTemplatePicker(true)} style={{ background: theme.accent, color: '#fff', padding: '1px 8px', borderRadius: 4, fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, border: 'none', cursor: 'pointer' }}><Zap size={10} /> Template</button>
+                          <button onClick={() => { if (!tierLimits.coatingTemplates) { setUpgradeFeature('Coating Templates'); setShowUpgradePrompt(true); return; } setShowTemplatePicker(true); }} style={{ background: theme.accent, color: '#fff', padding: '1px 8px', borderRadius: 4, fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, border: 'none', cursor: 'pointer' }}><Zap size={10} /> Template</button>
                         </div>
                       </div>
 
