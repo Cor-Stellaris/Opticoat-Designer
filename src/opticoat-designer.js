@@ -1451,24 +1451,19 @@ const ThinFilmDesigner = () => {
   const [userTier, setUserTier] = useState('free');
 
   // Fetch tier from server when signed in
-  // DEV OVERRIDE: Force enterprise tier for testing. Remove before production.
   useEffect(() => {
     if (!isSignedIn) {
       setTierLimits(FREE_TIER_LIMITS);
       setUserTier('free');
       return;
     }
-    // DEV OVERRIDE — force enterprise for all signed-in users during testing
-    setUserTier('enterprise');
-    setTierLimits(FREE_TIER_LIMITS); // FREE_TIER_LIMITS already has all features enabled in dev mode
     let cancelled = false;
     async function fetchTier() {
       try {
         const data = await apiGet('/api/auth/tier');
         if (!cancelled) {
-          // DEV OVERRIDE: Always use enterprise regardless of backend response
-          setUserTier('enterprise');
-          setTierLimits(FREE_TIER_LIMITS);
+          setUserTier(data.tier || 'free');
+          setTierLimits(data.limits || FREE_TIER_LIMITS);
         }
       } catch (e) {
         console.warn('Failed to fetch tier:', e);
