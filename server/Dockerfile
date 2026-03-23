@@ -8,12 +8,8 @@ COPY package*.json ./
 RUN npm ci --include=dev
 
 COPY . .
-
 RUN npx prisma generate
 
 ENV NODE_ENV=production
-ENV PORT=3001
-
-EXPOSE 3001
 
 ENTRYPOINT ["node", "src/index.js"]
