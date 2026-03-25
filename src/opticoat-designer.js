@@ -1012,13 +1012,7 @@ const ThinFilmDesigner = () => {
   const [chartZoom, setChartZoom] = useState(null); // { x1, x2 } or null
   const [zoomSelecting, setZoomSelecting] = useState(null); // { startX } during drag
 
-  const [layers, setLayers] = useState([
-    { id: 1, material: "SiO2", thickness: 148.42, iad: null, packingDensity: 1.0 },
-    { id: 2, material: "ZrO2", thickness: 30.16, iad: null, packingDensity: 1.0 },
-    { id: 3, material: "SiO2", thickness: 23.68, iad: null, packingDensity: 1.0 },
-    { id: 4, material: "ZrO2", thickness: 61.29, iad: null, packingDensity: 1.0 },
-    { id: 5, material: "SiO2", thickness: 88.03, iad: null, packingDensity: 1.0 },
-  ]);
+  const [layers, setLayers] = useState([]);
 
   const [machines, setMachines] = useState([
     {
@@ -1071,13 +1065,7 @@ const ThinFilmDesigner = () => {
       id: 1,
       machineId: 1,
       name: "Layer Stack 1",
-      layers: [
-        { id: 1, material: "SiO2", thickness: 148.42, iad: null, packingDensity: 1.0 },
-        { id: 2, material: "ZrO2", thickness: 30.16, iad: null, packingDensity: 1.0 },
-        { id: 3, material: "SiO2", thickness: 23.68, iad: null, packingDensity: 1.0 },
-        { id: 4, material: "ZrO2", thickness: 61.29, iad: null, packingDensity: 1.0 },
-        { id: 5, material: "SiO2", thickness: 88.03, iad: null, packingDensity: 1.0 },
-      ],
+      layers: [],
       visible: true,
       color: "#4f46e5",
     },
@@ -1543,6 +1531,7 @@ const ThinFilmDesigner = () => {
 
   // AI Chat: send message with streaming
   const sendChatMessage = async () => {
+    if (!requireFeature('aiChat', 'Lumi AI Assistant')) return;
     const trimmed = chatInput.trim();
     if (!trimmed || chatStreaming) return;
 
@@ -7999,15 +7988,6 @@ const ThinFilmDesigner = () => {
             <button
               key={tab.id}
               onClick={() => {
-                if (tab.id === 'assistant' && !tierLimits.designAssistant) {
-                  setUpgradeFeature('Design Assistant'); setShowUpgradePrompt(true); return;
-                }
-                if (tab.id === 'tracking' && !tierLimits.recipeTracking) {
-                  setUpgradeFeature('Recipe Tracking'); setShowUpgradePrompt(true); return;
-                }
-                if (tab.id === 'yield' && !tierLimits.yieldCalculator) {
-                  setUpgradeFeature('Yield Analysis'); setShowUpgradePrompt(true); return;
-                }
                 setActiveTab(tab.id);
               }}
               className="flex items-center gap-1.5 transition-all"
@@ -10261,6 +10241,13 @@ const ThinFilmDesigner = () => {
         {/* Design Assistant Tab Content */}
         {activeTab === "assistant" && (
           <div className="flex-1 bg-white rounded-lg shadow-lg p-4 overflow-hidden flex flex-col min-h-0">
+            {!tierLimits.designAssistant && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', marginBottom: 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b' }}>
+                <Lock size={14} style={{ color: '#b45309', flexShrink: 0 }} />
+                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Design Assistant requires a higher plan. Explore the interface below!</span>
+                <button onClick={() => setShowPricingModal(true)} style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, background: '#f59e0b', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>View Plans</button>
+              </div>
+            )}
             <div className="flex items-baseline gap-4 mb-3 flex-shrink-0">
               <h2 className="text-lg font-bold text-gray-800">Design Assistant</h2>
               <p className="text-xs text-gray-500">Define targets or upload CSV to reverse engineer a layer stack</p>
@@ -11552,6 +11539,13 @@ const ThinFilmDesigner = () => {
         {/* Recipe Tracking Tab Content */}
         {activeTab === "tracking" && (
           <div className="bg-white rounded-lg shadow-lg p-4 flex-1 overflow-hidden flex flex-col">
+            {!tierLimits.recipeTracking && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', marginBottom: 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b' }}>
+                <Lock size={14} style={{ color: '#b45309', flexShrink: 0 }} />
+                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Recipe Tracking requires a higher plan. Explore the interface below!</span>
+                <button onClick={() => setShowPricingModal(true)} style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, background: '#f59e0b', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>View Plans</button>
+              </div>
+            )}
             <div className="flex justify-between items-center mb-3 flex-shrink-0">
               <h1 className="text-lg font-bold text-gray-800">
                 Recipe Tracking & Trend Analysis
@@ -12541,6 +12535,13 @@ const ThinFilmDesigner = () => {
         {/* Yield Analysis Tab Content */}
         {activeTab === "yield" && (
           <div className="flex-1 bg-white rounded-lg shadow-lg p-4 overflow-y-auto flex flex-col min-h-0">
+            {!tierLimits.yieldCalculator && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', marginBottom: 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b' }}>
+                <Lock size={14} style={{ color: '#b45309', flexShrink: 0 }} />
+                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Yield Analysis requires a higher plan. Explore the interface below!</span>
+                <button onClick={() => setShowPricingModal(true)} style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, background: '#f59e0b', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>View Plans</button>
+              </div>
+            )}
             <details className="bg-gray-50 rounded mb-3 flex-shrink-0" open>
               <summary className="p-3 cursor-pointer select-none font-semibold text-lg hover:bg-gray-100 rounded">
                 Monte Carlo Yield Simulation
@@ -14760,7 +14761,6 @@ const ThinFilmDesigner = () => {
         <button
           onClick={() => {
             if (CLERK_ENABLED && !isSignedIn) { setUpgradeFeature('Lumi AI Assistant'); setShowUpgradePrompt(true); return; }
-            if (!requireFeature('aiChat', 'Lumi AI Assistant')) return;
             setChatOpen(true);
           }}
           style={{
