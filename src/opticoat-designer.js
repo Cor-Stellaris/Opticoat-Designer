@@ -74,14 +74,14 @@ const TIER_ORDER = { free: 0, starter: 1, professional: 2, enterprise: 3 };
 // DEV MODE: All features unlocked for testing. Restore original limits before production.
 // Must match server/src/services/tierLimits.js free tier exactly
 const FREE_TIER_LIMITS = {
-  maxStacks: 1, maxLayersPerStack: 6, maxSavedDesigns: 3, maxCustomMaterials: 0,
+  maxStacks: 1, maxLayersPerStack: 3, maxSavedDesigns: 1, maxCustomMaterials: 0,
   allowedAngles: [0],
   allowedDisplayModes: ['reflectivity', 'transmission'],
   allowedIlluminants: ['D65'],
   designAssistant: false, designAssistantMaxLayers: 0,
   reverseEngineer: false, colorTargetMode: false, csvUpload: false,
-  recipeTracking: true, maxTrackingRuns: 3, yieldCalculator: true,
-  maxMonteCarloIterations: 100, yieldColorSimulation: false, layerSensitivity: false,
+  recipeTracking: false, maxTrackingRuns: 0, yieldCalculator: false,
+  maxMonteCarloIterations: 0, yieldColorSimulation: false, layerSensitivity: false,
   iad: false, maxMachines: 0,
   trackingDesignOverlay: false, trackingToleranceBands: false, trackingColorDrift: false,
   trackingTrendView: false, trackingExportPng: false, trackingExportCsv: true,
@@ -8002,6 +8002,12 @@ const ThinFilmDesigner = () => {
                 if (tab.id === 'assistant' && !tierLimits.designAssistant) {
                   setUpgradeFeature('Design Assistant'); setShowUpgradePrompt(true); return;
                 }
+                if (tab.id === 'tracking' && !tierLimits.recipeTracking) {
+                  setUpgradeFeature('Recipe Tracking'); setShowUpgradePrompt(true); return;
+                }
+                if (tab.id === 'yield' && !tierLimits.yieldCalculator) {
+                  setUpgradeFeature('Yield Analysis'); setShowUpgradePrompt(true); return;
+                }
                 setActiveTab(tab.id);
               }}
               className="flex items-center gap-1.5 transition-all"
@@ -14618,8 +14624,8 @@ const ThinFilmDesigner = () => {
                   {/* Section: Core Limits */}
                   {[
                     { label: 'Layer Stacks', values: ['1', '3', 'Unlimited', 'Unlimited'] },
-                    { label: 'Layers per Stack', values: ['6', '15', '50', '100'] },
-                    { label: 'Cloud Saves', values: ['3', '25', 'Unlimited', 'Unlimited'] },
+                    { label: 'Layers per Stack', values: ['3', '15', '50', '100'] },
+                    { label: 'Cloud Saves', values: ['1', '25', 'Unlimited', 'Unlimited'] },
                     { label: 'Custom Materials', values: ['\u2014', '5', 'Unlimited', 'Unlimited'] },
                     { label: 'Machines', values: ['\u2014', '\u2014', 'Unlimited', 'Unlimited'] },
                   ].map((row, i) => (
@@ -14679,11 +14685,11 @@ const ThinFilmDesigner = () => {
                   {/* Section header */}
                   <tr><td colSpan={5} className="pt-4 pb-1 px-2 text-xs font-bold text-gray-800 uppercase tracking-wider border-b border-gray-200">Yield & Tracking</td></tr>
                   {[
-                    { label: 'Monte Carlo Simulation', values: ['100 runs', '1,000 runs', 'Unlimited', 'Unlimited'] },
+                    { label: 'Monte Carlo Simulation', values: ['\u2014', '1,000 runs', 'Unlimited', 'Unlimited'] },
                     { label: 'Color Simulation', values: [false, false, true, true] },
                     { label: 'Layer Sensitivity', values: [false, false, true, true] },
-                    { label: 'Recipe Tracking', values: [true, true, true, true] },
-                    { label: 'Tracking Charts', values: ['3', '25', 'Unlimited', 'Unlimited'] },
+                    { label: 'Recipe Tracking', values: [false, true, true, true] },
+                    { label: 'Tracking Charts', values: ['\u2014', '25', 'Unlimited', 'Unlimited'] },
                     { label: 'Design Target Overlay', values: [false, true, true, true] },
                     { label: 'Tolerance Bands', values: [false, false, true, true] },
                     { label: 'Color Drift (ΔE)', values: [false, false, true, true] },

@@ -1,8 +1,8 @@
 const TIER_LIMITS = {
   free: {
     maxStacks: 1,
-    maxLayersPerStack: 6,
-    maxSavedDesigns: 3,
+    maxLayersPerStack: 3,
+    maxSavedDesigns: 1,
     maxCustomMaterials: 0,
     allowedAngles: [0],
     allowedDisplayModes: ['reflectivity', 'transmission'],
@@ -12,10 +12,10 @@ const TIER_LIMITS = {
     reverseEngineer: false,
     colorTargetMode: false,
     csvUpload: false,
-    recipeTracking: true,
-    maxTrackingRuns: 3,              // Up to 3 uploaded charts
-    yieldCalculator: true,
-    maxMonteCarloIterations: 100,    // Capped at 100 runs
+    recipeTracking: false,
+    maxTrackingRuns: 0,
+    yieldCalculator: false,
+    maxMonteCarloIterations: 0,
     yieldColorSimulation: false,
     layerSensitivity: false,
     iad: false,
