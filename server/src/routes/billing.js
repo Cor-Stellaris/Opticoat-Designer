@@ -76,8 +76,8 @@ router.post('/checkout', ...requireUser, async (req, res) => {
 
     res.json({ url: session.url });
   } catch (error) {
-    console.error('Checkout error:', error);
-    res.status(500).json({ error: 'Failed to create checkout session' });
+    console.error('Checkout error:', error?.message || error);
+    res.status(500).json({ error: error?.message || 'Failed to create checkout session' });
   }
 });
 

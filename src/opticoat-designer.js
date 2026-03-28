@@ -4921,6 +4921,7 @@ const ThinFilmDesigner = () => {
   // ============ Billing ============
 
   const [enterpriseSeats, setEnterpriseSeats] = useState(5);
+  const [billingInterval, setBillingInterval] = useState('monthly');
 
   const handleCheckout = useCallback(async (tier, interval = 'monthly') => {
     try {
@@ -14667,6 +14668,20 @@ const ThinFilmDesigner = () => {
               </div>
             </div>
 
+            {/* Billing interval toggle */}
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 0, borderRadius: 8, border: `1px solid ${theme.border}`, overflow: 'hidden' }}>
+                <button
+                  onClick={() => setBillingInterval('monthly')}
+                  style={{ padding: '6px 18px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer', background: billingInterval === 'monthly' ? theme.accent : 'transparent', color: billingInterval === 'monthly' ? '#fff' : theme.textSecondary }}
+                >Monthly</button>
+                <button
+                  onClick={() => setBillingInterval('annual')}
+                  style={{ padding: '6px 18px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer', background: billingInterval === 'annual' ? theme.accent : 'transparent', color: billingInterval === 'annual' ? '#fff' : theme.textSecondary }}
+                >Annual <span style={{ fontSize: 10, color: billingInterval === 'annual' ? '#bbf7d0' : '#22c55e', fontWeight: 700 }}>Save ~15%</span></button>
+              </div>
+            </div>
+
             {/* Scrollable body */}
             <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, padding: '0 24px 16px' }}>
               <table className="w-full border-collapse text-sm" style={{ tableLayout: 'fixed' }}>
@@ -14675,10 +14690,10 @@ const ThinFilmDesigner = () => {
                   <tr>
                     <th style={{ position: 'sticky', top: 0, background: theme.surface, zIndex: 2, textAlign: 'left', padding: '10px 8px 6px', width: '20%', fontSize: 11, fontWeight: 600, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Feature</th>
                     {[
-                      { key: 'free', name: 'Explorer', price: 'Free', sub: 'Get started' },
-                      { key: 'starter', name: 'Starter', price: '$49/mo', sub: 'Individual engineers' },
-                      { key: 'professional', name: 'Professional', price: '$149/mo', sub: 'Full-featured' },
-                      { key: 'enterprise', name: 'Enterprise', price: '$599/mo', sub: 'For teams' },
+                      { key: 'free', name: 'Explorer', monthly: 'Free', annual: 'Free', sub: 'Get started' },
+                      { key: 'starter', name: 'Starter', monthly: '$49/mo', annual: '$499/yr', sub: 'Individual engineers' },
+                      { key: 'professional', name: 'Professional', monthly: '$149/mo', annual: '$1,499/yr', sub: 'Full-featured' },
+                      { key: 'enterprise', name: 'Enterprise', monthly: '$599/mo', annual: '$6,999/yr', sub: 'For teams' },
                     ].map((tier) => (
                       <th key={tier.key} style={{ position: 'sticky', top: 0, background: theme.surface, zIndex: 2, textAlign: 'center', padding: '10px 8px 6px', width: '20%', verticalAlign: 'bottom' }}>
                         <div style={{ position: 'relative', paddingTop: tier.key === 'professional' ? 6 : 0 }}>
@@ -14687,7 +14702,11 @@ const ThinFilmDesigner = () => {
                           )}
                           <div style={{ fontWeight: 700, color: theme.textPrimary, fontSize: 13 }}>{tier.name}</div>
                           <div style={{ fontWeight: 700, color: theme.textPrimary, fontSize: 17 }}>
-                            {tier.key === 'enterprise' ? `$${599 + Math.max(0, enterpriseSeats - 5) * 69}/mo` : tier.price}
+                            {tier.key === 'enterprise'
+                              ? billingInterval === 'monthly'
+                                ? `$${599 + Math.max(0, enterpriseSeats - 5) * 69}/mo`
+                                : `$${(6999 + Math.max(0, enterpriseSeats - 5) * 749).toLocaleString()}/yr`
+                              : (billingInterval === 'monthly' ? tier.monthly : tier.annual)}
                           </div>
                           <div style={{ fontSize: 10, color: theme.textMuted }}>{tier.sub}</div>
                           {tier.key === 'professional' && (
@@ -14702,7 +14721,7 @@ const ThinFilmDesigner = () => {
                             </div>
                           )}
                           {tier.key === 'enterprise' && enterpriseSeats > 5 && (
-                            <div style={{ fontSize: 9, color: theme.textMuted, marginTop: 2 }}>5 included + {enterpriseSeats - 5} extra × $69</div>
+                            <div style={{ fontSize: 9, color: theme.textMuted, marginTop: 2 }}>5 included + {enterpriseSeats - 5} extra × {billingInterval === 'monthly' ? '$69/mo' : '$749/yr'}</div>
                           )}
                           {tier.key === 'enterprise' && enterpriseSeats <= 5 && (
                             <div style={{ fontSize: 9, color: theme.textMuted, marginTop: 2 }}>5 seats included</div>
@@ -14712,7 +14731,7 @@ const ThinFilmDesigner = () => {
                           ) : TIER_ORDER[userTier] >= TIER_ORDER[tier.key] ? (
                             <div style={{ marginTop: 6, height: 28 }}></div>
                           ) : isSignedIn ? (
-                            <button onClick={() => { setShowPricingModal(false); handleCheckout(tier.key); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: tier.key === 'professional' ? '#22c55e' : theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>{tier.key === 'professional' ? 'Start Free Trial' : 'Upgrade'}</button>
+                            <button onClick={() => { setShowPricingModal(false); handleCheckout(tier.key, billingInterval); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: tier.key === 'professional' ? '#22c55e' : theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>{tier.key === 'professional' ? 'Start Free Trial' : 'Upgrade'}</button>
                           ) : (
                             <div style={{ marginTop: 6, fontSize: 10, color: theme.textMuted, textAlign: 'center', padding: '4px 0' }}>Sign in to upgrade</div>
                           )}
@@ -14819,7 +14838,7 @@ const ThinFilmDesigner = () => {
                   {[
                     { label: 'Lumi AI Assistant', values: [false, false, true, true] },
                     { label: 'IAD Modeling', values: [false, false, true, true] },
-                    { label: 'User Seats', values: ['\u2014', '\u2014', '\u2014', '5 (+$69/seat)'] },
+                    { label: 'User Seats', values: ['\u2014', '\u2014', '\u2014', `5 (+${billingInterval === 'monthly' ? '$69/mo' : '$749/yr'}/seat)`] },
                     { label: 'API Access', values: [false, false, false, true] },
                     { label: 'Priority Support', values: [false, false, false, true] },
                   ].map((row, i) => (
