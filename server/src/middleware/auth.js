@@ -44,7 +44,28 @@ const requireUser = [
         });
       }
 
-      req.user = user;
+      // Org-aware tier inheritance: if user belongs to an org with an Enterprise admin,
+      // they inherit Enterprise access even if their own tier is lower
+      const orgId = auth.orgId || null;
+
+      // Update organizationId if it changed
+      if (orgId !== user.organizationId) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { organizationId: orgId || null },
+        });
+        user.organizationId = orgId || null;
+      }
+
+      let effectiveTier = user.tier;
+      if (orgId && user.tier !== 'enterprise') {
+        const orgAdmin = await prisma.user.findFirst({
+          where: { organizationId: orgId, tier: 'enterprise' },
+        });
+        if (orgAdmin) effectiveTier = 'enterprise';
+      }
+
+      req.user = { ...user, effectiveTier };
       next();
     } catch (error) {
       console.error('Auth middleware error:', error);

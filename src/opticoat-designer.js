@@ -43,6 +43,10 @@ import {
   Copy,
   Moon,
   Sun,
+  Users,
+  UserPlus,
+  UserMinus,
+  Mail,
 } from "lucide-react";
 import { saveSession, loadSession, migrateFromLocalStorage, saveDesignLocally, getLocalDesigns, deleteLocalDesign } from './services/offlineStore';
 import syncManager from './services/syncManager';
@@ -50,7 +54,7 @@ import { apiGet, apiPost, apiPut, apiDelete, apiStream, setTokenProvider } from 
 import html2canvas from 'html2canvas';
 
 // Clerk — import hooks and components. They only work when wrapped in ClerkProvider (index.js).
-import { useUser as useClerkUserHook, useAuth as useClerkAuthHook, SignInButton, UserButton } from '@clerk/clerk-react';
+import { useUser as useClerkUserHook, useAuth as useClerkAuthHook, useOrganization as useClerkOrgHook, useOrganizationList as useClerkOrgListHook, SignInButton, UserButton } from '@clerk/clerk-react';
 
 const CLERK_ENABLED = !!process.env.REACT_APP_CLERK_PUBLISHABLE_KEY;
 
@@ -66,6 +70,33 @@ function useClerkAuth() {
     return useClerkAuthHook(); // eslint-disable-line react-hooks/rules-of-hooks
   }
   return { getToken: null };
+}
+// Organization hooks — these require Organizations to be enabled in Clerk Dashboard.
+// We always call the hooks (React rules) but catch errors if the feature isn't enabled yet.
+const ORG_DEFAULTS = { organization: null, membership: null, memberships: null, invitations: null };
+const ORG_LIST_DEFAULTS = { createOrganization: null, setActive: null, userInvitations: null };
+function useClerkOrg() {
+  // Always call hook to satisfy React rules-of-hooks, but guard with try/catch
+  let result = ORG_DEFAULTS;
+  try {
+    if (CLERK_ENABLED) {
+      result = useClerkOrgHook(); // eslint-disable-line react-hooks/rules-of-hooks
+    }
+  } catch (e) {
+    // Organizations not enabled in Clerk — return safe defaults
+  }
+  return result;
+}
+function useClerkOrgList() {
+  let result = ORG_LIST_DEFAULTS;
+  try {
+    if (CLERK_ENABLED) {
+      result = useClerkOrgListHook({ userInvitations: { infinite: true } }); // eslint-disable-line react-hooks/rules-of-hooks
+    }
+  } catch (e) {
+    // Organizations not enabled in Clerk — return safe defaults
+  }
+  return result;
 }
 
 // Tier hierarchy for comparison
@@ -1272,6 +1303,8 @@ const ThinFilmDesigner = () => {
   // Auth state (Clerk)
   const { isSignedIn, user: authUser } = useClerkUser();
   const { getToken } = useClerkAuth();
+  const { organization, membership, memberships, invitations: orgInvitations } = useClerkOrg();
+  const { createOrganization, setActive: setActiveOrg, userInvitations } = useClerkOrgList();
 
   // ─── Theme-aware color helpers (for inline styles & Recharts props) ───
   const theme = {
@@ -1438,6 +1471,11 @@ const ThinFilmDesigner = () => {
   // Tier & gating state
   const [tierLimits, setTierLimits] = useState(FREE_TIER_LIMITS);
   const [userTier, setUserTier] = useState('free');
+  const [trialInfo, setTrialInfo] = useState(null);
+  const [showTeamModal, setShowTeamModal] = useState(false);
+  const [teamSeats, setTeamSeats] = useState({ used: 0, max: 5 });
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
 
   // Fetch tier from server when signed in
   useEffect(() => {
@@ -1453,6 +1491,7 @@ const ThinFilmDesigner = () => {
         if (!cancelled) {
           setUserTier(data.tier || 'free');
           setTierLimits(data.limits || FREE_TIER_LIMITS);
+          setTrialInfo(data.trial || null);
         }
       } catch (e) {
         console.warn('Failed to fetch tier:', e);
@@ -1463,6 +1502,35 @@ const ThinFilmDesigner = () => {
     fetchTier();
     return () => { cancelled = true; };
   }, [isSignedIn]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-create Clerk Organization when Enterprise user has no org
+  useEffect(() => {
+    if (!isSignedIn || userTier !== 'enterprise' || !createOrganization || organization) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('billing') !== 'success') return;
+    (async () => {
+      try {
+        const org = await createOrganization({ name: `${authUser?.firstName || 'My'}'s Team` });
+        if (setActiveOrg) await setActiveOrg({ organization: org.id });
+        console.log('Auto-created org:', org.id);
+      } catch (e) {
+        console.warn('Failed to auto-create org:', e);
+      }
+    })();
+  }, [isSignedIn, userTier, organization, createOrganization]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch seat usage when team modal opens
+  useEffect(() => {
+    if (!showTeamModal || !organization) return;
+    (async () => {
+      try {
+        const data = await apiGet('/api/organizations/seats');
+        setTeamSeats(data);
+      } catch (e) {
+        console.warn('Failed to fetch seats:', e);
+      }
+    })();
+  }, [showTeamModal, organization]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Color comparison modal state
   const [showColorCompareModal, setShowColorCompareModal] = useState(false);
@@ -4852,14 +4920,18 @@ const ThinFilmDesigner = () => {
 
   // ============ Billing ============
 
+  const [enterpriseSeats, setEnterpriseSeats] = useState(5);
+
   const handleCheckout = useCallback(async (tier, interval = 'monthly') => {
     try {
-      const data = await apiPost('/api/billing/checkout', { tier, interval });
+      const body = { tier, interval };
+      if (tier === 'enterprise') body.seats = enterpriseSeats;
+      const data = await apiPost('/api/billing/checkout', body);
       if (data.url) window.location.href = data.url;
     } catch (e) {
       showToast('Failed to start checkout: ' + e.message, 'error');
     }
-  }, []);
+  }, [enterpriseSeats]);
 
   const handleBillingPortal = useCallback(async () => {
     try {
@@ -8061,8 +8133,19 @@ const ThinFilmDesigner = () => {
                     title="Manage subscription"
                   >
                     <Crown size={12} />
-                    <span className="capitalize">{userTier}</span>
+                    <span className="capitalize">{trialInfo?.isTrialing ? `Trial (${Math.max(1, Math.ceil((trialInfo.trialEnd - Date.now()) / 86400000))}d left)` : userTier}</span>
                   </button>
+                  {userTier === 'enterprise' && organization && membership?.role === 'org:admin' && (
+                    <button
+                      onClick={() => setShowTeamModal(true)}
+                      className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+                      style={{ background: darkMode ? '#1e293b' : '#e0e7ff', color: darkMode ? '#93c5fd' : '#4338ca', border: 'none', cursor: 'pointer' }}
+                      title="Team management"
+                    >
+                      <Users size={12} />
+                      <span>Team</span>
+                    </button>
+                  )}
                   <UserButton afterSignOutUrl={window.location.href} />
                 </div>
               ) : (
@@ -14603,14 +14686,33 @@ const ThinFilmDesigner = () => {
                             <div style={{ position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)', background: theme.accent, color: '#fff', fontSize: 9, fontWeight: 700, padding: '2px 10px', borderRadius: 10, whiteSpace: 'nowrap', lineHeight: '14px' }}>MOST POPULAR</div>
                           )}
                           <div style={{ fontWeight: 700, color: theme.textPrimary, fontSize: 13 }}>{tier.name}</div>
-                          <div style={{ fontWeight: 700, color: theme.textPrimary, fontSize: 17 }}>{tier.price}</div>
+                          <div style={{ fontWeight: 700, color: theme.textPrimary, fontSize: 17 }}>
+                            {tier.key === 'enterprise' ? `$${599 + Math.max(0, enterpriseSeats - 5) * 69}/mo` : tier.price}
+                          </div>
                           <div style={{ fontSize: 10, color: theme.textMuted }}>{tier.sub}</div>
+                          {tier.key === 'professional' && (
+                            <div style={{ fontSize: 9, color: '#22c55e', fontWeight: 600, marginTop: 2 }}>7-day free trial included</div>
+                          )}
+                          {tier.key === 'enterprise' && (
+                            <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                              <span style={{ fontSize: 10, color: theme.textMuted }}>Seats:</span>
+                              <button onClick={(e) => { e.stopPropagation(); setEnterpriseSeats(s => Math.max(1, s - 1)); }} style={{ width: 20, height: 20, borderRadius: 4, border: `1px solid ${theme.border}`, background: theme.surface, color: theme.textPrimary, fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>−</button>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: theme.textPrimary, minWidth: 20, textAlign: 'center' }}>{enterpriseSeats}</span>
+                              <button onClick={(e) => { e.stopPropagation(); setEnterpriseSeats(s => s + 1); }} style={{ width: 20, height: 20, borderRadius: 4, border: `1px solid ${theme.border}`, background: theme.surface, color: theme.textPrimary, fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>+</button>
+                            </div>
+                          )}
+                          {tier.key === 'enterprise' && enterpriseSeats > 5 && (
+                            <div style={{ fontSize: 9, color: theme.textMuted, marginTop: 2 }}>5 included + {enterpriseSeats - 5} extra × $69</div>
+                          )}
+                          {tier.key === 'enterprise' && enterpriseSeats <= 5 && (
+                            <div style={{ fontSize: 9, color: theme.textMuted, marginTop: 2 }}>5 seats included</div>
+                          )}
                           {userTier === tier.key ? (
                             <div style={{ marginTop: 6, padding: '4px 0', fontSize: 11, fontWeight: 600, color: theme.accentText, border: '1px solid #a5b4fc', borderRadius: 4, textAlign: 'center' }}>Current Plan</div>
                           ) : TIER_ORDER[userTier] >= TIER_ORDER[tier.key] ? (
                             <div style={{ marginTop: 6, height: 28 }}></div>
                           ) : isSignedIn ? (
-                            <button onClick={() => { setShowPricingModal(false); handleCheckout(tier.key); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Upgrade</button>
+                            <button onClick={() => { setShowPricingModal(false); handleCheckout(tier.key); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: tier.key === 'professional' ? '#22c55e' : theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>{tier.key === 'professional' ? 'Start Free Trial' : 'Upgrade'}</button>
                           ) : (
                             <div style={{ marginTop: 6, fontSize: 10, color: theme.textMuted, textAlign: 'center', padding: '4px 0' }}>Sign in to upgrade</div>
                           )}
@@ -14717,7 +14819,7 @@ const ThinFilmDesigner = () => {
                   {[
                     { label: 'Lumi AI Assistant', values: [false, false, true, true] },
                     { label: 'IAD Modeling', values: [false, false, true, true] },
-                    { label: 'User Seats', values: ['\u2014', '\u2014', '\u2014', '5 (+$49/seat)'] },
+                    { label: 'User Seats', values: ['\u2014', '\u2014', '\u2014', '5 (+$69/seat)'] },
                     { label: 'API Access', values: [false, false, false, true] },
                     { label: 'Priority Support', values: [false, false, false, true] },
                   ].map((row, i) => (
@@ -14736,6 +14838,177 @@ const ThinFilmDesigner = () => {
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ========== TEAM MANAGEMENT MODAL ========== */}
+      {showTeamModal && organization && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={(e) => { if (e.target === e.currentTarget) setShowTeamModal(false); }}>
+          <div style={{ background: theme.surface, color: theme.textPrimary, borderRadius: 12, boxShadow: '0 25px 50px rgba(0,0,0,0.25)', width: 480, maxHeight: '80vh', overflow: 'auto', padding: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <h3 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
+                <Users size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 8 }} />
+                Team Management
+              </h3>
+              <button onClick={() => setShowTeamModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: theme.textSecondary, fontSize: 18 }}>✕</button>
+            </div>
+
+            {/* Seat counter */}
+            <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, background: theme.surfaceAlt, border: `1px solid ${theme.border}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Seats</span>
+                <span style={{ fontSize: 13, color: theme.textSecondary }}>{teamSeats.used} of {teamSeats.max} used</span>
+              </div>
+              <div style={{ height: 6, borderRadius: 3, background: darkMode ? '#1e293b' : '#e5e7eb', overflow: 'hidden' }}>
+                <div style={{ height: '100%', borderRadius: 3, background: teamSeats.used >= teamSeats.max ? '#ef4444' : '#4f46e5', width: `${Math.min(100, (teamSeats.used / teamSeats.max) * 100)}%`, transition: 'width 0.3s' }} />
+              </div>
+            </div>
+
+            {/* Invite form */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: theme.textSecondary, marginBottom: 4, display: 'block' }}>Invite team member</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="colleague@company.com"
+                  style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.surface, color: theme.textPrimary, fontSize: 13, outline: 'none' }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') document.getElementById('invite-btn')?.click(); }}
+                />
+                <button
+                  id="invite-btn"
+                  disabled={inviteLoading || !inviteEmail || teamSeats.used >= teamSeats.max}
+                  onClick={async () => {
+                    if (!inviteEmail || !organization) return;
+                    if (teamSeats.used >= teamSeats.max) { showToast('All seats are filled. Add more seats to invite members.', 'error'); return; }
+                    setInviteLoading(true);
+                    try {
+                      await organization.inviteMember({ emailAddress: inviteEmail, role: 'org:member' });
+                      setInviteEmail('');
+                      showToast('Invitation sent!', 'success');
+                      // Refresh invitations list
+                      if (orgInvitations?.revalidate) orgInvitations.revalidate();
+                    } catch (e) {
+                      showToast('Failed to send invite: ' + (e.errors?.[0]?.message || e.message), 'error');
+                    } finally {
+                      setInviteLoading(false);
+                    }
+                  }}
+                  style={{ padding: '8px 16px', borderRadius: 6, background: teamSeats.used >= teamSeats.max ? '#9ca3af' : '#4f46e5', color: '#fff', border: 'none', cursor: teamSeats.used >= teamSeats.max ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}
+                >
+                  <UserPlus size={14} />
+                  {inviteLoading ? 'Sending...' : 'Invite'}
+                </button>
+              </div>
+              {teamSeats.used >= teamSeats.max && (
+                <p style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>All seats filled. <button onClick={() => { setShowTeamModal(false); setShowPricingModal(true); }} style={{ color: '#4f46e5', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontSize: 11 }}>Add more seats</button></p>
+              )}
+            </div>
+
+            {/* Members list */}
+            <div style={{ marginBottom: 16 }}>
+              <h4 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: theme.textSecondary }}>Members</h4>
+              {memberships?.data?.length > 0 ? memberships.data.map((m) => (
+                <div key={m.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 6, marginBottom: 4, background: theme.surfaceAlt }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#4f46e5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600 }}>
+                      {(m.publicUserData?.firstName?.[0] || m.publicUserData?.identifier?.[0] || '?').toUpperCase()}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500 }}>{m.publicUserData?.firstName ? `${m.publicUserData.firstName} ${m.publicUserData.lastName || ''}`.trim() : m.publicUserData?.identifier}</div>
+                      <div style={{ fontSize: 11, color: theme.textSecondary }}>{m.publicUserData?.identifier}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: m.role === 'org:admin' ? '#fef3c7' : (darkMode ? '#1e293b' : '#f3f4f6'), color: m.role === 'org:admin' ? '#92400e' : theme.textSecondary, fontWeight: 500 }}>
+                      {m.role === 'org:admin' ? 'Admin' : 'Member'}
+                    </span>
+                    {m.role !== 'org:admin' && membership?.role === 'org:admin' && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await organization.removeMember(m.publicUserData.userId);
+                            showToast('Member removed', 'success');
+                            if (memberships?.revalidate) memberships.revalidate();
+                          } catch (e) { showToast('Failed to remove: ' + e.message, 'error'); }
+                        }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2 }}
+                        title="Remove member"
+                      >
+                        <UserMinus size={14} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )) : (
+                <p style={{ fontSize: 13, color: theme.textSecondary, textAlign: 'center', padding: 16 }}>No members yet. Invite your team!</p>
+              )}
+            </div>
+
+            {/* Pending invitations */}
+            {orgInvitations?.data?.length > 0 && (
+              <div>
+                <h4 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: theme.textSecondary }}>Pending Invitations</h4>
+                {orgInvitations.data.map((inv) => (
+                  <div key={inv.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 6, marginBottom: 4, background: theme.surfaceAlt }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Mail size={14} style={{ color: theme.textSecondary }} />
+                      <span style={{ fontSize: 13 }}>{inv.emailAddress}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 500 }}>Pending</span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await inv.revoke();
+                            showToast('Invitation revoked', 'success');
+                            if (orgInvitations?.revalidate) orgInvitations.revalidate();
+                          } catch (e) { showToast('Failed to revoke: ' + e.message, 'error'); }
+                        }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 11, textDecoration: 'underline' }}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========== ORG INVITATION BANNER ========== */}
+      {userInvitations?.data?.length > 0 && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 60, padding: '10px 16px', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 13, fontWeight: 500 }}>
+          <Mail size={16} />
+          <span>You've been invited to join <strong>{userInvitations.data[0].publicOrganizationData?.name || 'a team'}</strong></span>
+          <button
+            onClick={async () => {
+              try {
+                await userInvitations.data[0].accept();
+                if (setActiveOrg) await setActiveOrg({ organization: userInvitations.data[0].publicOrganizationData.id });
+                showToast('Joined team! Refreshing access...', 'success');
+                // Re-fetch tier to get inherited Enterprise access
+                window.location.reload();
+              } catch (e) { showToast('Failed to accept: ' + e.message, 'error'); }
+            }}
+            style={{ padding: '4px 14px', borderRadius: 6, background: '#fff', color: '#4f46e5', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}
+          >
+            Accept
+          </button>
+          <button
+            onClick={async () => {
+              try {
+                await userInvitations.data[0].reject();
+                if (userInvitations?.revalidate) userInvitations.revalidate();
+              } catch (e) { showToast('Failed to decline', 'error'); }
+            }}
+            style={{ padding: '4px 14px', borderRadius: 6, background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 500, fontSize: 12 }}
+          >
+            Decline
+          </button>
         </div>
       )}
 

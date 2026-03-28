@@ -3,7 +3,7 @@ const { TIER_LIMITS } = require('../services/tierLimits');
 // Middleware factory: check if user's tier allows a feature
 const requireTier = (feature) => {
   return (req, res, next) => {
-    const userTier = req.user?.tier || 'free';
+    const userTier = req.user?.effectiveTier || req.user?.tier || 'free';
     const limits = TIER_LIMITS[userTier];
 
     if (!limits) {
@@ -37,7 +37,7 @@ const requireTier = (feature) => {
 // Check numeric limits (e.g., maxSavedDesigns)
 const checkLimit = (limitKey, currentCount) => {
   return (req, res, next) => {
-    const userTier = req.user?.tier || 'free';
+    const userTier = req.user?.effectiveTier || req.user?.tier || 'free';
     const limits = TIER_LIMITS[userTier];
     const maxAllowed = limits[limitKey];
 

@@ -134,7 +134,7 @@ const TIER_LIMITS = {
     trackingRunComparison: true,
     teamCollaboration: false,
     maxSeats: 5,                      // 5 seats included
-    additionalSeatPrice: 49,          // +$49 per additional seat
+    additionalSeatPrice: 69,          // +$69 per additional seat
     apiAccess: true,
     aiChat: 'full',
     maxChatMessagesPerDay: -1,

@@ -57,12 +57,14 @@ if (hasDatabase) {
     const billingRouter = require('./routes/billing');
     const trackingRouter = require('./routes/tracking');
     const machinesRouter = require('./routes/machines');
+    const organizationsRouter = require('./routes/organizations');
     app.use('/api/auth', authRouter);
     app.use('/api/designs', designsRouter);
     app.use('/api/materials', materialsRouter);
     app.use('/api/billing', billingRouter);
     app.use('/api/tracking', trackingRouter);
     app.use('/api/machines', machinesRouter);
+    app.use('/api/organizations', organizationsRouter);
     console.log('[BOOT] All routes loaded successfully');
   } catch (err) {
     console.error('[BOOT] FATAL: Failed to load routes:', err);

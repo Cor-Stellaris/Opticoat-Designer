@@ -12,6 +12,7 @@ model User {
   email            String   @unique
   tier             String   @default("free") // free, starter, professional, enterprise
   stripeCustomerId String?  @unique
+  organizationId   String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -20,6 +21,8 @@ model User {
   trackingRuns    TrackingRun[]
   machines        Machine[]
   apiKeys         ApiKey[]
+
+  @@index([organizationId])
 }
 
 model Design {

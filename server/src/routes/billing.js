@@ -51,14 +51,28 @@ router.post('/checkout', ...requireUser, async (req, res) => {
       }
     }
 
-    const session = await stripe.checkout.sessions.create({
+    const sessionConfig = {
       customer: customerId,
       mode: 'subscription',
       line_items: lineItems,
       success_url: `${process.env.FRONTEND_URL}?billing=success`,
       cancel_url: `${process.env.FRONTEND_URL}?billing=cancelled`,
       metadata: { userId: req.user.id },
-    });
+    };
+
+    // 7-day free trial for Professional tier only (one-time per customer)
+    if (tier === 'professional') {
+      let hadTrial = false;
+      if (customerId) {
+        const subs = await stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 100 });
+        hadTrial = subs.data.some(s => s.trial_end !== null);
+      }
+      if (!hadTrial) {
+        sessionConfig.subscription_data = { trial_period_days: 7 };
+      }
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionConfig);
 
     res.json({ url: session.url });
   } catch (error) {
@@ -149,10 +163,25 @@ router.post('/webhook', async (req, res) => {
       case 'customer.subscription.deleted': {
         const subscription = event.data.object;
         if (subscription.customer) {
+          // Find the admin user before reverting tier
+          const admin = await prisma.user.findFirst({
+            where: { stripeCustomerId: subscription.customer },
+          });
+
           await prisma.user.updateMany({
             where: { stripeCustomerId: subscription.customer },
             data: { tier: 'free' },
           });
+
+          // If Enterprise admin cancels, clear org access for all members
+          if (admin?.organizationId) {
+            await prisma.user.updateMany({
+              where: { organizationId: admin.organizationId },
+              data: { organizationId: null },
+            });
+            console.log(`Org ${admin.organizationId} disbanded — all members lost access`);
+          }
+
           console.log('Subscription cancelled — reverted to free tier');
         }
         break;
