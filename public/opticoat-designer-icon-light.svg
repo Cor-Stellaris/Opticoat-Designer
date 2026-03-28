@@ -1,0 +1,66 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <g transform="translate(256, 256)">
+    <!-- Deep red outer band -->
+    <circle cx="0" cy="0" r="190" fill="none" stroke="#C83040" stroke-width="14" opacity="0.07"/>
+    <circle cx="0" cy="0" r="184" fill="none" stroke="#C83040" stroke-width="7" opacity="0.16"/>
+    <circle cx="0" cy="0" r="181" fill="none" stroke="#C83040" stroke-width="3.5" opacity="0.35"/>
+
+    <!-- Red band -->
+    <circle cx="0" cy="0" r="172" fill="none" stroke="#E84848" stroke-width="14" opacity="0.08"/>
+    <circle cx="0" cy="0" r="168" fill="none" stroke="#E84848" stroke-width="7" opacity="0.2"/>
+    <circle cx="0" cy="0" r="166" fill="none" stroke="#E84848" stroke-width="3.5" opacity="0.42"/>
+
+    <!-- Orange band -->
+    <circle cx="0" cy="0" r="155" fill="none" stroke="#F07830" stroke-width="14" opacity="0.08"/>
+    <circle cx="0" cy="0" r="151" fill="none" stroke="#F07830" stroke-width="7" opacity="0.22"/>
+    <circle cx="0" cy="0" r="149" fill="none" stroke="#F07830" stroke-width="3.5" opacity="0.45"/>
+
+    <!-- Amber band -->
+    <circle cx="0" cy="0" r="138" fill="none" stroke="#E89020" stroke-width="14" opacity="0.09"/>
+    <circle cx="0" cy="0" r="134" fill="none" stroke="#E89020" stroke-width="7" opacity="0.22"/>
+    <circle cx="0" cy="0" r="132" fill="none" stroke="#E89020" stroke-width="3.5" opacity="0.48"/>
+
+    <!-- Yellow band -->
+    <circle cx="0" cy="0" r="121" fill="none" stroke="#D0C020" stroke-width="14" opacity="0.09"/>
+    <circle cx="0" cy="0" r="117" fill="none" stroke="#D0C020" stroke-width="7" opacity="0.22"/>
+    <circle cx="0" cy="0" r="115" fill="none" stroke="#D0C020" stroke-width="3.5" opacity="0.5"/>
+
+    <!-- Green band -->
+    <circle cx="0" cy="0" r="104" fill="none" stroke="#50A840" stroke-width="14" opacity="0.1"/>
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#50A840" stroke-width="7" opacity="0.24"/>
+    <circle cx="0" cy="0" r="98" fill="none" stroke="#38A058" stroke-width="3.5" opacity="0.52"/>
+
+    <!-- Teal/cyan band -->
+    <circle cx="0" cy="0" r="86" fill="none" stroke="#3098A8" stroke-width="14" opacity="0.1"/>
+    <circle cx="0" cy="0" r="82" fill="none" stroke="#3098A8" stroke-width="7" opacity="0.24"/>
+    <circle cx="0" cy="0" r="80" fill="none" stroke="#3098A8" stroke-width="3.5" opacity="0.52"/>
+
+    <!-- Blue band -->
+    <circle cx="0" cy="0" r="69" fill="none" stroke="#3078D0" stroke-width="14" opacity="0.1"/>
+    <circle cx="0" cy="0" r="65" fill="none" stroke="#3078D0" stroke-width="7" opacity="0.26"/>
+    <circle cx="0" cy="0" r="63" fill="none" stroke="#3078D0" stroke-width="4" opacity="0.55"/>
+
+    <!-- Indigo band -->
+    <circle cx="0" cy="0" r="50" fill="none" stroke="#4850C0" stroke-width="14" opacity="0.1"/>
+    <circle cx="0" cy="0" r="46" fill="none" stroke="#4850C0" stroke-width="7" opacity="0.26"/>
+    <circle cx="0" cy="0" r="44" fill="none" stroke="#4850C0" stroke-width="3.5" opacity="0.55"/>
+
+    <!-- Violet band -->
+    <circle cx="0" cy="0" r="34" fill="none" stroke="#6848B0" stroke-width="14" opacity="0.11"/>
+    <circle cx="0" cy="0" r="30" fill="none" stroke="#6848B0" stroke-width="7" opacity="0.28"/>
+    <circle cx="0" cy="0" r="28" fill="none" stroke="#6848B0" stroke-width="4" opacity="0.58"/>
+
+    <!-- Deep violet core -->
+    <circle cx="0" cy="0" r="20" fill="none" stroke="#5838A0" stroke-width="11" opacity="0.13"/>
+    <circle cx="0" cy="0" r="17" fill="none" stroke="#5838A0" stroke-width="5.5" opacity="0.32"/>
+    <circle cx="0" cy="0" r="15" fill="none" stroke="#5838A0" stroke-width="3" opacity="0.58"/>
+
+    <!-- Center dot (dark violet on white) -->
+    <circle cx="0" cy="0" r="11" fill="#5838A0" opacity="0.03"/>
+    <circle cx="0" cy="0" r="8.5" fill="#5838A0" opacity="0.06"/>
+    <circle cx="0" cy="0" r="6" fill="#5838A0" opacity="0.12"/>
+    <circle cx="0" cy="0" r="4" fill="#4030A0" opacity="0.3"/>
+    <circle cx="0" cy="0" r="2.2" fill="#3828A0" opacity="0.6"/>
+    <circle cx="0" cy="0" r="1" fill="#2020A0" opacity="0.85"/>
+  </g>
+</svg>
