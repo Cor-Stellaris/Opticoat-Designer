@@ -136,7 +136,7 @@ server/
 - **Free (Explorer)**: 1 stack, 6 layers, 3 saves, no optimizer
 - **Starter (Designer)**: $49/mo — 3 stacks, 15 layers, target optimizer
 - **Professional (Engineer)**: $149/mo — unlimited, all features
-- **Enterprise (Production)**: $349/mo — team workspaces, API access
+- **Enterprise (Production)**: $599/mo — team workspaces, 5 seats included, API access
 
 ### Prisma v7 Note
 Prisma 7 removed `url` from `datasource` block in schema.prisma. The connection URL is in `prisma/prisma.config.ts` instead. Use `env("DATABASE_URL")`.

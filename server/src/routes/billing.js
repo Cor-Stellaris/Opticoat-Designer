@@ -37,10 +37,24 @@ router.post('/checkout', ...requireUser, async (req, res) => {
       });
     }
 
+    // Build line items — Enterprise includes per-seat add-on for seats beyond 5
+    const lineItems = [{ price: priceId, quantity: 1 }];
+
+    if (tier === 'enterprise') {
+      const seats = parseInt(req.body.seats) || 5; // default 5 included
+      const extraSeats = Math.max(0, seats - 5);   // 5 seats included in base price
+      if (extraSeats > 0) {
+        const seatPriceId = STRIPE_PRICES.enterpriseSeat[interval];
+        if (seatPriceId) {
+          lineItems.push({ price: seatPriceId, quantity: extraSeats });
+        }
+      }
+    }
+
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: lineItems,
       success_url: `${process.env.FRONTEND_URL}?billing=success`,
       cancel_url: `${process.env.FRONTEND_URL}?billing=cancelled`,
       metadata: { userId: req.user.id },

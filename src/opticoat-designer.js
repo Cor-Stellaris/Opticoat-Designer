@@ -14595,7 +14595,7 @@ const ThinFilmDesigner = () => {
                       { key: 'free', name: 'Explorer', price: 'Free', sub: 'Get started' },
                       { key: 'starter', name: 'Starter', price: '$49/mo', sub: 'Individual engineers' },
                       { key: 'professional', name: 'Professional', price: '$149/mo', sub: 'Full-featured' },
-                      { key: 'enterprise', name: 'Enterprise', price: '$349/mo', sub: 'For teams' },
+                      { key: 'enterprise', name: 'Enterprise', price: '$599/mo', sub: 'For teams' },
                     ].map((tier) => (
                       <th key={tier.key} style={{ position: 'sticky', top: 0, background: theme.surface, zIndex: 2, textAlign: 'center', padding: '10px 8px 6px', width: '20%', verticalAlign: 'bottom' }}>
                         <div style={{ position: 'relative', paddingTop: tier.key === 'professional' ? 6 : 0 }}>

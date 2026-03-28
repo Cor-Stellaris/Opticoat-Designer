@@ -156,6 +156,10 @@ const STRIPE_PRICES = {
     monthly: process.env.STRIPE_ENTERPRISE_MONTHLY_PRICE_ID,
     annual: process.env.STRIPE_ENTERPRISE_ANNUAL_PRICE_ID,
   },
+  enterpriseSeat: {
+    monthly: process.env.STRIPE_ENTERPRISE_SEAT_MONTHLY_PRICE_ID,
+    annual: process.env.STRIPE_ENTERPRISE_SEAT_ANNUAL_PRICE_ID,
+  },
 };
 
 module.exports = { TIER_LIMITS, STRIPE_PRICES };
