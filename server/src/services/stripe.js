@@ -28,4 +28,9 @@ function getTierFromPriceId(priceId) {
   return tier;
 }
 
-module.exports = { stripe, getTierFromPriceId };
+// Check if a price ID is the LUMI AI add-on
+function isLumiAddonPriceId(priceId) {
+  return priceId && priceId === process.env.STRIPE_LUMI_ADDON_MONTHLY_PRICE_ID;
+}
+
+module.exports = { stripe, getTierFromPriceId, isLumiAddonPriceId };

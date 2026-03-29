@@ -10,11 +10,14 @@ model User {
   id               String   @id @default(cuid())
   clerkId          String   @unique
   email            String   @unique
-  tier             String   @default("free") // free, starter, professional, enterprise
-  stripeCustomerId String?  @unique
-  organizationId   String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  tier                  String    @default("free") // free, starter, professional, enterprise
+  stripeCustomerId      String?   @unique
+  organizationId        String?
+  lumiAddonActive       Boolean   @default(false)
+  lumiMessagesUsed      Int       @default(0)
+  lumiBillingCycleStart DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   designs         Design[]
   customMaterials CustomMaterial[]

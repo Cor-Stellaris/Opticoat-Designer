@@ -1,3 +1,7 @@
+// LUMI AI add-on constants
+const LUMI_ADDON_MESSAGE_LIMIT = 100;
+const LUMI_ADDON_PRICE_DISPLAY = '$19/mo';
+
 const TIER_LIMITS = {
   free: {
     maxStacks: 1,
@@ -65,7 +69,8 @@ const TIER_LIMITS = {
     teamCollaboration: false,
     maxTeams: 0,
     maxTeamSeats: 0,
-    aiChat: false,
+    aiChat: 'addon',                    // Available via $19/mo add-on
+    maxChatMessagesPerMonth: LUMI_ADDON_MESSAGE_LIMIT,
     maxChatMessagesPerDay: 0,
     coatingTemplates: 'all',
   },
@@ -160,6 +165,9 @@ const STRIPE_PRICES = {
     monthly: process.env.STRIPE_ENTERPRISE_SEAT_MONTHLY_PRICE_ID,
     annual: process.env.STRIPE_ENTERPRISE_SEAT_ANNUAL_PRICE_ID,
   },
+  lumiAddon: {
+    monthly: process.env.STRIPE_LUMI_ADDON_MONTHLY_PRICE_ID,
+  },
 };
 
-module.exports = { TIER_LIMITS, STRIPE_PRICES };
+module.exports = { TIER_LIMITS, STRIPE_PRICES, LUMI_ADDON_MESSAGE_LIMIT, LUMI_ADDON_PRICE_DISPLAY };

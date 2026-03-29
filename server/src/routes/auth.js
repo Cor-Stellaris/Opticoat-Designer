@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { requireUser, prisma } = require('../middleware/auth');
-const { TIER_LIMITS } = require('../services/tierLimits');
+const { TIER_LIMITS, LUMI_ADDON_MESSAGE_LIMIT } = require('../services/tierLimits');
 const { stripe } = require('../services/stripe');
 
 // POST /api/auth/sync — Sync Clerk user to local DB (called on frontend login)
@@ -55,6 +55,12 @@ router.get('/tier', ...requireUser, async (req, res) => {
     organizationId: req.user.organizationId || null,
     limits,
     trial,
+    lumiAddon: {
+      active: req.user.lumiAddonActive || false,
+      messagesUsed: req.user.lumiMessagesUsed || 0,
+      messageLimit: LUMI_ADDON_MESSAGE_LIMIT,
+      billingCycleStart: req.user.lumiBillingCycleStart || null,
+    },
   });
 });
 

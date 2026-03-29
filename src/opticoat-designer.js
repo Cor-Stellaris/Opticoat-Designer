@@ -1298,6 +1298,8 @@ const ThinFilmDesigner = () => {
   const [chatStreaming, setChatStreaming] = useState(false);
   const chatEndRef = useRef(null);
   const chatAbortRef = useRef(null);
+  const [lumiAddon, setLumiAddon] = useState({ active: false, messagesUsed: 0, messageLimit: 100 });
+  const [showLumiAddonPrompt, setShowLumiAddonPrompt] = useState(false);
 
   // Toast notification state (replaces browser alert())
   const [toasts, setToasts] = useState([]);
@@ -1521,6 +1523,7 @@ const ThinFilmDesigner = () => {
           setUserTier(data.tier || 'free');
           setTierLimits(data.limits || FREE_TIER_LIMITS);
           setTrialInfo(data.trial || null);
+          setLumiAddon(data.lumiAddon || { active: false, messagesUsed: 0, messageLimit: 100 });
         }
       } catch (e) {
         console.warn('Failed to fetch tier:', e);
@@ -1631,7 +1634,17 @@ const ThinFilmDesigner = () => {
 
   // AI Chat: send message with streaming
   const sendChatMessage = async () => {
-    if (!requireFeature('aiChat', 'Lumi AI Assistant')) return;
+    // Custom LUMI access check (handles 'addon' tier value)
+    const aiChatAccess = tierLimits.aiChat;
+    if (aiChatAccess === false) {
+      setUpgradeFeature('Lumi AI Assistant');
+      setShowUpgradePrompt(true);
+      return;
+    }
+    if (aiChatAccess === 'addon' && !lumiAddon.active) {
+      setShowLumiAddonPrompt(true);
+      return;
+    }
     const trimmed = chatInput.trim();
     if (!trimmed || chatStreaming) return;
 
@@ -1675,6 +1688,10 @@ const ThinFilmDesigner = () => {
         () => {
           setChatStreaming(false);
           chatAbortRef.current = null;
+          // Increment local counter for add-on users
+          if (aiChatAccess === 'addon') {
+            setLumiAddon(prev => ({ ...prev, messagesUsed: prev.messagesUsed + 1 }));
+          }
         },
         (error) => {
           setChatMessages(prev => {
@@ -15032,7 +15049,7 @@ const ThinFilmDesigner = () => {
                   {/* Section header */}
                   <tr><td colSpan={5} className="pt-4 pb-1 px-2 text-xs font-bold text-gray-800 uppercase tracking-wider border-b border-gray-200">Advanced</td></tr>
                   {[
-                    { label: 'Lumi AI Assistant', values: [false, false, true, true] },
+                    { label: 'Lumi AI Assistant', values: [false, '$19/mo add-on (100 msgs)', 'Unlimited', 'Unlimited'] },
                     { label: 'IAD Modeling', values: [false, false, true, true] },
                     { label: 'User Seats', values: ['\u2014', '\u2014', '\u2014', `5 (+${billingInterval === 'monthly' ? '$69/mo' : '$749/yr'}/seat)`] },
                     { label: 'API Access', values: [false, false, false, true] },
@@ -15044,6 +15061,8 @@ const ThinFilmDesigner = () => {
                         <td key={j} className="py-1.5 px-2 text-center text-xs">
                           {v === true ? <span style={{ color: theme.success, fontWeight: 600 }}>&#10003;</span>
                            : v === false ? <span style={{ color: theme.textMuted }}>{'\u2717'}</span>
+                           : typeof v === 'string' && v.includes('add-on') ? <span style={{ color: '#6366f1', fontWeight: 600, fontSize: '10px' }}>{v}</span>
+                           : v === 'Unlimited' ? <span style={{ color: theme.success, fontWeight: 600 }}>{v}</span>
                            : <span className="text-gray-600">{v}</span>}
                         </td>
                       ))}
@@ -15244,11 +15263,56 @@ const ThinFilmDesigner = () => {
         </div>
       )}
 
+      {/* ========== LUMI ADD-ON PROMPT MODAL ========== */}
+      {showLumiAddonPrompt && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div style={{ background: theme.surface, borderRadius: '12px', padding: '28px', width: '380px', textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', border: `1px solid ${theme.border}` }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #06b6d4)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}>
+              <Zap size={24} style={{ color: '#fff' }} />
+            </div>
+            <h3 style={{ fontSize: '18px', fontWeight: 700, color: theme.textPrimary, marginBottom: '8px' }}>Unlock Lumi AI</h3>
+            <p style={{ fontSize: '13px', color: theme.textSecondary, marginBottom: '6px', lineHeight: '1.5' }}>
+              Add AI-powered design assistance to your Starter plan.
+            </p>
+            <p style={{ fontSize: '13px', color: theme.textSecondary, marginBottom: '20px', lineHeight: '1.5' }}>
+              <strong style={{ color: theme.textPrimary }}>$19/month</strong> — 100 expert consultations per month with full design context.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
+              <button
+                onClick={() => setShowLumiAddonPrompt(false)}
+                style={{ padding: '8px 18px', fontSize: '13px', color: theme.textSecondary, background: 'transparent', border: `1px solid ${theme.border}`, borderRadius: '6px', cursor: 'pointer' }}
+              >Not now</button>
+              <button
+                onClick={async () => {
+                  setShowLumiAddonPrompt(false);
+                  try {
+                    const data = await apiPost('/api/billing/lumi-addon', {});
+                    if (data.url) window.location.href = data.url;
+                  } catch (err) {
+                    showToast(err.message || 'Failed to start checkout', 'error');
+                  }
+                }}
+                style={{
+                  padding: '8px 18px', fontSize: '13px', fontWeight: 600, color: '#fff',
+                  background: 'linear-gradient(135deg, #6366f1, #4f46e5)', border: 'none', borderRadius: '6px', cursor: 'pointer',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'linear-gradient(135deg, #4f46e5, #4338ca)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'linear-gradient(135deg, #6366f1, #4f46e5)'; }}
+              >Add Lumi — $19/mo</button>
+            </div>
+            <p style={{ fontSize: '11px', color: theme.textMuted, marginTop: '14px' }}>
+              Or <span style={{ color: theme.accentText, cursor: 'pointer', textDecoration: 'underline' }} onClick={() => { setShowLumiAddonPrompt(false); setShowPricingModal(true); }}>upgrade to Professional</span> for unlimited access.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ========== LUMI CHAT BADGE ========== */}
       {!chatOpen && (
         <button
           onClick={() => {
             if (CLERK_ENABLED && !isSignedIn) { setUpgradeFeature('Lumi AI Assistant'); setShowUpgradePrompt(true); return; }
+            if (userTier === 'starter' && !lumiAddon.active) { setShowLumiAddonPrompt(true); return; }
             setChatOpen(true);
           }}
           style={{
@@ -15325,6 +15389,19 @@ const ThinFilmDesigner = () => {
                 <span style={{ fontSize: '11px', color: theme.textMuted, fontWeight: 400 }}>AI Design Assistant</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                {lumiAddon.active && tierLimits.aiChat === 'addon' && (
+                  <span style={{
+                    fontSize: '10px',
+                    fontWeight: 600,
+                    color: (lumiAddon.messageLimit - lumiAddon.messagesUsed) <= 10 ? '#ef4444' : theme.textMuted,
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    background: darkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+                    marginRight: '4px',
+                  }}>
+                    {lumiAddon.messageLimit - lumiAddon.messagesUsed} left
+                  </span>
+                )}
                 <button
                   onClick={() => {
                     setChatOpen(false);
