@@ -133,10 +133,10 @@ server/
 ```
 
 ### Subscription Tiers
-- **Free (Explorer)**: 1 stack, 6 layers, 3 saves, no optimizer
-- **Starter (Designer)**: $49/mo — 3 stacks, 15 layers, target optimizer
-- **Professional (Engineer)**: $149/mo — unlimited, all features
-- **Enterprise (Production)**: $599/mo — team workspaces, 5 seats included, API access
+- **Free (Explorer)**: 1 stack, 3 layers, 1 save, no optimizer, no Lumi
+- **Starter (Designer)**: $49/mo — 3 stacks, 15 layers, 25 saves, target optimizer, no Lumi
+- **Professional (Engineer)**: $149/mo — unlimited stacks/saves, 50 layers, all features, Lumi AI, 7-day trial
+- **Enterprise (Production)**: $599/mo — 100 layers, team workspaces, 5 seats included, API access, Lumi AI
 
 ### Prisma v7 Note
 Prisma 7 removed `url` from `datasource` block in schema.prisma. The connection URL is in `prisma/prisma.config.ts` instead. Use `env("DATABASE_URL")`.

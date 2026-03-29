@@ -21,7 +21,7 @@ router.get('/', ...requireUser, async (req, res) => {
 router.post('/', ...requireUser, async (req, res) => {
   try {
     // Check tier limit
-    const limits = TIER_LIMITS[req.user.tier] || TIER_LIMITS.free;
+    const limits = TIER_LIMITS[req.user.effectiveTier || req.user.tier] || TIER_LIMITS.free;
     if (limits.maxCustomMaterials === 0) {
       return res.status(403).json({
         error: 'Custom materials not available on your plan',

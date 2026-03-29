@@ -20,7 +20,7 @@ router.get('/', ...requireUser, async (req, res) => {
 // POST /api/machines — Create a machine
 router.post('/', ...requireUser, async (req, res) => {
   try {
-    const limits = TIER_LIMITS[req.user.tier] || TIER_LIMITS.free;
+    const limits = TIER_LIMITS[req.user.effectiveTier || req.user.tier] || TIER_LIMITS.free;
     if (limits.maxMachines === 0) {
       return res.status(403).json({
         error: 'Machines not available on your plan',

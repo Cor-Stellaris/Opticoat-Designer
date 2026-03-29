@@ -132,7 +132,7 @@ const TIER_LIMITS = {
     trackingExportPng: true,
     trackingExportCsv: true,
     trackingRunComparison: true,
-    teamCollaboration: false,
+    teamCollaboration: true,
     maxSeats: 5,                      // 5 seats included
     additionalSeatPrice: 69,          // +$69 per additional seat
     apiAccess: true,

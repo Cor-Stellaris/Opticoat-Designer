@@ -45,7 +45,7 @@ router.get('/:id', ...requireUser, async (req, res) => {
 router.post('/', ...requireUser, async (req, res) => {
   try {
     // Check tier limit
-    const limits = TIER_LIMITS[req.user.tier] || TIER_LIMITS.free;
+    const limits = TIER_LIMITS[req.user.effectiveTier || req.user.tier] || TIER_LIMITS.free;
     if (limits.maxSavedDesigns !== -1) {
       const count = await prisma.design.count({ where: { userId: req.user.id } });
       if (count >= limits.maxSavedDesigns) {
@@ -93,8 +93,8 @@ router.put('/:id', ...requireUser, async (req, res) => {
     const design = await prisma.design.update({
       where: { id: req.params.id },
       data: {
-        ...(name && { name }),
-        ...(data && { data }),
+        ...(name !== undefined && { name }),
+        ...(data !== undefined && { data }),
       },
     });
 

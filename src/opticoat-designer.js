@@ -1031,8 +1031,37 @@ function computeReflectivityFromData(designData, customMats = {}) {
   return result;
 }
 
+// Splash screen ring data — matches the SVG icon color bands (outer → inner)
+const SPLASH_RINGS = [
+  { color: '#C83040', size: 380, bw: 10, glow: 'rgba(200,48,64,0.3)' },
+  { color: '#E84848', size: 346, bw: 9,  glow: 'rgba(232,72,72,0.3)' },
+  { color: '#F07830', size: 310, bw: 9,  glow: 'rgba(240,120,48,0.3)' },
+  { color: '#F09828', size: 276, bw: 8,  glow: 'rgba(240,152,40,0.3)' },
+  { color: '#E8D028', size: 242, bw: 8,  glow: 'rgba(232,208,40,0.3)' },
+  { color: '#60C048', size: 208, bw: 8,  glow: 'rgba(96,192,72,0.3)' },
+  { color: '#38B0C0', size: 172, bw: 7,  glow: 'rgba(56,176,192,0.3)' },
+  { color: '#3888E0', size: 138, bw: 7,  glow: 'rgba(56,136,224,0.35)' },
+  { color: '#5060D8', size: 104, bw: 7,  glow: 'rgba(80,96,216,0.35)' },
+  { color: '#7858C8', size: 70,  bw: 6,  glow: 'rgba(120,88,200,0.35)' },
+  { color: '#6040B0', size: 40,  bw: 6,  glow: 'rgba(96,64,176,0.4)' },
+];
+
 const ThinFilmDesigner = () => {
   const [activeTab, setActiveTab] = useState("designer");
+
+  // Splash screen state: 'idle' → 'expanding' → null
+  const [splashPhase, setSplashPhase] = useState('idle');
+
+  useEffect(() => {
+    if (splashPhase === 'idle') {
+      const expandTimer = setTimeout(() => setSplashPhase('expanding'), 1400);
+      return () => clearTimeout(expandTimer);
+    }
+    if (splashPhase === 'expanding') {
+      const removeTimer = setTimeout(() => setSplashPhase(null), 1700);
+      return () => clearTimeout(removeTimer);
+    }
+  }, [splashPhase]);
 
   // Dark mode state — persisted to localStorage, synced to <html> class
   const [darkMode, setDarkMode] = useState(() => {
@@ -1546,6 +1575,9 @@ const ThinFilmDesigner = () => {
   const [workspaceDataCache, setWorkspaceDataCache] = useState({});
   const [showReplaceConfirmDialog, setShowReplaceConfirmDialog] = useState(null);
   const [pendingReplaceData, setPendingReplaceData] = useState(null);
+  // Track the currently-loaded workspace for Save vs Save-as-New
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
+  const [activeWorkspaceName, setActiveWorkspaceName] = useState('');
 
   // Upgrade prompt state
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false);
@@ -1868,7 +1900,7 @@ const ThinFilmDesigner = () => {
             // L12 = i*sin(δ)/N - requires complex division then multiply by i
             const nMagSq = nr * nr + ni * ni;
             // sin(δ)/N = (sinDr + i*sinDi) * (nr + i*ni) / |N|²
-            const sinOverN_r = (sinDr * nr - sinDi * (-ni)) / nMagSq;
+            const sinOverN_r = (sinDr * nr - sinDi * ni) / nMagSq;
             const sinOverN_i = (sinDr * ni + sinDi * nr) / nMagSq;
             // Multiply by i: i*(a + ib) = -b + ia
             const L12r = -sinOverN_i;
@@ -4754,7 +4786,23 @@ const ThinFilmDesigner = () => {
   }, [workspaceDataCache]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Full workspace replace (after confirmation)
-  const executeWorkspaceReplace = useCallback(async (d) => {
+  // Migrate workspace data from older versions to current format
+  const migrateWorkspaceData = (data) => {
+    if (!data) return data;
+    const d = { ...data };
+    if (!d.version) d.version = 1;
+    if (d.version < 2) {
+      d.layerStacks = d.layerStacks || [];
+      d.trackingRuns = d.trackingRuns || [];
+      d.customMaterials = d.customMaterials || {};
+      d.version = 2;
+    }
+    // Future migrations: if (d.version < 3) { ... d.version = 3; }
+    return d;
+  };
+
+  const executeWorkspaceReplace = useCallback(async (rawData, designMeta) => {
+    const d = migrateWorkspaceData(rawData);
     if (!d) return;
     isUpdatingStackRef.current = true;
 
@@ -4782,6 +4830,12 @@ const ThinFilmDesigner = () => {
     const activeLayers = d.layers || (d.layerStacks?.find(s => s.id === d.currentStackId)?.layers) || [];
     prevLayersRef.current = JSON.stringify(activeLayers);
 
+    // Track the loaded workspace for Save vs Save-as-New
+    if (designMeta) {
+      setActiveWorkspaceId(designMeta.id || null);
+      setActiveWorkspaceName(designMeta.name || '');
+    }
+
     Promise.resolve().then(() => { isUpdatingStackRef.current = false; });
 
     setShowReplaceConfirmDialog(null);
@@ -4791,51 +4845,89 @@ const ThinFilmDesigner = () => {
     showToast('Workspace loaded', 'success');
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSaveWorkspace = useCallback(async (name) => {
-    if (!name.trim()) return;
-    if (!checkLimit('maxSavedDesigns', savedDesigns.length, 'Saved Workspaces')) return;
-    const workspaceData = {
-      version: 2,
-      layers, layerStacks, currentStackId, machines, currentMachineId,
+  // Build current workspace data snapshot
+  const buildWorkspaceData = useCallback(() => ({
+    version: 2,
+    layers, layerStacks, currentStackId, machines, currentMachineId,
+    substrate, incident, wavelengthRange, recipes, targets, trackingRuns,
+    designPoints, designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate,
+    displayMode, selectedIlluminant, customMaterials,
+  }), [layers, layerStacks, currentStackId, machines, currentMachineId,
       substrate, incident, wavelengthRange, recipes, targets, trackingRuns,
       designPoints, designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate,
-      displayMode, selectedIlluminant, customMaterials,
-    };
+      displayMode, selectedIlluminant, customMaterials]);
+
+  // Save workspace — supports overwrite (PUT) and save-as-new (POST) with dual cloud+local backup
+  const handleSaveWorkspace = useCallback(async (name, overwriteId) => {
+    if (!name.trim()) return;
+    // Only check limit for new saves, not overwrites
+    if (!overwriteId && !checkLimit('maxSavedDesigns', savedDesigns.length, 'Saved Workspaces')) return;
+    const workspaceData = buildWorkspaceData();
+    const trimmedName = name.trim();
+    let cloudId = overwriteId || null;
+
     try {
       if (isSignedIn) {
-        await apiPost('/api/designs', { name: name.trim(), data: workspaceData });
-      } else {
-        await saveDesignLocally({
-          id: 'local_' + Date.now(),
-          name: name.trim(),
-          data: workspaceData,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
+        if (overwriteId) {
+          // Overwrite existing workspace via PUT
+          const result = await apiPut(`/api/designs/${overwriteId}`, { name: trimmedName, data: workspaceData });
+          cloudId = result.id || overwriteId;
+        } else {
+          // Create new workspace via POST
+          const result = await apiPost('/api/designs', { name: trimmedName, data: workspaceData });
+          cloudId = result.id;
+        }
       }
+
+      // Always save a local backup (cloud + local dual save)
+      await saveDesignLocally({
+        id: cloudId || ('local_' + Date.now()),
+        name: trimmedName,
+        data: workspaceData,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Track this as the active workspace
+      setActiveWorkspaceId(cloudId);
+      setActiveWorkspaceName(trimmedName);
+
       setShowSaveWorkspaceModal(false);
       setSaveWorkspaceName('');
       loadDesignsList();
-      showToast(`Workspace "${name.trim()}" saved`, 'success');
+
+      const savedMsg = isSignedIn ? 'Workspace saved & backed up locally' : 'Workspace saved locally';
+      showToast(`"${trimmedName}" — ${savedMsg}`, 'success');
 
       // If there's a pending workspace replace (user clicked "Save First"), execute it now
       if (pendingReplaceData) {
         const design = pendingReplaceData;
         const d = workspaceDataCache[design.id] || design.data;
         if (d) {
-          setTimeout(() => executeWorkspaceReplace(d), 100);
+          setTimeout(() => executeWorkspaceReplace(d, design), 100);
         } else {
-          fetchWorkspaceData(design).then(fetched => { if (fetched) executeWorkspaceReplace(fetched); });
+          fetchWorkspaceData(design).then(fetched => { if (fetched) executeWorkspaceReplace(fetched, design); });
         }
       }
     } catch (e) {
       console.warn('Failed to save workspace:', e);
-      showToast('Failed to save: ' + e.message, 'error');
+      // If cloud save failed, try local-only save as fallback
+      try {
+        await saveDesignLocally({
+          id: 'local_' + Date.now(),
+          name: trimmedName,
+          data: workspaceData,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        showToast('Cloud save failed — saved locally only. Will sync when connection is restored.', 'error');
+        setShowSaveWorkspaceModal(false);
+        setSaveWorkspaceName('');
+      } catch (localErr) {
+        showToast('Failed to save: ' + e.message, 'error');
+      }
     }
-  }, [isSignedIn, layers, layerStacks, currentStackId, machines, currentMachineId,
-      substrate, incident, wavelengthRange, recipes, targets, designPoints,
-      designMaterials, minDesignLayers, maxDesignLayers, matchTolerance, layerTemplate, displayMode, selectedIlluminant,
-      customMaterials, loadDesignsList, checkLimit, savedDesigns, trackingRuns,
+  }, [isSignedIn, buildWorkspaceData, loadDesignsList, checkLimit, savedDesigns,
       pendingReplaceData, workspaceDataCache, executeWorkspaceReplace, fetchWorkspaceData]);
 
   // Cherry-pick: Add a machine (with its stacks) from a workspace
@@ -8026,6 +8118,87 @@ const ThinFilmDesigner = () => {
 
   return (
     <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-2 overflow-hidden">
+      {/* Splash screen */}
+      {splashPhase && (<>
+        {/* Circular reveal mask — box-shadow fills the screen, growing hole reveals the app from center */}
+        <div style={{
+          position: 'fixed', left: '50%', top: '50%', zIndex: 99997,
+          borderRadius: '50%',
+          boxShadow: '0 0 0 100vmax #080818',
+          width: 0, height: 0,
+          animation: splashPhase === 'expanding'
+            ? 'splashRevealHole 1.3s cubic-bezier(0.22, 0, 0.15, 1) 0.35s forwards'
+            : 'none',
+          pointerEvents: 'none',
+        }} />
+
+        {/* Ring container — each ring expands individually */}
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 99998,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          pointerEvents: 'none',
+        }}>
+          {SPLASH_RINGS.map((ring, i) => (
+            <div key={i} style={{
+              position: 'absolute',
+              width: ring.size, height: ring.size,
+              borderRadius: '50%',
+              border: `${ring.bw}px solid ${ring.color}`,
+              opacity: 0.5 + i * 0.03,
+              boxShadow: `0 0 ${8 + (10 - i) * 2}px ${ring.glow}, inset 0 0 ${4 + (10 - i)}px ${ring.glow}`,
+              animation: splashPhase === 'expanding'
+                ? `splashRingExpand ${0.7 + i * 0.04}s cubic-bezier(0.3, 0, 0.15, 1) ${i * 0.05}s forwards`
+                : 'splashPulse 2.5s ease-in-out infinite',
+            }} />
+          ))}
+          {/* Center white glow */}
+          <div style={{
+            position: 'absolute', width: 16, height: 16, borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.3) 50%, transparent 100%)',
+            boxShadow: '0 0 20px rgba(255,255,255,0.4)',
+            opacity: splashPhase === 'expanding' ? 0 : 1,
+            transition: 'opacity 0.2s',
+          }} />
+        </div>
+
+        {/* Text overlay — positioned below the rings */}
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 99999,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          paddingTop: '300px',
+          pointerEvents: 'none',
+          opacity: splashPhase === 'expanding' ? 0 : 1,
+          transition: 'opacity 0.25s ease-out',
+        }}>
+          <div style={{
+            fontSize: '3.6rem', fontWeight: 700, letterSpacing: '-0.02em',
+            color: '#e0e7ff', textAlign: 'center', whiteSpace: 'nowrap',
+          }}>
+            OptiCoat Designer
+          </div>
+          <div style={{
+            fontSize: '1.1rem', fontWeight: 400, letterSpacing: '0.18em',
+            textTransform: 'uppercase', color: '#818cf8', opacity: 0.85,
+            whiteSpace: 'nowrap', marginTop: '0.6rem',
+          }}>
+            Thin-Film Optical Coating Design
+          </div>
+        </div>
+
+        <style>{`
+          @keyframes splashRingExpand {
+            to { transform: scale(28); opacity: 0; }
+          }
+          @keyframes splashRevealHole {
+            from { width: 0; height: 0; margin-left: 0; margin-top: 0; }
+            to { width: 300vmax; height: 300vmax; margin-left: -150vmax; margin-top: -150vmax; }
+          }
+          @keyframes splashPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.03); }
+          }
+        `}</style>
+      </>)}
       {/* Toast notifications */}
       {toasts.length > 0 && (
         <div style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '0.5rem', maxWidth: '420px' }}>
@@ -9491,6 +9664,9 @@ const ThinFilmDesigner = () => {
                     </div>
                     <div className="mt-2 text-[9px] text-gray-500">
                       Toggle to show/hide angle curves on chart
+                    </div>
+                    <div className="mt-1 text-[8px]" style={{ color: darkMode ? '#6b7280' : '#9ca3af', lineHeight: 1.3 }}>
+                      Note: Angle calculations use real refractive indices. Normal incidence (0°) includes full complex treatment for absorbing materials.
                     </div>
                   </details>
 
@@ -14447,24 +14623,44 @@ const ThinFilmDesigner = () => {
       {/* ========== SAVE WORKSPACE MODAL ========== */}
       {showSaveWorkspaceModal && (
         <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'rgba(0,0,0,0.5)' }}>
-          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 400, boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 420, boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 4 }}>Save Workspace</h3>
-            <p style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 16 }}>Saves all machines, layer stacks, materials, optimizer targets, and settings.</p>
+            <p style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 16 }}>Saves all machines, layer stacks, materials, optimizer targets, and settings.{isSignedIn ? ' A local backup is also saved automatically.' : ''}</p>
+
+            {/* If working on a loaded workspace, show overwrite option */}
+            {activeWorkspaceId && (
+              <div style={{ background: theme.surfaceAlt || (darkMode ? '#1a1a2e' : '#f0f4ff'), border: `1px solid ${theme.border}`, borderRadius: 8, padding: '10px 12px', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 4 }}>Currently editing:</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: theme.textPrimary, marginBottom: 8 }}>{activeWorkspaceName}</div>
+                <button
+                  onClick={() => handleSaveWorkspace(activeWorkspaceName, activeWorkspaceId)}
+                  style={{ padding: '6px 14px', fontSize: 12, background: theme.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, width: '100%' }}
+                >Save (Overwrite Current)</button>
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, fontWeight: 600, color: theme.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+              {activeWorkspaceId ? 'Or save as a new workspace:' : 'Workspace name:'}
+            </div>
             <input
               type="text"
-              placeholder="Workspace name..."
+              placeholder="New workspace name..."
               value={saveWorkspaceName}
               onChange={(e) => setSaveWorkspaceName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveWorkspace(saveWorkspaceName); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && saveWorkspaceName.trim()) handleSaveWorkspace(saveWorkspaceName); }}
               style={{ width: '100%', padding: '8px 12px', border: `1px solid ${theme.inputBorder}`, borderRadius: 6, fontSize: 13, background: theme.inputBg, color: theme.inputText, marginBottom: 12, boxSizing: 'border-box' }}
-              autoFocus
+              autoFocus={!activeWorkspaceId}
             />
             {!isSignedIn && (
-              <p style={{ fontSize: 11, color: '#d97706', marginBottom: 12 }}>Saving locally. Sign in to save to the cloud.</p>
+              <p style={{ fontSize: 11, color: '#d97706', marginBottom: 12 }}>Saving locally only. Sign in to also save to the cloud.</p>
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button onClick={() => setShowSaveWorkspaceModal(false)} style={{ padding: '6px 16px', fontSize: 13, color: theme.textSecondary, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
-              <button onClick={() => handleSaveWorkspace(saveWorkspaceName)} style={{ padding: '6px 16px', fontSize: 13, background: theme.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Save</button>
+              <button onClick={() => { setShowSaveWorkspaceModal(false); setPendingReplaceData(null); }} style={{ padding: '6px 16px', fontSize: 13, color: theme.textSecondary, background: 'none', border: 'none', cursor: 'pointer' }}>Cancel</button>
+              <button
+                onClick={() => handleSaveWorkspace(saveWorkspaceName)}
+                disabled={!saveWorkspaceName.trim()}
+                style={{ padding: '6px 16px', fontSize: 13, background: saveWorkspaceName.trim() ? theme.accent : (darkMode ? '#333' : '#ccc'), color: '#fff', border: 'none', borderRadius: 6, cursor: saveWorkspaceName.trim() ? 'pointer' : 'not-allowed', fontWeight: 600 }}
+              >Save as New</button>
             </div>
           </div>
         </div>
@@ -14638,9 +14834,9 @@ const ThinFilmDesigner = () => {
                   const d = workspaceDataCache[design.id] || design.data;
                   if (!d) {
                     const fetched = await fetchWorkspaceData(design);
-                    if (fetched) executeWorkspaceReplace(fetched);
+                    if (fetched) executeWorkspaceReplace(fetched, design);
                   } else {
-                    executeWorkspaceReplace(d);
+                    executeWorkspaceReplace(d, design);
                   }
                 }}
                 style={{ padding: '6px 14px', fontSize: 12, color: '#fff', background: '#dc2626', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}

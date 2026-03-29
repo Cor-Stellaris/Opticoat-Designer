@@ -7,7 +7,7 @@ const { TIER_LIMITS } = require('../services/tierLimits');
 router.get('/runs', ...requireUser, async (req, res) => {
   try {
     // Check tier access
-    const limits = TIER_LIMITS[req.user.tier] || TIER_LIMITS.free;
+    const limits = TIER_LIMITS[req.user.effectiveTier || req.user.tier] || TIER_LIMITS.free;
     if (!limits.recipeTracking) {
       return res.status(403).json({
         error: 'Recipe tracking not available on your plan',
@@ -38,7 +38,7 @@ router.get('/runs', ...requireUser, async (req, res) => {
 // POST /api/tracking/runs — Upload tracking run(s)
 router.post('/runs', ...requireUser, async (req, res) => {
   try {
-    const limits = TIER_LIMITS[req.user.tier] || TIER_LIMITS.free;
+    const limits = TIER_LIMITS[req.user.effectiveTier || req.user.tier] || TIER_LIMITS.free;
     if (!limits.recipeTracking) {
       return res.status(403).json({
         error: 'Recipe tracking not available on your plan',

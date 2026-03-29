@@ -187,6 +187,16 @@ router.post('/webhook', async (req, res) => {
         break;
       }
 
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object;
+        if (invoice.customer) {
+          // Stripe retries failed payments 3 times over ~3 weeks.
+          // The subscription.updated handler covers downgrade when status becomes past_due.
+          console.log(`[BILLING] Payment failed for customer ${invoice.customer} — attempt ${invoice.attempt_count}`);
+        }
+        break;
+      }
+
       default:
         // Unhandled event type
         break;
