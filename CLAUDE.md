@@ -133,7 +133,7 @@ server/
 ```
 
 ### Subscription Tiers
-- **Free (Explorer)**: 1 stack, 3 layers, 1 save, no optimizer, no Lumi
+- **Free (Explorer)**: 1 stack, 5 layers, 1 save, no optimizer, no Lumi
 - **Starter (Designer)**: $49/mo — 3 stacks, 15 layers, 25 saves, target optimizer, no Lumi
 - **Professional (Engineer)**: $149/mo — unlimited stacks/saves, 50 layers, all features, Lumi AI, 7-day trial
 - **Enterprise (Production)**: $599/mo — 100 layers, team workspaces, 5 seats included, API access, Lumi AI

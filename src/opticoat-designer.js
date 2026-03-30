@@ -105,7 +105,7 @@ const TIER_ORDER = { free: 0, starter: 1, professional: 2, enterprise: 3 };
 // DEV MODE: All features unlocked for testing. Restore original limits before production.
 // Must match server/src/services/tierLimits.js free tier exactly
 const FREE_TIER_LIMITS = {
-  maxStacks: 1, maxLayersPerStack: 3, maxSavedDesigns: 1, maxCustomMaterials: 0,
+  maxStacks: 1, maxLayersPerStack: 5, maxSavedDesigns: 1, maxCustomMaterials: 0,
   allowedAngles: [0],
   allowedDisplayModes: ['reflectivity', 'transmission'],
   allowedIlluminants: ['D65'],
@@ -14959,7 +14959,7 @@ const ThinFilmDesigner = () => {
                   {/* Section: Core Limits */}
                   {[
                     { label: 'Layer Stacks', values: ['1', '3', 'Unlimited', 'Unlimited'] },
-                    { label: 'Layers per Stack', values: ['3', '15', '50', '100'] },
+                    { label: 'Layers per Stack', values: ['5', '15', '50', '100'] },
                     { label: 'Cloud Saves', values: ['1', '25', 'Unlimited', 'Unlimited'] },
                     { label: 'Custom Materials', values: ['\u2014', '5', 'Unlimited', 'Unlimited'] },
                     { label: 'Machines', values: ['\u2014', '\u2014', 'Unlimited', 'Unlimited'] },

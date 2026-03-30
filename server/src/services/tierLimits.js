@@ -5,7 +5,7 @@ const LUMI_ADDON_PRICE_DISPLAY = '$19/mo';
 const TIER_LIMITS = {
   free: {
     maxStacks: 1,
-    maxLayersPerStack: 3,
+    maxLayersPerStack: 5,
     maxSavedDesigns: 1,
     maxCustomMaterials: 0,
     allowedAngles: [0],
