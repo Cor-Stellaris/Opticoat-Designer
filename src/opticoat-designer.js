@@ -8771,14 +8771,14 @@ const ThinFilmDesigner = () => {
                   )}
 
                   {/* Compact Grid Header for horizontal mode */}
-                  <div className="grid gap-x-1 bg-gray-100 p-1 rounded text-xs font-semibold text-gray-700 border-b-2 border-gray-300 flex-shrink-0 items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
-                    <div></div>
+                  <div className="grid gap-x-1 bg-gray-100 p-1 rounded text-xs font-semibold text-gray-700 border-b-2 border-gray-300 flex-shrink-0 items-center" style={{ gridTemplateColumns: (isPhone || isTablet) ? '2rem 1fr 7rem 2rem' : '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
+                    {!(isPhone || isTablet) && <div></div>}
                     <div className="text-center">#</div>
                     <div className="truncate">Material</div>
-                    <div className="px-1">Thick</div>
-                    <div>QWOT</div>
-                    <div>Last</div>
-                    <div>Orig</div>
+                    <div className="px-1">{(isPhone || isTablet) ? 'nm' : 'Thick'}</div>
+                    {!(isPhone || isTablet) && <div>QWOT</div>}
+                    {!(isPhone || isTablet) && <div>Last</div>}
+                    {!(isPhone || isTablet) && <div>Orig</div>}
                     <div></div>
                   </div>
 
@@ -8799,9 +8799,9 @@ const ThinFilmDesigner = () => {
                     ) : (
                       <>
                         {/* Substrate Row */}
-                        <div className="grid gap-x-1 p-1 bg-amber-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
-                          <div></div>
-                          <div className="text-center font-medium">S</div>
+                        <div className="grid gap-x-1 p-1 bg-amber-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: (isPhone || isTablet) ? '2rem 1fr 7rem 2rem' : '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
+                          {!(isPhone || isTablet) && <div></div>}
+                          <div className="text-center font-medium" style={{ fontSize: (isPhone || isTablet) ? 10 : undefined }}>Sub</div>
                           <div className="min-w-0 overflow-hidden">
                             <div className="flex items-center gap-1">
                               <input
@@ -8833,9 +8833,9 @@ const ThinFilmDesigner = () => {
                               title="Substrate refractive index"
                             />
                           </div>
-                          <div>-</div>
-                          <div>-</div>
-                          <div>-</div>
+                          {!(isPhone || isTablet) && <div>-</div>}
+                          {!(isPhone || isTablet) && <div>-</div>}
+                          {!(isPhone || isTablet) && <div>-</div>}
                           <div></div>
                         </div>
 
@@ -8873,7 +8873,7 @@ const ThinFilmDesigner = () => {
                                 borderLeft: layer.locked
                                   ? '3px solid #f87171'
                                   : `3px solid ${allMaterials[layer.material]?.color || '#9ca3af'}`,
-                                gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem',
+                                gridTemplateColumns: (isPhone || isTablet) ? '2rem 1fr 7rem 2rem' : '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem',
                                 transform: getDragTransform(idx, dragIndex, dragOverIndex),
                                 transition: 'transform 0.2s ease, background-color 0.15s',
                                 position: 'relative',
@@ -8884,7 +8884,7 @@ const ThinFilmDesigner = () => {
                               onMouseLeave={(e) => { e.currentTarget.style.filter = ''; }}
                               onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
                             >
-                              <div
+                              {!(isPhone || isTablet) && <div
                                 draggable
                                 onDragStart={(e) => { setDragIndex(idx); e.dataTransfer.effectAllowed = "move"; const img = new Image(); img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; e.dataTransfer.setDragImage(img, 0, 0); handleDragStartCapture(e.currentTarget.closest('[data-drag-container]')); }}
                                 className="text-gray-400 flex items-center justify-center"
@@ -8894,8 +8894,8 @@ const ThinFilmDesigner = () => {
                                 onMouseLeave={(e) => { e.currentTarget.style.color = ''; e.currentTarget.style.transform = ''; }}
                                 onMouseDown={(e) => { e.currentTarget.style.cursor = 'grabbing'; }}
                                 onMouseUp={(e) => { e.currentTarget.style.cursor = 'grab'; }}
-                              ><GripVertical size={10} /></div>
-                              <div className="text-center font-medium">{layerNum}</div>
+                              ><GripVertical size={10} /></div>}
+                              <div className="text-center font-medium" style={{ fontSize: (isPhone || isTablet) ? 11 : undefined }}>{layerNum}</div>
                               <div className="min-w-0 overflow-hidden">
                                 <div className="flex items-center gap-1">
                                   <select
@@ -8909,6 +8909,7 @@ const ThinFilmDesigner = () => {
                                       updateLayer(layer.id, "material", e.target.value);
                                     }}
                                     className="flex-1 min-w-0 px-1 py-0.5 border rounded bg-white text-xs"
+                                    style={{ fontSize: (isPhone || isTablet) ? 14 : undefined }}
                                   >
                                     {Object.keys(allMaterials).map((mat) => (
                                       <option key={mat} value={mat}>{mat}</option>
@@ -8916,7 +8917,7 @@ const ThinFilmDesigner = () => {
                                     <option disabled>──────────</option>
                                     <option value="__manage__">Manage Materials...</option>
                                   </select>
-                                  <div
+                                  {!(isPhone || isTablet) && <div
                                     className="cursor-help text-gray-400 hover:text-blue-600 flex-shrink-0"
                                     title={(() => {
                                       const mat = allMaterials[layer.material];
@@ -8936,78 +8937,38 @@ const ThinFilmDesigner = () => {
                                     })()}
                                   >
                                     <Info size={12} />
-                                  </div>
+                                  </div>}
                                 </div>
                               </div>
-                              <div>
+                              <div style={(isPhone || isTablet) ? { display: 'flex', alignItems: 'center', gap: 1 } : undefined}>
+                                {(isPhone || isTablet) && <button onTouchStart={(e) => { e.preventDefault(); startHoldRepeat(layer.id, -1); }} onTouchEnd={stopHoldRepeat} onTouchCancel={stopHoldRepeat} onMouseDown={() => startHoldRepeat(layer.id, -1)} onMouseUp={stopHoldRepeat} onMouseLeave={stopHoldRepeat} style={{ width: 22, height: 24, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '4px 0 0 4px', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0, touchAction: 'none' }}>−</button>}
                                 <input
                                   type="number"
                                   value={layer.thickness === "" ? "" : Math.round(layer.thickness * 100) / 100}
                                   onChange={(e) => updateLayer(layer.id, "thickness", e.target.value)}
-                                  className="w-full px-1 py-0.5 border rounded text-xs"
+                                  className={(isPhone || isTablet) ? "px-1 py-0.5 border-t border-b rounded-none text-xs" : "w-full px-1 py-0.5 border rounded text-xs"}
                                   step="1"
+                                  style={(isPhone || isTablet) ? { width: '100%', minWidth: 0, textAlign: 'center', fontSize: 13, borderColor: darkMode ? '#363860' : '#d1d5db' } : undefined}
+                                  inputMode={(isPhone || isTablet) ? "decimal" : undefined}
                                 />
+                                {(isPhone || isTablet) && <button onTouchStart={(e) => { e.preventDefault(); startHoldRepeat(layer.id, 1); }} onTouchEnd={stopHoldRepeat} onTouchCancel={stopHoldRepeat} onMouseDown={() => startHoldRepeat(layer.id, 1)} onMouseUp={stopHoldRepeat} onMouseLeave={stopHoldRepeat} style={{ width: 22, height: 24, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '0 4px 4px 0', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0, touchAction: 'none' }}>+</button>}
                               </div>
-                              <div className="text-[10px] truncate" title={`Optical thickness: ${(getRefractiveIndex(layer.material, qwotReference, layer.iad, layer.packingDensity || 1.0) * (layer.thickness || 0)).toFixed(1)} nm`}>
+                              {!(isPhone || isTablet) && <div className="text-[10px] truncate" title={`Optical thickness: ${(getRefractiveIndex(layer.material, qwotReference, layer.iad, layer.packingDensity || 1.0) * (layer.thickness || 0)).toFixed(1)} nm`}>
                                 {((getRefractiveIndex(layer.material, qwotReference, layer.iad, layer.packingDensity || 1.0) * (layer.thickness || 0)) / (qwotReference / 4)).toFixed(2)}
-                              </div>
-                              <div className="text-[10px] text-gray-600 truncate">
+                              </div>}
+                              {!(isPhone || isTablet) && <div className="text-[10px] text-gray-600 truncate">
                                 {layer.lastThickness ? layer.lastThickness.toFixed(1) : "-"}
-                              </div>
-                              <div className="text-[10px] text-gray-600 truncate">
+                              </div>}
+                              {!(isPhone || isTablet) && <div className="text-[10px] text-gray-600 truncate">
                                 {layer.originalThickness ? layer.originalThickness.toFixed(1) : "-"}
-                              </div>
-                              <div className="flex items-center gap-0.5">
-                                {layer.packingDensity && layer.packingDensity < 1.0 && (
-                                  <span className="px-0.5 bg-purple-100 text-purple-700 rounded text-[7px] font-bold" title={`Packing Density: ${layer.packingDensity.toFixed(2)}`}>
-                                    P
-                                  </span>
-                                )}
-                                <button
-                                  onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))}
-                                  className={`p-0.5 rounded transition-colors text-[10px] ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`}
-                                  title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}
-                                >
-                                  <Lock size={10} />
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    if (layer.originalThickness !== undefined) {
-                                      setLayers(layers.map(l =>
-                                        l.id === layer.id ? { ...l, originalThickness: undefined } : l
-                                      ));
-                                    } else {
-                                      setLayers(layers.map(l =>
-                                        l.id === layer.id ? { ...l, originalThickness: layer.thickness } : l
-                                      ));
-                                    }
-                                  }}
-                                  className={`p-0.5 rounded transition-colors text-[10px] ${
-                                    layer.originalThickness !== undefined
-                                      ? "bg-blue-100 text-blue-600"
-                                      : "text-gray-400"
-                                  }`}
-                                  title={layer.originalThickness !== undefined ? "Clear original thickness" : "Save as original thickness"}
-                                >
-                                  {"\uD83D\uDCCC"}
-                                </button>
-                                <button
-                                  onClick={() => openIADModal(layer.id)}
-                                  className={`p-0.5 rounded transition-colors ${
-                                    layer.iad && layer.iad.enabled
-                                      ? "bg-yellow-100 text-yellow-600"
-                                      : "text-gray-400"
-                                  }`}
-                                  title="IAD Settings"
-                                >
-                                  <Zap size={10} />
-                                </button>
+                              </div>}
+                              <div className="flex items-center justify-center">
                                 <button
                                   onClick={() => removeLayer(layer.id)}
                                   className="p-0.5 hover:bg-red-100 rounded text-red-600"
                                   disabled={layers.length === 1}
                                 >
-                                  <Trash2 size={10} />
+                                  <Trash2 size={(isPhone || isTablet) ? 13 : 10} />
                                 </button>
                               </div>
                             </div>
@@ -9031,14 +8992,14 @@ const ThinFilmDesigner = () => {
                         </div>
 
                         {/* Incident Row */}
-                        <div className="grid gap-x-1 p-1 bg-sky-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
-                          <div></div>
-                          <div className="text-center font-medium">I</div>
+                        <div className="grid gap-x-1 p-1 bg-sky-50 border-b border-gray-200 text-xs items-center" style={{ gridTemplateColumns: (isPhone || isTablet) ? '2rem 1fr 7rem 2rem' : '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
+                          {!(isPhone || isTablet) && <div></div>}
+                          <div className="text-center font-medium" style={{ fontSize: (isPhone || isTablet) ? 10 : undefined }}>Inc</div>
                           <div className="truncate">{incident.material}</div>
                           <div>-</div>
-                          <div>-</div>
-                          <div>-</div>
-                          <div>-</div>
+                          {!(isPhone || isTablet) && <div>-</div>}
+                          {!(isPhone || isTablet) && <div>-</div>}
+                          {!(isPhone || isTablet) && <div>-</div>}
                           <div></div>
                         </div>
                       </>
@@ -10169,20 +10130,10 @@ const ThinFilmDesigner = () => {
                             {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280', fontSize: 10 }}>{qwotReference > 0 ? ((getRefractiveIndex(layer.material, qwotReference, layer.iad) * (parseFloat(layer.thickness) || 0)) / (qwotReference / 4)).toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.lastThickness ? layer.lastThickness.toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.originalThickness ? layer.originalThickness.toFixed(2) : "-"}</div>}
-                            {/* Action buttons — inline on both phone and desktop */}
-                            {isPhone ? (
-                              <div style={{ display: 'flex', justifyContent: 'center', gap: '2px' }}>
-                                <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} style={{ padding: 2, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: layer.locked ? '#dc2626' : '#9ca3af' }} title={layer.locked ? "Unlock" : "Lock"}><Lock size={13} /></button>
-                                <button onClick={() => removeLayer(layer.id)} style={{ padding: 2, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: '#dc2626' }} disabled={layers.length === 1}><Trash2 size={13} /></button>
-                              </div>
-                            ) : (
-                              <div style={{ textAlign: 'center', display: 'flex', justifyContent: 'center', gap: '2px' }}>
-                                <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} className={`p-0.5 rounded transition-colors ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`} title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}><Lock size={12} /></button>
-                                <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, originalThickness: l.originalThickness ? undefined : l.thickness } : l)); }} className={`p-0.5 rounded ${layer.originalThickness ? "bg-green-100 text-green-600 hover:bg-red-100 hover:text-red-600" : "hover:bg-green-100 text-gray-400"}`} title={layer.originalThickness ? "Click to clear original" : "Save as original thickness"}>{"\uD83D\uDCCC"}</button>
-                                <button onClick={() => openIADModal(layer.id)} className={`p-0.5 rounded transition-colors ${layer.iad && layer.iad.enabled ? "bg-yellow-100 text-yellow-600 hover:bg-yellow-200" : "hover:bg-gray-100 text-gray-400"}`} title="IAD Settings"><Zap size={12} /></button>
-                                <button onClick={() => removeLayer(layer.id)} className="p-0.5 hover:bg-red-100 rounded text-red-600" disabled={layers.length === 1}><Trash2 size={12} /></button>
-                              </div>
-                            )}
+                            {/* Action button — delete only */}
+                            <div style={{ display: 'flex', justifyContent: 'center' }}>
+                              <button onClick={() => removeLayer(layer.id)} style={{ padding: 2, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: '#dc2626' }} disabled={layers.length === 1}><Trash2 size={isPhone ? 13 : 12} /></button>
+                            </div>
                           </div>
                           <div className="relative border-b border-gray-300" style={{ height: "1px", zIndex: 3 }}>
                             <button onClick={() => insertLayerAfter(idx)} className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 bg-white hover:bg-green-100 rounded-full text-green-600 border border-gray-300 hover:border-green-500 transition-colors shadow-sm" title={`Insert layer after layer ${idx + 1}`}><Plus size={10} /></button>
