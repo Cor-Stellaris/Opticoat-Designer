@@ -1361,6 +1361,7 @@ const ThinFilmDesigner = () => {
   const touchDragStartRef = useRef({ x: 0, y: 0 });
   const swipeTrackRef = useRef({ startX: 0, startY: 0, currentX: 0 });
   const chartDoubleTapRef = useRef(0);
+  const holdRepeatRef = useRef(null);
 
   // Auth state (Clerk)
   const { isSignedIn, user: authUser } = useClerkUser();
@@ -8162,6 +8163,35 @@ const ThinFilmDesigner = () => {
     </ResponsiveContainer>
   );
 
+  // Press-and-hold repeat for +/- thickness buttons on mobile
+  // Uses setLayers with functional update to always read the latest value
+  const startHoldRepeat = (layerId, delta) => {
+    const applyDelta = () => {
+      setLayers(prev => {
+        const newLayers = prev.map(l => l.id === layerId ? { ...l, thickness: Math.max(0, (parseFloat(l.thickness) || 0) + delta) } : l);
+        // Also sync to layerStacks
+        if (currentStackId) {
+          prevLayersRef.current = JSON.stringify(newLayers);
+          setLayerStacks(stacks => stacks.map(stack =>
+            stack.id === currentStackId ? { ...stack, layers: newLayers } : stack
+          ));
+        }
+        return newLayers;
+      });
+    };
+    applyDelta(); // fire once immediately
+    let speed = 120;
+    const tick = () => {
+      applyDelta();
+      speed = Math.max(30, speed * 0.85);
+      holdRepeatRef.current = setTimeout(tick, speed);
+    };
+    holdRepeatRef.current = setTimeout(tick, 350);
+  };
+  const stopHoldRepeat = () => {
+    if (holdRepeatRef.current) { clearTimeout(holdRepeatRef.current); holdRepeatRef.current = null; }
+  };
+
   // On phone/tablet, force layout mode:
   // - Portrait phone/tablet: "tall" (chart on top, layers below)
   // - Landscape phone (short height): "wide" (chart and layers side by side)
@@ -10076,9 +10106,9 @@ const ThinFilmDesigner = () => {
                               </div>
                             </div>
                             <div style={isPhone ? { display: 'flex', alignItems: 'center', gap: 1 } : { gridColumn: 'span 2' }}>
-                              {isPhone && <button onClick={() => updateLayer(layer.id, "thickness", Math.max(0, (parseFloat(layer.thickness) || 0) - 1))} style={{ width: 22, height: 26, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '4px 0 0 4px', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}>−</button>}
+                              {isPhone && <button onTouchStart={(e) => { e.preventDefault(); startHoldRepeat(layer.id, -1); }} onTouchEnd={stopHoldRepeat} onTouchCancel={stopHoldRepeat} onMouseDown={() => startHoldRepeat(layer.id, -1)} onMouseUp={stopHoldRepeat} onMouseLeave={stopHoldRepeat} style={{ width: 26, height: 28, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '4px 0 0 4px', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0, touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}>−</button>}
                               <input type="number" value={layer.thickness === 0 ? "" : layer.thickness} onChange={(e) => updateLayer(layer.id, "thickness", e.target.value === "" ? 0 : e.target.value)} className={isPhone ? "px-1 py-0.5 border-t border-b rounded-none" : "w-full px-1 py-0.5 border rounded"} step="1" style={{ fontSize: isPhone ? 13 : undefined, minHeight: isPhone ? 26 : undefined, width: isPhone ? '100%' : undefined, minWidth: 0, textAlign: isPhone ? 'center' : undefined, borderColor: darkMode ? '#363860' : '#d1d5db' }} inputMode={isPhone ? "decimal" : undefined} />
-                              {isPhone && <button onClick={() => updateLayer(layer.id, "thickness", (parseFloat(layer.thickness) || 0) + 1)} style={{ width: 22, height: 26, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '0 4px 4px 0', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}>+</button>}
+                              {isPhone && <button onTouchStart={(e) => { e.preventDefault(); startHoldRepeat(layer.id, 1); }} onTouchEnd={stopHoldRepeat} onTouchCancel={stopHoldRepeat} onMouseDown={() => startHoldRepeat(layer.id, 1)} onMouseUp={stopHoldRepeat} onMouseLeave={stopHoldRepeat} style={{ width: 26, height: 28, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '0 4px 4px 0', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0, touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}>+</button>}
                             </div>
                             {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280', fontSize: 10 }}>{qwotReference > 0 ? ((getRefractiveIndex(layer.material, qwotReference, layer.iad) * (parseFloat(layer.thickness) || 0)) / (qwotReference / 4)).toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.lastThickness ? layer.lastThickness.toFixed(2) : "-"}</div>}
