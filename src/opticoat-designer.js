@@ -1048,24 +1048,26 @@ const SPLASH_RINGS = [
 
 // Mobile responsiveness hook — detects phone/tablet/desktop breakpoints
 function useIsMobile() {
-  const [width, setWidth] = useState(
-    typeof window !== 'undefined' ? window.innerWidth : 1200
+  const [dims, setDims] = useState(
+    typeof window !== 'undefined' ? { w: window.innerWidth, h: window.innerHeight } : { w: 1200, h: 800 }
   );
   useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth);
+    const onResize = () => setDims({ w: window.innerWidth, h: window.innerHeight });
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
   return {
-    isPhone: width < 640,
-    isTablet: width >= 640 && width <= 1024,
-    isDesktop: width > 1024,
-    width,
+    isPhone: dims.w < 640,
+    isTablet: dims.w >= 640 && dims.w <= 1024,
+    isDesktop: dims.w > 1024,
+    width: dims.w,
+    height: dims.h,
+    isLandscape: dims.w > dims.h,
   };
 }
 
 const ThinFilmDesigner = () => {
-  const { isPhone, isTablet, isDesktop } = useIsMobile();
+  const { isPhone, isTablet, isDesktop, height: screenHeight, isLandscape } = useIsMobile();
   const [activeTab, setActiveTab] = useState("designer");
 
   // Splash screen state: 'idle' → 'expanding' → null
@@ -8164,7 +8166,7 @@ const ThinFilmDesigner = () => {
   const effectiveLayoutMode = (isPhone || isTablet) ? 'tall' : layoutMode;
 
   return (
-    <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden" style={{ padding: isPhone ? '4px' : '8px' }}>
+    <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden" style={{ padding: isPhone ? '4px' : '8px', touchAction: 'manipulation', maxHeight: '100vh' }}>
       {/* Splash screen */}
       {splashPhase && (<>
         {/* Circular reveal mask — box-shadow fills the screen, growing hole reveals the app from center */}
@@ -8212,21 +8214,21 @@ const ThinFilmDesigner = () => {
         <div style={{
           position: 'fixed', inset: 0, zIndex: 99999,
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          paddingTop: '300px',
+          paddingTop: isPhone ? '30vh' : '300px',
           pointerEvents: 'none',
           opacity: splashPhase === 'expanding' ? 0 : 1,
           transition: 'opacity 0.25s ease-out',
         }}>
           <div style={{
-            fontSize: '3.6rem', fontWeight: 700, letterSpacing: '-0.02em',
-            color: '#e0e7ff', textAlign: 'center', whiteSpace: 'nowrap',
+            fontSize: isPhone ? '1.8rem' : '3.6rem', fontWeight: 700, letterSpacing: '-0.02em',
+            color: '#e0e7ff', textAlign: 'center', whiteSpace: isPhone ? 'normal' : 'nowrap',
           }}>
             OptiCoat Designer
           </div>
           <div style={{
-            fontSize: '1.1rem', fontWeight: 400, letterSpacing: '0.18em',
+            fontSize: isPhone ? '0.65rem' : '1.1rem', fontWeight: 400, letterSpacing: isPhone ? '0.1em' : '0.18em',
             textTransform: 'uppercase', color: '#818cf8', opacity: 0.85,
-            whiteSpace: 'nowrap', marginTop: '0.6rem',
+            whiteSpace: isPhone ? 'normal' : 'nowrap', marginTop: '0.6rem', textAlign: 'center',
           }}>
             Thin-Film Optical Coating Design
           </div>
@@ -9781,7 +9783,7 @@ const ThinFilmDesigner = () => {
                   {/* Left column: Chart + Divider + Layers */}
                   <div className="flex-1 flex flex-col min-h-0 min-w-0">
                     {/* Chart section */}
-                    <div style={{ height: `${isPhone ? Math.min(chartHeight, 45) : chartHeight}%`, position: 'relative' }} className="min-h-0 flex-shrink-0" onTouchEnd={(e) => { if (!isPhone && !isTablet) return; const now = Date.now(); if (chartDoubleTapRef.current && now - chartDoubleTapRef.current < 300) { resetChartZoom(); chartDoubleTapRef.current = 0; } else { chartDoubleTapRef.current = now; } }}>
+                    <div style={{ height: `${isPhone ? Math.min(chartHeight, 45) : (isTablet && screenHeight < 500) ? Math.min(chartHeight, 35) : chartHeight}%`, position: 'relative' }} className="min-h-0 flex-shrink-0" onTouchEnd={(e) => { if (!isPhone && !isTablet) return; const now = Date.now(); if (chartDoubleTapRef.current && now - chartDoubleTapRef.current < 300) { resetChartZoom(); chartDoubleTapRef.current = 0; } else { chartDoubleTapRef.current = now; } }}>
                       {chartZoom && displayMode !== "admittance" && displayMode !== "efield" && (
                         <button
                           onClick={resetChartZoom}
@@ -9904,11 +9906,12 @@ const ThinFilmDesigner = () => {
                     </div>
 
                     {/* Resizable Divider */}
-                    <div className="flex items-center justify-center flex-shrink-0" style={{ height: isPhone ? '18px' : '11px', padding: isPhone ? '6px 0' : '4px 0', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'row-resize' }} onMouseDown={handleDividerMouseDown} onTouchStart={(e) => { e.preventDefault(); setIsDragging(true); }} title="Drag to resize" onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = theme.accentHover; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = theme.borderStrong; }}>
+                    <div className="flex items-center justify-center flex-shrink-0" style={{ height: isPhone ? '28px' : '11px', padding: isPhone ? '10px 0' : '4px 0', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'row-resize', touchAction: 'none' }} onMouseDown={handleDividerMouseDown} onTouchStart={(e) => { e.preventDefault(); setIsDragging(true); }} title="Drag to resize" onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = theme.accentHover; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = theme.borderStrong; }}>
+                      {isPhone && <div style={{ width: 40, height: 4, borderRadius: 2, background: darkMode ? '#4a4c72' : '#9ca3af' }}></div>}
                     </div>
 
                     {/* Layers section */}
-                    <div style={{ height: `${100 - (isPhone ? Math.min(chartHeight, 45) : chartHeight) - 1}%` }} className="flex flex-col overflow-hidden min-h-0 min-w-0">
+                    <div style={{ height: `${100 - (isPhone ? Math.min(chartHeight, 45) : (isTablet && screenHeight < 500) ? Math.min(chartHeight, 35) : chartHeight) - 1}%` }} className="flex flex-col overflow-hidden min-h-0 min-w-0">
                       <div className="flex justify-between items-center mb-1 flex-shrink-0">
                         <div className="flex items-center gap-2">
                           <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
@@ -9946,7 +9949,7 @@ const ThinFilmDesigner = () => {
                         </div>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))', gap: '4px', padding: '4px', borderRadius: 6, fontSize: isPhone ? 11 : 12, fontWeight: 600, background: darkMode ? '#1e1e2e' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', borderBottom: `2px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, flexShrink: 0, alignItems: 'center' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', borderRadius: 6, fontSize: isPhone ? 11 : 12, fontWeight: 600, background: darkMode ? '#1e1e2e' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', borderBottom: `2px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, flexShrink: 0, alignItems: 'center' }}>
                         <div style={{ textAlign: 'center' }}>#</div>
                         {!isPhone && <div style={{ textAlign: 'center' }}>Type</div>}
                         <div style={isPhone ? {} : { gridColumn: 'span 2' }}>Material</div>
@@ -9954,7 +9957,7 @@ const ThinFilmDesigner = () => {
                         {!isPhone && <div style={{ textAlign: 'center' }}>QWOT</div>}
                         {!isPhone && <div style={{ gridColumn: 'span 2' }}>Last (nm)</div>}
                         {!isPhone && <div style={{ gridColumn: 'span 2' }}>Original (nm)</div>}
-                        {!isPhone && <div></div>}
+                        {isPhone ? <div></div> : <div></div>}
                       </div>
 
                       <div className="flex-1 min-h-0" style={{ overflowY: 'auto', overflowX: 'hidden' }}>
@@ -9972,15 +9975,15 @@ const ThinFilmDesigner = () => {
                           </div>
                         ) : (
                         <>
-                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))', gap: '4px', padding: '4px', background: darkMode ? '#2a2520' : '#fffbeb', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 13 : 12, alignItems: 'center' }}>
-                          <div style={{ textAlign: 'center', fontWeight: 500 }}>-</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', background: darkMode ? '#2a2520' : '#fffbeb', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 12 : 12, alignItems: 'center' }}>
+                          <div style={{ textAlign: 'center', fontWeight: 500, fontSize: 10 }}>Sub</div>
                           {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>Sub</div>}
-                          <div><div className="flex items-center gap-1"><input type="text" value={substrate.material} onChange={(e) => setSubstrate({ ...substrate, material: e.target.value })} className="flex-1 min-w-0 px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 16 : undefined }} />{!isPhone && <div style={{ width: 12, flexShrink: 0 }}></div>}</div></div>
-                          <div><input type="number" value={substrate.n} onChange={(e) => setSubstrate({ ...substrate, n: safeParseFloat(e.target.value) || 1.52 })} className="w-full px-1 py-0.5 border rounded" step="0.01" title="Substrate refractive index" style={{ fontSize: isPhone ? 16 : undefined }} /></div>
+                          <div><input type="text" value={substrate.material} onChange={(e) => setSubstrate({ ...substrate, material: e.target.value })} className="w-full min-w-0 px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 14 : undefined }} /></div>
+                          <div><input type="number" value={substrate.n} onChange={(e) => setSubstrate({ ...substrate, n: safeParseFloat(e.target.value) || 1.52 })} className="w-full px-1 py-0.5 border rounded" step="0.01" title="Substrate refractive index" style={{ fontSize: isPhone ? 14 : undefined }} /></div>
                           {!isPhone && <div style={{ textAlign: 'center' }}>-</div>}
                           {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
                           {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
-                          {!isPhone && <div></div>}
+                          {isPhone ? <div></div> : <div></div>}
                         </div>
 
                         <div className="relative border-b border-gray-300" style={{ height: "1px", zIndex: 3 }}>
@@ -9995,21 +9998,15 @@ const ThinFilmDesigner = () => {
                         >
                         {layers.map((layer, idx) => (
                           <React.Fragment key={layer.id}>
-                          {/* Swipe container for mobile */}
-                          <div style={isPhone ? { position: 'relative', overflow: 'hidden' } : undefined} onClick={() => { if (isPhone && swipeOpenRowId && swipeOpenRowId !== layer.id) setSwipeOpenRowId(null); }}>
                           <div
                             data-layer-row
                             style={{
                               display: 'grid',
-                              gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))',
-                              ...(isPhone ? {
-                                transform: swipeOpenRowId === layer.id ? 'translateX(-100px)' : 'translateX(0)',
-                                transition: 'transform 0.2s ease',
-                              } : {}),
-                              gap: '4px',
-                              padding: isPhone ? '6px 4px' : '4px',
+                              gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))',
+                              gap: isPhone ? '2px' : '4px',
+                              padding: isPhone ? '4px 2px' : '4px',
                               borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`,
-                              fontSize: isPhone ? 13 : 12,
+                              fontSize: isPhone ? 12 : 12,
                               alignItems: 'center',
                               backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || '#e5e7eb'),
                               borderLeft: layer.locked
@@ -10027,70 +10024,22 @@ const ThinFilmDesigner = () => {
                             onMouseEnter={(e) => { if (!isPhone) e.currentTarget.style.filter = 'brightness(0.93)'; }}
                             onMouseLeave={(e) => { if (!isPhone) e.currentTarget.style.filter = ''; }}
                             onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
-                            onTouchStart={(e) => { if (!isPhone) return; const t = e.touches[0]; swipeTrackRef.current = { startX: t.clientX, startY: t.clientY, currentX: t.clientX }; }}
-                            onTouchMove={(e) => { if (!isPhone) return; swipeTrackRef.current.currentX = e.touches[0].clientX; }}
-                            onTouchEnd={() => {
-                              if (!isPhone) return;
-                              const { startX, startY, currentX } = swipeTrackRef.current;
-                              const dx = currentX - startX;
-                              if (dx < -50) { setSwipeOpenRowId(layer.id); }
-                              else if (dx > 30 && swipeOpenRowId === layer.id) { setSwipeOpenRowId(null); }
-                            }}
                           >
-                            <div style={{ textAlign: 'center', fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
-                              <span
-                                draggable={!isPhone}
-                                onDragStart={(e) => { if (isPhone) return; setDragIndex(idx); e.dataTransfer.effectAllowed = "move"; const img = new Image(); img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; e.dataTransfer.setDragImage(img, 0, 0); handleDragStartCapture(e.currentTarget.closest('[data-drag-container]')); }}
+                            <div style={{ textAlign: 'center', fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px', fontSize: isPhone ? 11 : undefined }}>
+                              {!isPhone && <span
+                                draggable
+                                onDragStart={(e) => { setDragIndex(idx); e.dataTransfer.effectAllowed = "move"; const img = new Image(); img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; e.dataTransfer.setDragImage(img, 0, 0); handleDragStartCapture(e.currentTarget.closest('[data-drag-container]')); }}
                                 className="text-gray-400 inline-flex"
-                                style={{ cursor: isPhone ? 'default' : 'grab', transition: 'color 0.15s, transform 0.15s' }}
+                                style={{ cursor: 'grab', transition: 'color 0.15s, transform 0.15s' }}
                                 title="Drag to reorder"
-                                onMouseEnter={(e) => { if (!isPhone) { e.currentTarget.style.color = '#6366f1'; e.currentTarget.style.transform = 'scale(1.25)'; } }}
-                                onMouseLeave={(e) => { if (!isPhone) { e.currentTarget.style.color = ''; e.currentTarget.style.transform = ''; } }}
-                                onTouchStart={(e) => {
-                                  if (!isPhone && !isTablet) return;
-                                  const touch = e.touches[0];
-                                  touchDragStartRef.current = { x: touch.clientX, y: touch.clientY };
-                                  touchDragTimerRef.current = setTimeout(() => {
-                                    setTouchDragState({ layerIdx: idx, isDragging: true, startY: touch.clientY, currentY: touch.clientY });
-                                    if (navigator.vibrate) navigator.vibrate(50);
-                                    handleDragStartCapture(e.currentTarget.closest('[data-drag-container]'));
-                                  }, 300);
-                                }}
-                                onTouchMove={(e) => {
-                                  if (touchDragTimerRef.current && !touchDragState?.isDragging) {
-                                    const touch = e.touches[0];
-                                    const dx = Math.abs(touch.clientX - touchDragStartRef.current.x);
-                                    const dy = Math.abs(touch.clientY - touchDragStartRef.current.y);
-                                    if (dx > 10 || dy > 10) { clearTimeout(touchDragTimerRef.current); touchDragTimerRef.current = null; }
-                                  }
-                                  if (touchDragState?.isDragging && touchDragState.layerIdx === idx) {
-                                    e.preventDefault();
-                                    const touch = e.touches[0];
-                                    setTouchDragState(prev => prev ? { ...prev, currentY: touch.clientY } : null);
-                                    // Calculate target index from Y position
-                                    const rows = Array.from(document.querySelectorAll('[data-layer-row]'));
-                                    for (let i = 0; i < rows.length; i++) {
-                                      const rect = rows[i].getBoundingClientRect();
-                                      if (touch.clientY >= rect.top && touch.clientY <= rect.bottom) { setDragOverIndex(i); break; }
-                                    }
-                                  }
-                                }}
-                                onTouchEnd={() => {
-                                  clearTimeout(touchDragTimerRef.current); touchDragTimerRef.current = null;
-                                  if (touchDragState?.isDragging) {
-                                    if (dragOverIndex !== null && dragOverIndex !== touchDragState.layerIdx) {
-                                      moveLayer(touchDragState.layerIdx, dragOverIndex);
-                                    }
-                                    setTouchDragState(null); setDragOverIndex(null);
-                                  }
-                                }}
-                                onContextMenu={(e) => { if (isPhone || isTablet) e.preventDefault(); }}
-                              ><GripVertical size={isPhone ? 14 : 10} /></span>{idx + 1}
+                                onMouseEnter={(e) => { e.currentTarget.style.color = '#6366f1'; e.currentTarget.style.transform = 'scale(1.25)'; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.color = ''; e.currentTarget.style.transform = ''; }}
+                              ><GripVertical size={10} /></span>}{idx + 1}
                             </div>
                             {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>L</div>}
                             <div style={isPhone ? {} : { gridColumn: 'span 2' }}>
                               <div className="flex items-center gap-1">
-                                <select value={layer.material} onChange={(e) => { if (e.target.value === "__manage__") { setShowMaterialLibrary(true); e.target.value = layer.material; return; } updateLayer(layer.id, "material", e.target.value); }} className="flex-1 px-1 py-0.5 border rounded bg-white" style={{ fontSize: isPhone ? 16 : undefined, minHeight: isPhone ? 36 : undefined }}>
+                                <select value={layer.material} onChange={(e) => { if (e.target.value === "__manage__") { setShowMaterialLibrary(true); e.target.value = layer.material; return; } updateLayer(layer.id, "material", e.target.value); }} className="flex-1 px-1 py-0.5 border rounded bg-white" style={{ fontSize: isPhone ? 14 : undefined, minHeight: isPhone ? 30 : undefined }}>
                                   {Object.keys(allMaterials).map((mat) => (<option key={mat} value={mat}>{mat}</option>))}
                                   <option disabled>──────────</option>
                                   <option value="__manage__">Manage Materials...</option>
@@ -10118,33 +10067,25 @@ const ThinFilmDesigner = () => {
                                 </div>}
                               </div>
                             </div>
-                            <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="number" value={layer.thickness === 0 ? "" : layer.thickness} onChange={(e) => updateLayer(layer.id, "thickness", e.target.value === "" ? 0 : e.target.value)} className="w-full px-1 py-0.5 border rounded" step="1" style={{ fontSize: isPhone ? 16 : undefined, minHeight: isPhone ? 36 : undefined }} inputMode={isPhone ? "decimal" : undefined} /></div>
+                            <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="number" value={layer.thickness === 0 ? "" : layer.thickness} onChange={(e) => updateLayer(layer.id, "thickness", e.target.value === "" ? 0 : e.target.value)} className="w-full px-1 py-0.5 border rounded" step="1" style={{ fontSize: isPhone ? 14 : undefined, minHeight: isPhone ? 30 : undefined }} inputMode={isPhone ? "decimal" : undefined} /></div>
                             {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280', fontSize: 10 }}>{qwotReference > 0 ? ((getRefractiveIndex(layer.material, qwotReference, layer.iad) * (parseFloat(layer.thickness) || 0)) / (qwotReference / 4)).toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.lastThickness ? layer.lastThickness.toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.originalThickness ? layer.originalThickness.toFixed(2) : "-"}</div>}
-                            {!isPhone && <div style={{ textAlign: 'center', display: 'flex', justifyContent: 'center', gap: '2px' }}>
-                              <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} className={`p-0.5 rounded transition-colors ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`} title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}><Lock size={12} /></button>
-                              <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, originalThickness: l.originalThickness ? undefined : l.thickness } : l)); }} className={`p-0.5 rounded ${layer.originalThickness ? "bg-green-100 text-green-600 hover:bg-red-100 hover:text-red-600" : "hover:bg-green-100 text-gray-400"}`} title={layer.originalThickness ? "Click to clear original" : "Save as original thickness"}>{"\uD83D\uDCCC"}</button>
-                              <button onClick={() => openIADModal(layer.id)} className={`p-0.5 rounded transition-colors ${layer.iad && layer.iad.enabled ? "bg-yellow-100 text-yellow-600 hover:bg-yellow-200" : "hover:bg-gray-100 text-gray-400"}`} title="IAD Settings"><Zap size={12} /></button>
-                              <button onClick={() => removeLayer(layer.id)} className="p-0.5 hover:bg-red-100 rounded text-red-600" disabled={layers.length === 1}><Trash2 size={12} /></button>
-                            </div>}
+                            {/* Action buttons — inline on both phone and desktop */}
+                            {isPhone ? (
+                              <div style={{ display: 'flex', justifyContent: 'center', gap: '2px' }}>
+                                <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} style={{ padding: 2, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: layer.locked ? '#dc2626' : '#9ca3af' }} title={layer.locked ? "Unlock" : "Lock"}><Lock size={13} /></button>
+                                <button onClick={() => removeLayer(layer.id)} style={{ padding: 2, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: '#dc2626' }} disabled={layers.length === 1}><Trash2 size={13} /></button>
+                              </div>
+                            ) : (
+                              <div style={{ textAlign: 'center', display: 'flex', justifyContent: 'center', gap: '2px' }}>
+                                <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} className={`p-0.5 rounded transition-colors ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`} title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}><Lock size={12} /></button>
+                                <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, originalThickness: l.originalThickness ? undefined : l.thickness } : l)); }} className={`p-0.5 rounded ${layer.originalThickness ? "bg-green-100 text-green-600 hover:bg-red-100 hover:text-red-600" : "hover:bg-green-100 text-gray-400"}`} title={layer.originalThickness ? "Click to clear original" : "Save as original thickness"}>{"\uD83D\uDCCC"}</button>
+                                <button onClick={() => openIADModal(layer.id)} className={`p-0.5 rounded transition-colors ${layer.iad && layer.iad.enabled ? "bg-yellow-100 text-yellow-600 hover:bg-yellow-200" : "hover:bg-gray-100 text-gray-400"}`} title="IAD Settings"><Zap size={12} /></button>
+                                <button onClick={() => removeLayer(layer.id)} className="p-0.5 hover:bg-red-100 rounded text-red-600" disabled={layers.length === 1}><Trash2 size={12} /></button>
+                              </div>
+                            )}
                           </div>
-                          {/* Swipe-revealed action buttons (phone only) */}
-                          {isPhone && (
-                            <div style={{
-                              position: 'absolute', right: 0, top: 0, bottom: 0, width: '100px',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                              background: darkMode ? '#1e1e2e' : '#f8fafc',
-                            }}>
-                              <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l)); setSwipeOpenRowId(null); }} style={{ width: 40, height: 40, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', background: layer.locked ? '#fecaca' : '#e5e7eb', color: layer.locked ? '#dc2626' : '#6b7280' }}>
-                                <Lock size={16} />
-                              </button>
-                              <button onClick={() => { removeLayer(layer.id); setSwipeOpenRowId(null); }} disabled={layers.length === 1} style={{ width: 40, height: 40, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', background: '#fecaca', color: '#dc2626' }}>
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          )}
-                          </div>{/* close swipe container */}
                           <div className="relative border-b border-gray-300" style={{ height: "1px", zIndex: 3 }}>
                             <button onClick={() => insertLayerAfter(idx)} className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 bg-white hover:bg-green-100 rounded-full text-green-600 border border-gray-300 hover:border-green-500 transition-colors shadow-sm" title={`Insert layer after layer ${idx + 1}`}><Plus size={10} /></button>
                           </div>
@@ -10152,15 +10093,15 @@ const ThinFilmDesigner = () => {
                         ))}
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))', gap: '4px', padding: '4px', background: darkMode ? '#1e2a30' : '#f0f9ff', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 13 : 12, alignItems: 'center' }}>
-                          <div style={{ textAlign: 'center', fontWeight: 500 }}>-</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', background: darkMode ? '#1e2a30' : '#f0f9ff', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 12 : 12, alignItems: 'center' }}>
+                          <div style={{ textAlign: 'center', fontWeight: 500, fontSize: 10 }}>Inc</div>
                           {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>Inc</div>}
-                          <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="text" value={incident.material} onChange={(e) => setIncident({ ...incident, material: e.target.value })} className="w-full px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 16 : undefined }} /></div>
+                          <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="text" value={incident.material} onChange={(e) => setIncident({ ...incident, material: e.target.value })} className="w-full px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 14 : undefined }} /></div>
                           <div style={isPhone ? {} : { gridColumn: 'span 2', textAlign: 'center' }}>-</div>
                           {!isPhone && <div style={{ textAlign: 'center' }}>-</div>}
                           {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
                           {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
-                          {!isPhone && <div></div>}
+                          {isPhone ? <div></div> : <div></div>}
                         </div>
                         </>
                         )}
@@ -10199,19 +10140,30 @@ const ThinFilmDesigner = () => {
                           </div>
                         </div>
                       </div>
+
+                      {/* Mobile: Color Analysis as collapsible section at bottom of layers */}
+                      {isPhone && colorData && (
+                        <details style={{ padding: '6px 8px', borderTop: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, background: darkMode ? '#1a1c38' : '#f9fafb', borderRadius: '0 0 6px 6px', marginTop: 4, flexShrink: 0 }}>
+                          <summary style={{ fontSize: 11, fontWeight: 600, cursor: 'pointer', padding: '4px 0', color: darkMode ? '#a0a0b8' : '#374151' }}>
+                            Color Analysis — {colorData.colorName}
+                            <span style={{ display: 'inline-block', width: 14, height: 14, borderRadius: 3, backgroundColor: colorData.rgb, border: '1px solid #999', marginLeft: 8, verticalAlign: 'middle' }}></span>
+                          </summary>
+                          <div style={{ marginTop: 6, fontSize: 11 }}>
+                            <div style={{ width: '100%', height: 40, borderRadius: 6, border: '2px solid #999', marginBottom: 6, backgroundColor: colorData.rgb }}></div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 12px', fontSize: 10, color: darkMode ? '#a0a0b8' : '#4b5563' }}>
+                              <div>L*: <strong>{colorData.L}</strong></div>
+                              <div>Hex: <strong>{colorData.hex}</strong></div>
+                              <div>a*: <strong>{colorData.a_star}</strong></div>
+                              <div>b*: <strong>{colorData.b_star}</strong></div>
+                            </div>
+                          </div>
+                        </details>
+                      )}
                     </div>
                   </div>
 
-                  {/* Right column: Color Analysis Sidebar */}
-                  {isPhone && (
-                    <button
-                      onClick={() => setMobileColorExpanded(!mobileColorExpanded)}
-                      style={{ position: 'absolute', top: 4, left: 4, zIndex: 10, padding: '4px 10px', borderRadius: 6, fontSize: 10, fontWeight: 600, background: darkMode ? '#1e1e2e' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', border: `1px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, cursor: 'pointer' }}
-                    >
-                      Color {mobileColorExpanded ? '▲' : '▼'}
-                    </button>
-                  )}
-                  <div className={isPhone ? "flex-shrink-0 flex flex-col overflow-y-auto" : "w-48 flex-shrink-0 bg-gray-50 rounded p-2 border flex flex-col overflow-y-auto"} style={isPhone ? (mobileColorExpanded ? { position: 'absolute', top: 28, left: 4, zIndex: 20, width: '90%', maxHeight: '60%', background: darkMode ? '#1e1e2e' : '#f8fafc', borderRadius: 8, padding: 8, border: `1px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' } : { display: 'none' }) : undefined}>
+                  {/* Right column: Color Analysis Sidebar (hidden on phone — shown as collapsible in layers section) */}
+                  <div className="w-48 flex-shrink-0 bg-gray-50 rounded p-2 border flex flex-col overflow-y-auto" style={isPhone ? { display: 'none' } : undefined}>
                     <div className="text-xs font-bold text-gray-800 mb-2">Color Analysis</div>
 
                     {/* Current Stack Color */}
