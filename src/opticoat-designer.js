@@ -8206,7 +8206,7 @@ const ThinFilmDesigner = () => {
   })();
 
   return (
-    <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden" style={{ padding: isPhone ? '4px' : '8px', touchAction: 'manipulation', maxHeight: '100vh' }}>
+    <div className="w-full bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden" style={{ padding: isPhone ? '4px' : '8px', touchAction: 'manipulation', height: '100dvh', maxHeight: '100dvh' }}>
       {/* Splash screen */}
       {splashPhase && (<>
         {/* Circular reveal mask — box-shadow fills the screen, growing hole reveals the app from center */}

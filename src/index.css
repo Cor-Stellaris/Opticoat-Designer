@@ -177,9 +177,10 @@
 /* ===== Mobile: prevent page-level scrolling ===== */
 html, body {
   overflow: hidden;
-  height: 100%;
+  height: 100dvh;
   width: 100%;
   position: fixed;
+  margin: 0;
 }
 
 /* ===== Base Styles ===== */
@@ -190,10 +191,7 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  padding-top: env(safe-area-inset-top);
-  padding-bottom: env(safe-area-inset-bottom);
-  padding-left: env(safe-area-inset-left);
-  padding-right: env(safe-area-inset-right);
+  padding: 0;
   background: var(--bg-app);
   color: var(--text-primary);
 }
