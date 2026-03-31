@@ -1357,6 +1357,7 @@ const ThinFilmDesigner = () => {
   const [touchDragState, setTouchDragState] = useState(null);
   const [mobileColorExpanded, setMobileColorExpanded] = useState(false);
   const [mobileRunListExpanded, setMobileRunListExpanded] = useState(false);
+  const [mobileToolbarExpanded, setMobileToolbarExpanded] = useState(false);
   const touchDragTimerRef = useRef(null);
   const touchDragStartRef = useRef({ x: 0, y: 0 });
   const swipeTrackRef = useRef({ startX: 0, startY: 0, currentX: 0 });
@@ -8472,10 +8473,35 @@ const ThinFilmDesigner = () => {
         {activeTab === "designer" && (
           <>
             <div className="flex justify-between items-center mb-2 flex-shrink-0 flex-wrap gap-2">
-              <h1 className="text-lg font-bold text-gray-800" style={{ fontSize: isPhone ? 14 : undefined }}>
-                {isPhone ? 'Stack Designer' : 'Thin Film Coating Stack Designer'}
-              </h1>
-              <div className="flex gap-2 text-xs flex-wrap">
+              {isPhone ? (
+                /* Phone: collapsible summary toolbar */
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => setMobileToolbarExpanded(!mobileToolbarExpanded)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 6,
+                      background: darkMode ? '#1e1f3a' : '#ffffff', border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`,
+                      cursor: 'pointer', fontSize: 11, color: darkMode ? '#a0a0b8' : '#374151', flex: 1,
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                    }}
+                  >
+                    <span style={{ fontWeight: 600 }}>{wavelengthRange.min}-{wavelengthRange.max}nm</span>
+                    <span style={{ color: darkMode ? '#5c6370' : '#9ca3af' }}>|</span>
+                    <span>{reflectivityRange.min}-{reflectivityRange.max}%</span>
+                    <span style={{ color: darkMode ? '#5c6370' : '#9ca3af' }}>|</span>
+                    <span style={{ textTransform: 'capitalize' }}>{displayMode.slice(0, 5)}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 10 }}>{mobileToolbarExpanded ? '▲' : '▼'}</span>
+                  </button>
+                  <button onClick={() => setShowTargetsModal(true)} style={{ padding: '4px 8px', borderRadius: 6, background: darkMode ? '#1e1f3a' : '#fff', border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3, color: darkMode ? '#a0a0b8' : '#374151', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                    <Settings size={11} /> Targets
+                  </button>
+                </div>
+              ) : (
+                <h1 className="text-lg font-bold text-gray-800">
+                  Thin Film Coating Stack Designer
+                </h1>
+              )}
+              <div className="flex gap-2 text-xs flex-wrap" style={isPhone ? { display: mobileToolbarExpanded ? 'flex' : 'none', width: '100%' } : undefined}>
                 <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
                   <span className="text-gray-600">λ: </span>
                   <input
@@ -8601,13 +8627,13 @@ const ThinFilmDesigner = () => {
                     <option value="efield" disabled={!tierLimits.allowedDisplayModes.includes('efield')}>E-Field{!tierLimits.allowedDisplayModes.includes('efield') ? ' 🔒' : ''}</option>
                   </select>
                 </div>
-                <button
+                {!isPhone && <button
                   onClick={() => setShowTargetsModal(true)}
                   className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center gap-1 flex-shrink-0"
                 >
                   <Settings size={12} />
                   <span>Targets</span>
-                </button>
+                </button>}
                 {isDesktop && (
                   <button
                     onClick={() => setLayoutMode(layoutMode === "tall" ? "wide" : "tall")}
