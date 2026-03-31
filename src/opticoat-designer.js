@@ -9987,7 +9987,7 @@ const ThinFilmDesigner = () => {
                         </div>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', borderRadius: 6, fontSize: isPhone ? 11 : 12, fontWeight: 600, background: darkMode ? '#1e1e2e' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', borderBottom: `2px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, flexShrink: 0, alignItems: 'center' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 7rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', borderRadius: 6, fontSize: isPhone ? 11 : 12, fontWeight: 600, background: darkMode ? '#1e1e2e' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', borderBottom: `2px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, flexShrink: 0, alignItems: 'center' }}>
                         <div style={{ textAlign: 'center' }}>#</div>
                         {!isPhone && <div style={{ textAlign: 'center' }}>Type</div>}
                         <div style={isPhone ? {} : { gridColumn: 'span 2' }}>Material</div>
@@ -10013,7 +10013,7 @@ const ThinFilmDesigner = () => {
                           </div>
                         ) : (
                         <>
-                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', background: darkMode ? '#2a2520' : '#fffbeb', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 12 : 12, alignItems: 'center' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 7rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', background: darkMode ? '#2a2520' : '#fffbeb', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 12 : 12, alignItems: 'center' }}>
                           <div style={{ textAlign: 'center', fontWeight: 500, fontSize: 10 }}>Sub</div>
                           {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>Sub</div>}
                           <div><input type="text" value={substrate.material} onChange={(e) => setSubstrate({ ...substrate, material: e.target.value })} className="w-full min-w-0 px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 14 : undefined }} /></div>
@@ -10040,7 +10040,7 @@ const ThinFilmDesigner = () => {
                             data-layer-row
                             style={{
                               display: 'grid',
-                              gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))',
+                              gridTemplateColumns: isPhone ? '2rem 1fr 7rem 2.5rem' : 'repeat(12, minmax(0, 1fr))',
                               gap: isPhone ? '2px' : '4px',
                               padding: isPhone ? '4px 2px' : '4px',
                               borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`,
@@ -10135,7 +10135,7 @@ const ThinFilmDesigner = () => {
                         ))}
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 4.5rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', background: darkMode ? '#1e2a30' : '#f0f9ff', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 12 : 12, alignItems: 'center' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '2rem 1fr 7rem 2.5rem' : 'repeat(12, minmax(0, 1fr))', gap: isPhone ? '2px' : '4px', padding: '4px', background: darkMode ? '#1e2a30' : '#f0f9ff', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 12 : 12, alignItems: 'center' }}>
                           <div style={{ textAlign: 'center', fontWeight: 500, fontSize: 10 }}>Inc</div>
                           {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>Inc</div>}
                           <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="text" value={incident.material} onChange={(e) => setIncident({ ...incident, material: e.target.value })} className="w-full px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 14 : undefined }} /></div>
