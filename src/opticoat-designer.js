@@ -8473,8 +8473,8 @@ const ThinFilmDesigner = () => {
         {activeTab === "designer" && (
           <>
             <div className="flex justify-between items-center mb-2 flex-shrink-0 flex-wrap gap-2">
-              {isPhone ? (
-                /* Phone: collapsible summary toolbar */
+              {(isPhone || isTablet) ? (
+                /* Phone/tablet: collapsible summary toolbar */
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', flexWrap: 'wrap' }}>
                   <button
                     onClick={() => setMobileToolbarExpanded(!mobileToolbarExpanded)}
@@ -8501,7 +8501,7 @@ const ThinFilmDesigner = () => {
                   Thin Film Coating Stack Designer
                 </h1>
               )}
-              <div className="flex gap-2 text-xs flex-wrap" style={isPhone ? { display: mobileToolbarExpanded ? 'flex' : 'none', width: '100%' } : undefined}>
+              <div className="flex gap-2 text-xs flex-wrap" style={(isPhone || isTablet) ? { display: mobileToolbarExpanded ? 'flex' : 'none', width: '100%' } : undefined}>
                 <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
                   <span className="text-gray-600">λ: </span>
                   <input
@@ -8627,7 +8627,7 @@ const ThinFilmDesigner = () => {
                     <option value="efield" disabled={!tierLimits.allowedDisplayModes.includes('efield')}>E-Field{!tierLimits.allowedDisplayModes.includes('efield') ? ' 🔒' : ''}</option>
                   </select>
                 </div>
-                {!isPhone && <button
+                {isDesktop && <button
                   onClick={() => setShowTargetsModal(true)}
                   className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center gap-1 flex-shrink-0"
                 >
@@ -8683,8 +8683,8 @@ const ThinFilmDesigner = () => {
               {/* In horizontal mode: Layers first (left side) */}
               {effectiveLayoutMode === "wide" && (
                 <div
-                  style={{ width: `${100 - chartWidth}%`, height: "100%", paddingRight: 8 }}
-                  className="flex flex-col overflow-hidden min-h-0 min-w-0"
+                  style={{ width: `${100 - chartWidth}%`, height: "100%", paddingRight: 8, overflowY: (isPhone || isTablet) ? 'auto' : 'hidden', overflowX: 'hidden' }}
+                  className="flex flex-col min-h-0 min-w-0"
                 >
                   <div className="flex items-center gap-2 mb-1 flex-shrink-0">
                     <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
