@@ -8162,8 +8162,16 @@ const ThinFilmDesigner = () => {
     </ResponsiveContainer>
   );
 
-  // On phone/tablet, force vertical ("tall") layout mode for the Designer tab
-  const effectiveLayoutMode = (isPhone || isTablet) ? 'tall' : layoutMode;
+  // On phone/tablet, force layout mode:
+  // - Portrait phone/tablet: "tall" (chart on top, layers below)
+  // - Landscape phone (short height): "wide" (chart and layers side by side)
+  const effectiveLayoutMode = (() => {
+    if (isPhone && !isLandscape) return 'tall';  // portrait phone → stacked
+    if (isPhone && isLandscape) return 'wide';   // landscape phone → side by side
+    if (isTablet && !isLandscape) return 'tall';  // portrait tablet → stacked
+    if (isTablet && isLandscape) return 'wide';   // landscape tablet → side by side
+    return layoutMode;                             // desktop → user's choice
+  })();
 
   return (
     <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden" style={{ padding: isPhone ? '4px' : '8px', touchAction: 'manipulation', maxHeight: '100vh' }}>
@@ -8570,7 +8578,7 @@ const ThinFilmDesigner = () => {
                   <Settings size={12} />
                   <span>Targets</span>
                 </button>
-                {!isPhone && (
+                {isDesktop && (
                   <button
                     onClick={() => setLayoutMode(layoutMode === "tall" ? "wide" : "tall")}
                     className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center justify-center flex-shrink-0"
@@ -9340,7 +9348,7 @@ const ThinFilmDesigner = () => {
 
 
                 {/* Enhanced Color Analysis Sidebar */}
-                <div className={`bg-gray-50 rounded p-2 border flex-shrink-0 flex flex-col overflow-y-auto ${effectiveLayoutMode === "wide" ? "w-36" : "w-48"}`} style={{ maxHeight: "100%" }}>
+                <div className={`bg-gray-50 rounded p-2 border flex-shrink-0 flex flex-col overflow-y-auto ${effectiveLayoutMode === "wide" ? "w-36" : "w-48"}`} style={{ maxHeight: "100%", display: (isPhone || isTablet) ? 'none' : undefined }}>
                   <div className="text-xs font-bold text-gray-800 mb-2">
                     Color Analysis
                   </div>
@@ -10067,7 +10075,11 @@ const ThinFilmDesigner = () => {
                                 </div>}
                               </div>
                             </div>
-                            <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="number" value={layer.thickness === 0 ? "" : layer.thickness} onChange={(e) => updateLayer(layer.id, "thickness", e.target.value === "" ? 0 : e.target.value)} className="w-full px-1 py-0.5 border rounded" step="1" style={{ fontSize: isPhone ? 14 : undefined, minHeight: isPhone ? 30 : undefined }} inputMode={isPhone ? "decimal" : undefined} /></div>
+                            <div style={isPhone ? { display: 'flex', alignItems: 'center', gap: 1 } : { gridColumn: 'span 2' }}>
+                              {isPhone && <button onClick={() => updateLayer(layer.id, "thickness", Math.max(0, (parseFloat(layer.thickness) || 0) - 1))} style={{ width: 22, height: 26, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '4px 0 0 4px', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}>−</button>}
+                              <input type="number" value={layer.thickness === 0 ? "" : layer.thickness} onChange={(e) => updateLayer(layer.id, "thickness", e.target.value === "" ? 0 : e.target.value)} className={isPhone ? "px-1 py-0.5 border-t border-b rounded-none" : "w-full px-1 py-0.5 border rounded"} step="1" style={{ fontSize: isPhone ? 13 : undefined, minHeight: isPhone ? 26 : undefined, width: isPhone ? '100%' : undefined, minWidth: 0, textAlign: isPhone ? 'center' : undefined, borderColor: darkMode ? '#363860' : '#d1d5db' }} inputMode={isPhone ? "decimal" : undefined} />
+                              {isPhone && <button onClick={() => updateLayer(layer.id, "thickness", (parseFloat(layer.thickness) || 0) + 1)} style={{ width: 22, height: 26, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: '0 4px 4px 0', background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', cursor: 'pointer', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}>+</button>}
+                            </div>
                             {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280', fontSize: 10 }}>{qwotReference > 0 ? ((getRefractiveIndex(layer.material, qwotReference, layer.iad) * (parseFloat(layer.thickness) || 0)) / (qwotReference / 4)).toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.lastThickness ? layer.lastThickness.toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.originalThickness ? layer.originalThickness.toFixed(2) : "-"}</div>}
