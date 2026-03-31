@@ -1359,6 +1359,7 @@ const ThinFilmDesigner = () => {
   const [mobileRunListExpanded, setMobileRunListExpanded] = useState(false);
   const [mobileToolbarExpanded, setMobileToolbarExpanded] = useState(false);
   const [mobileStackMenuOpen, setMobileStackMenuOpen] = useState(false);
+  const [mobileAssistantView, setMobileAssistantView] = useState('config'); // 'config' | 'solutions'
   const touchDragTimerRef = useRef(null);
   const touchDragStartRef = useRef({ x: 0, y: 0 });
   const swipeTrackRef = useRef({ startX: 0, startY: 0, currentX: 0 });
@@ -7769,6 +7770,8 @@ const ThinFilmDesigner = () => {
       setOptimizing(false);
       setOptimizationProgress(0);
       setOptimizationStage("");
+      // On mobile, auto-switch to solutions view
+      if (solutionsWithData.length > 0) setMobileAssistantView('solutions');
     }, 500);
   };
 
@@ -10619,22 +10622,24 @@ const ThinFilmDesigner = () => {
 
         {/* Design Assistant Tab Content */}
         {activeTab === "assistant" && (
-          <div className="flex-1 bg-white rounded-lg shadow-lg p-4 overflow-hidden flex flex-col min-h-0">
+          <div className="flex-1 bg-white rounded-lg shadow-lg flex flex-col min-h-0" style={{ padding: (isPhone || isTablet) ? '8px' : '16px', overflow: (isPhone || isTablet) ? 'auto' : 'hidden' }}>
             {!tierLimits.designAssistant && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', marginBottom: 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', marginBottom: (isPhone || isTablet) ? 6 : 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b', flexShrink: 0 }}>
                 <Lock size={14} style={{ color: '#b45309', flexShrink: 0 }} />
-                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Design Assistant requires a higher plan. Explore the interface below!</span>
-                <button onClick={() => setShowPricingModal(true)} style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, background: '#f59e0b', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>View Plans</button>
+                <span style={{ fontSize: (isPhone || isTablet) ? 11 : 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Requires a higher plan.</span>
+                <button onClick={() => setShowPricingModal(true)} style={{ padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: '#f59e0b', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>Plans</button>
               </div>
             )}
-            <div className="flex items-baseline gap-4 mb-3 flex-shrink-0">
-              <h2 className="text-lg font-bold text-gray-800">Design Assistant</h2>
-              <p className="text-xs text-gray-500">Define targets or upload CSV to reverse engineer a layer stack</p>
-            </div>
-            <div className="flex gap-4 flex-1 overflow-hidden min-h-0" style={{ flexDirection: isPhone ? 'column' : 'row' }}>
+            {isDesktop && (
+              <div className="flex items-baseline gap-4 mb-3 flex-shrink-0">
+                <h2 className="text-lg font-bold text-gray-800">Design Assistant</h2>
+                <p className="text-xs text-gray-500">Define targets or upload CSV to reverse engineer a layer stack</p>
+              </div>
+            )}
+            <div className="flex gap-4 flex-1 min-h-0" style={{ flexDirection: (isPhone || isTablet) ? 'column' : 'row', overflow: isDesktop ? 'hidden' : undefined }}>
 
             {/* Left column: Config + Mode Selection + Generate */}
-            <div className="flex flex-col overflow-hidden min-h-0" style={{ width: isPhone ? '100%' : '45%', flexShrink: 0 }}>
+            <div className="flex flex-col min-h-0" style={{ width: (isPhone || isTablet) ? '100%' : '45%', flexShrink: (isPhone || isTablet) ? undefined : 0, overflow: isDesktop ? 'hidden' : undefined, display: (isPhone || isTablet) && mobileAssistantView === 'solutions' ? 'none' : undefined }}>
 
             {/* Mode Selection — compact, inside left column */}
             <div className="mb-3 p-2 bg-blue-50 rounded border border-blue-200 flex-shrink-0">
@@ -11645,9 +11650,10 @@ const ThinFilmDesigner = () => {
                       </div>
                       <button
                         onClick={addDesignPoint}
-                        className="mt-2 w-full py-2 bg-green-600 text-white rounded hover:bg-green-700 flex items-center justify-center gap-1"
+                        className="mt-2 w-full bg-green-600 text-white rounded hover:bg-green-700 flex items-center justify-center gap-1"
+                        style={{ padding: (isPhone || isTablet) ? '4px 0' : '8px 0', fontSize: (isPhone || isTablet) ? 11 : 14 }}
                       >
-                        <Plus size={14} /> Add Target Specification
+                        <Plus size={(isPhone || isTablet) ? 12 : 14} /> {(isPhone || isTablet) ? '+ Target' : 'Add Target Specification'}
                       </button>
                     </details>
                   )}
@@ -11689,8 +11695,14 @@ const ThinFilmDesigner = () => {
                     (reverseEngineerMode && !reverseEngineerData) ||
                     (!useLayerTemplate && designMaterials.length === 0)
                   }
-                  className="mt-3 w-full py-2 rounded flex items-center justify-center gap-2 flex-shrink-0 font-semibold text-sm"
+                  className="w-full rounded flex items-center justify-center gap-2 flex-shrink-0 font-semibold"
                   style={{
+                    padding: (isPhone || isTablet) ? '8px 0' : '8px 0',
+                    marginTop: (isPhone || isTablet) ? 8 : 12,
+                    fontSize: (isPhone || isTablet) ? 12 : 14,
+                    position: (isPhone || isTablet) ? 'sticky' : undefined,
+                    bottom: (isPhone || isTablet) ? 0 : undefined,
+                    zIndex: (isPhone || isTablet) ? 10 : undefined,
                     background: optimizing ? (darkMode ? '#363860' : '#9ca3af') : (darkMode ? '#6366f1' : '#4f46e5'),
                     color: '#ffffff',
                     cursor: optimizing ? 'not-allowed' : 'pointer',
@@ -11737,10 +11749,14 @@ const ThinFilmDesigner = () => {
                 )}
               </div>
             </div>
-            </div>
 
             {/* Right: Solutions */}
-            <div className="flex flex-col overflow-hidden min-h-0 flex-1 border rounded p-3" style={{ borderColor: darkMode ? '#2a2c4a' : '#e5e7eb', background: darkMode ? '#111225' : '#f9fafb' }}>
+            <div className="flex flex-col overflow-hidden min-h-0 flex-1 border rounded p-3" style={{ borderColor: darkMode ? '#2a2c4a' : '#e5e7eb', background: darkMode ? '#111225' : '#f9fafb', display: (isPhone || isTablet) && mobileAssistantView === 'config' ? 'none' : undefined }}>
+              {(isPhone || isTablet) && (
+                <button onClick={() => setMobileAssistantView('config')} style={{ alignSelf: 'flex-start', padding: '4px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, cursor: 'pointer', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  ← Back to Config
+                </button>
+              )}
               <h3 className="text-xs font-semibold mb-2 flex-shrink-0" style={{ color: theme.textSecondary }}>
                 Solutions (Top 5, Error &lt; {maxErrorThreshold}%)
               </h3>
@@ -11913,9 +11929,11 @@ const ThinFilmDesigner = () => {
               </div>
             </div>
           </div>
+          </div>
         )}
 
         {/* Recipe Tracking Tab Content */}
+
         {activeTab === "tracking" && (
           <div className="bg-white rounded-lg shadow-lg p-4 flex-1 overflow-hidden flex flex-col">
             {!tierLimits.recipeTracking && (
