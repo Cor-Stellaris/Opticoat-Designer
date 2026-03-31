@@ -9008,71 +9008,42 @@ const ThinFilmDesigner = () => {
 
                   {/* Compact Summary for horizontal mode */}
                   <div className="bg-gray-50 rounded p-1 border mt-1 flex-shrink-0">
-                    <div className="text-[10px] text-gray-600 flex flex-wrap gap-2 items-center">
-                      <span>Layers: {layers.length}</span>
-                      <span>Total: {layers.reduce((sum, l) => sum + (parseFloat(l.thickness) || 0), 0).toFixed(0)}nm</span>
-                      <span className="flex items-center gap-1">
-                        QWOT λ:
-                        <input
-                          type="number"
-                          value={qwotReference}
-                          onChange={(e) => setQwotReference(parseInt(e.target.value) || 550)}
-                          className="w-12 px-1 py-0.5 border rounded text-[10px]"
-                          step="10"
-                          min="380"
-                          max="780"
-                        />
-                      </span>
-                    </div>
-                    <div className="text-[10px] text-gray-600 flex flex-wrap gap-2 items-center mt-1">
-                      <span className="flex items-center gap-1">
-                        Factor:
-                        <input
-                          type="number"
-                          value={layerFactor}
-                          onChange={(e) => setLayerFactor(e.target.value)}
-                          className="w-12 px-1 py-0.5 border rounded text-[10px]"
-                          step="0.01"
-                        />
-                        <button
-                          onClick={applyFactorToLayers}
-                          className="px-1 py-0.5 bg-indigo-600 text-white rounded text-[9px]"
-                        >
-                          Apply
-                        </button>
-                      </span>
-                      <span className="flex items-center gap-1">
-                        Shift:
-                        <input
-                          type="number"
-                          value={shiftValue}
-                          onChange={(e) => setShiftValue(e.target.value)}
-                          className="w-12 px-1 py-0.5 border rounded text-[10px]"
-                          step="1"
-                        />
-                        <button
-                          onClick={applyShift}
-                          className="px-1 py-0.5 bg-green-600 text-white rounded text-[9px]"
-                          disabled={shiftMode === "up-down" || parseFloat(shiftValue) === 0}
-                        >
-                          Apply
-                        </button>
-                      </span>
-                      <button
-                        onClick={undoLastChange}
-                        className="px-1 py-0.5 bg-orange-600 text-white rounded text-[9px]"
-                        disabled={!layers.some((l) => l.lastThickness !== undefined)}
-                      >
-                        Undo
-                      </button>
-                      <button
-                        onClick={resetToOriginal}
-                        className="px-1 py-0.5 bg-red-600 text-white rounded text-[9px]"
-                        disabled={!layers.some((l) => l.originalThickness !== undefined)}
-                      >
-                        Reset
-                      </button>
-                    </div>
+                    {(isPhone || isTablet) ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}>
+                        <span style={{ color: darkMode ? '#a0a0b8' : '#6b7280' }}>{layers.length}L / {layers.reduce((sum, l) => sum + (parseFloat(l.thickness) || 0), 0).toFixed(0)}nm</span>
+                        <span style={{ color: darkMode ? '#a0a0b8' : '#6b7280' }}>Factor:</span>
+                        <input type="number" value={layerFactor} onChange={(e) => setLayerFactor(e.target.value)} style={{ width: 40, padding: '2px 4px', border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: 4, fontSize: 10, background: darkMode ? '#1e1f3a' : '#fff', color: darkMode ? '#e2e4e9' : '#1f2937' }} step="0.01" min="0" />
+                        <button onClick={applyFactorToLayers} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600, background: '#4f46e5', color: '#fff', border: 'none', cursor: 'pointer' }}>Apply</button>
+                        <div style={{ marginLeft: 'auto' }}>
+                          <button onClick={resetToOriginal} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600, background: '#dc2626', color: '#fff', border: 'none', cursor: 'pointer', opacity: !layers.some((l) => l.originalThickness !== undefined) ? 0.4 : 1 }} disabled={!layers.some((l) => l.originalThickness !== undefined)}>Reset</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                      <div className="text-[10px] text-gray-600 flex flex-wrap gap-2 items-center">
+                        <span>Layers: {layers.length}</span>
+                        <span>Total: {layers.reduce((sum, l) => sum + (parseFloat(l.thickness) || 0), 0).toFixed(0)}nm</span>
+                        <span className="flex items-center gap-1">
+                          QWOT λ:
+                          <input type="number" value={qwotReference} onChange={(e) => setQwotReference(parseInt(e.target.value) || 550)} className="w-12 px-1 py-0.5 border rounded text-[10px]" step="10" min="380" max="780" />
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-gray-600 flex flex-wrap gap-2 items-center mt-1">
+                        <span className="flex items-center gap-1">
+                          Factor:
+                          <input type="number" value={layerFactor} onChange={(e) => setLayerFactor(e.target.value)} className="w-12 px-1 py-0.5 border rounded text-[10px]" step="0.01" />
+                          <button onClick={applyFactorToLayers} className="px-1 py-0.5 bg-indigo-600 text-white rounded text-[9px]">Apply</button>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          Shift:
+                          <input type="number" value={shiftValue} onChange={(e) => setShiftValue(e.target.value)} className="w-12 px-1 py-0.5 border rounded text-[10px]" step="1" />
+                          <button onClick={applyShift} className="px-1 py-0.5 bg-green-600 text-white rounded text-[9px]" disabled={shiftMode === "up-down" || parseFloat(shiftValue) === 0}>Apply</button>
+                        </span>
+                        <button onClick={undoLastChange} className="px-1 py-0.5 bg-orange-600 text-white rounded text-[9px]" disabled={!layers.some((l) => l.lastThickness !== undefined)}>Undo</button>
+                        <button onClick={resetToOriginal} className="px-1 py-0.5 bg-red-600 text-white rounded text-[9px]" disabled={!layers.some((l) => l.originalThickness !== undefined)}>Reset</button>
+                      </div>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
@@ -10157,37 +10128,49 @@ const ThinFilmDesigner = () => {
                       </div>
 
                       <div className="bg-gray-50 rounded p-1.5 border mt-1 flex-shrink-0">
-                        <div className="text-xs text-gray-600 flex justify-between items-center gap-4">
-                          <div className="flex gap-4">
-                            <span>Layers: {layers.length}</span>
-                            <span>Total: {layers.reduce((sum, l) => sum + (parseFloat(l.thickness) || 0), 0).toFixed(1)} nm</span>
+                        {(isPhone || isTablet) ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}>
+                            <span style={{ color: darkMode ? '#a0a0b8' : '#6b7280' }}>{layers.length}L / {layers.reduce((sum, l) => sum + (parseFloat(l.thickness) || 0), 0).toFixed(0)}nm</span>
+                            <span style={{ color: darkMode ? '#a0a0b8' : '#6b7280' }}>Factor:</span>
+                            <input type="number" value={layerFactor} onChange={(e) => setLayerFactor(e.target.value)} style={{ width: 40, padding: '2px 4px', border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, borderRadius: 4, fontSize: 10, background: darkMode ? '#1e1f3a' : '#fff', color: darkMode ? '#e2e4e9' : '#1f2937' }} step="0.01" min="0" />
+                            <button onClick={applyFactorToLayers} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600, background: '#4f46e5', color: '#fff', border: 'none', cursor: 'pointer' }}>Apply</button>
+                            <div style={{ marginLeft: 'auto' }}>
+                              <button onClick={resetToOriginal} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600, background: '#dc2626', color: '#fff', border: 'none', cursor: 'pointer', opacity: !layers.some((l) => l.originalThickness !== undefined) ? 0.4 : 1 }} disabled={!layers.some((l) => l.originalThickness !== undefined)}>Reset</button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <label className="font-semibold text-gray-700">Factor:</label>
-                            <input type="number" value={layerFactor} onChange={(e) => setLayerFactor(e.target.value)} className="w-14 px-1 py-0.5 border rounded" step="0.01" min="0" />
-                            <select value={layerFactorMode} onChange={(e) => setLayerFactorMode(e.target.value)} className="px-1 py-0.5 border rounded bg-white">
-                              <option value="all">All</option>
-                              <option value="odd">Odd</option>
-                              <option value="even">Even</option>
-                            </select>
-                            <button onClick={applyFactorToLayers} className="px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 font-medium">Apply</button>
-                            <div className="border-l pl-2 ml-2 flex items-center gap-1">
-                              <label className="font-semibold text-gray-700">Shift:</label>
-                              <input type="number" value={shiftValue} onChange={(e) => setShiftValue(e.target.value)} className="w-14 px-1 py-0.5 border rounded" step="1" />
-                              <select value={shiftMode} onChange={(e) => setShiftMode(e.target.value)} className="px-1 py-0.5 border rounded bg-white">
-                                <option value="left-right">Left/Right</option>
-                                <option value="up-down">Up/Down</option>
+                        ) : (
+                          <div className="text-xs text-gray-600 flex justify-between items-center gap-4">
+                            <div className="flex gap-4">
+                              <span>Layers: {layers.length}</span>
+                              <span>Total: {layers.reduce((sum, l) => sum + (parseFloat(l.thickness) || 0), 0).toFixed(1)} nm</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <label className="font-semibold text-gray-700">Factor:</label>
+                              <input type="number" value={layerFactor} onChange={(e) => setLayerFactor(e.target.value)} className="w-14 px-1 py-0.5 border rounded" step="0.01" min="0" />
+                              <select value={layerFactorMode} onChange={(e) => setLayerFactorMode(e.target.value)} className="px-1 py-0.5 border rounded bg-white">
+                                <option value="all">All</option>
+                                <option value="odd">Odd</option>
+                                <option value="even">Even</option>
                               </select>
-                              <button onClick={applyShift} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 font-medium" disabled={shiftMode === "up-down" || parseFloat(shiftValue) === 0}>Apply</button>
-                            </div>
-                            <button onClick={undoLastChange} className="px-2 py-0.5 bg-orange-600 text-white rounded hover:bg-orange-700 font-medium" disabled={!layers.some((l) => l.lastThickness !== undefined)}>Undo</button>
-                            <button onClick={resetToOriginal} className="px-2 py-0.5 bg-red-600 text-white rounded hover:bg-red-700 font-medium" disabled={!layers.some((l) => l.originalThickness !== undefined)}>Reset</button>
-                            <div className="border-l pl-2 ml-2 flex items-center gap-1">
-                              <label className="font-semibold text-gray-700">QWOT λ:</label>
-                              <input type="number" value={qwotReference} onChange={(e) => setQwotReference(safeParseFloat(e.target.value))} className="w-14 px-1 py-0.5 border rounded" step="1" min="0" placeholder="nm" />
+                              <button onClick={applyFactorToLayers} className="px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 font-medium">Apply</button>
+                              <div className="border-l pl-2 ml-2 flex items-center gap-1">
+                                <label className="font-semibold text-gray-700">Shift:</label>
+                                <input type="number" value={shiftValue} onChange={(e) => setShiftValue(e.target.value)} className="w-14 px-1 py-0.5 border rounded" step="1" />
+                                <select value={shiftMode} onChange={(e) => setShiftMode(e.target.value)} className="px-1 py-0.5 border rounded bg-white">
+                                  <option value="left-right">Left/Right</option>
+                                  <option value="up-down">Up/Down</option>
+                                </select>
+                                <button onClick={applyShift} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 font-medium" disabled={shiftMode === "up-down" || parseFloat(shiftValue) === 0}>Apply</button>
+                              </div>
+                              <button onClick={undoLastChange} className="px-2 py-0.5 bg-orange-600 text-white rounded hover:bg-orange-700 font-medium" disabled={!layers.some((l) => l.lastThickness !== undefined)}>Undo</button>
+                              <button onClick={resetToOriginal} className="px-2 py-0.5 bg-red-600 text-white rounded hover:bg-red-700 font-medium" disabled={!layers.some((l) => l.originalThickness !== undefined)}>Reset</button>
+                              <div className="border-l pl-2 ml-2 flex items-center gap-1">
+                                <label className="font-semibold text-gray-700">QWOT λ:</label>
+                                <input type="number" value={qwotReference} onChange={(e) => setQwotReference(safeParseFloat(e.target.value))} className="w-14 px-1 py-0.5 border rounded" step="1" min="0" placeholder="nm" />
+                              </div>
                             </div>
                           </div>
-                        </div>
+                        )}
                       </div>
 
                       {/* Mobile: Color Analysis as collapsible section at bottom of layers */}
