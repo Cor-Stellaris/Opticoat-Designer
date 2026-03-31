@@ -1358,6 +1358,7 @@ const ThinFilmDesigner = () => {
   const [mobileColorExpanded, setMobileColorExpanded] = useState(false);
   const [mobileRunListExpanded, setMobileRunListExpanded] = useState(false);
   const [mobileToolbarExpanded, setMobileToolbarExpanded] = useState(false);
+  const [mobileStackMenuOpen, setMobileStackMenuOpen] = useState(false);
   const touchDragTimerRef = useRef(null);
   const touchDragStartRef = useRef({ x: 0, y: 0 });
   const swipeTrackRef = useRef({ startX: 0, startY: 0, currentX: 0 });
@@ -8686,6 +8687,33 @@ const ThinFilmDesigner = () => {
                   style={{ width: `${100 - chartWidth}%`, height: "100%", paddingRight: 8, overflowY: (isPhone || isTablet) ? 'auto' : 'hidden', overflowX: 'hidden' }}
                   className="flex flex-col min-h-0 min-w-0"
                 >
+                  {(isPhone || isTablet) ? (
+                    /* Compact layer header for phone/tablet */
+                    <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2, flexShrink: 0, flexWrap: 'wrap' }}>
+                      <select value={currentStackId || ''} onChange={(e) => switchLayerStack(parseInt(e.target.value))} style={{ flex: 1, minWidth: 0, padding: '3px 4px', borderRadius: 4, fontSize: 11, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, background: darkMode ? '#1e1f3a' : '#fff', color: darkMode ? '#e2e4e9' : '#1f2937' }}>
+                        {layerStacks.filter((s) => s.machineId === currentMachineId).map((stack) => (
+                          <option key={stack.id} value={stack.id}>{getStackDisplayName(stack)}</option>
+                        ))}
+                      </select>
+                      <select value={currentMachineId} onChange={(e) => switchMachine(parseInt(e.target.value))} style={{ padding: '3px 4px', borderRadius: 4, fontSize: 11, border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, background: darkMode ? '#1e1f3a' : '#fff', color: darkMode ? '#e2e4e9' : '#1f2937' }}>
+                        {machines.map((machine) => (<option key={machine.id} value={machine.id}>{machine.name}</option>))}
+                      </select>
+                      <button onClick={addLayerStack} style={{ padding: '3px 6px', borderRadius: 4, fontSize: 11, background: '#16a34a', color: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center' }} title="New Stack"><Plus size={11} /></button>
+                      <button onClick={() => setMobileStackMenuOpen(!mobileStackMenuOpen)} style={{ padding: '3px 6px', borderRadius: 4, fontSize: 11, background: darkMode ? '#1e1f3a' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', border: `1px solid ${darkMode ? '#363860' : '#d1d5db'}`, cursor: 'pointer', display: 'flex', alignItems: 'center' }} title="More options"><Settings size={11} /></button>
+                    </div>
+                    {mobileStackMenuOpen && (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 2, flexShrink: 0, padding: '4px 0' }}>
+                        <button onClick={() => deleteLayerStack(currentStackId)} disabled={layerStacks.filter((s) => s.machineId === currentMachineId).length === 0} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, background: '#ef4444', color: '#fff', border: 'none', cursor: 'pointer' }}>Delete Stack</button>
+                        <button onClick={() => { if (!tierLimits.coatingTemplates) { setUpgradeFeature('Coating Templates'); setShowUpgradePrompt(true); return; } setShowTemplatePicker(true); }} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, background: theme.accent, color: '#fff', border: 'none', cursor: 'pointer' }}>Template</button>
+                        <button onClick={() => setShowToolingModal(true)} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, background: '#3b82f6', color: '#fff', border: 'none', cursor: 'pointer' }}>Tooling</button>
+                        <button onClick={() => { calculateCoatingStress(); setShowStressModal(true); }} disabled={layers.length === 0} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, background: '#9333ea', color: '#fff', border: 'none', cursor: 'pointer', opacity: layers.length === 0 ? 0.5 : 1 }}>Stress</button>
+                      </div>
+                    )}
+                    </>
+                  ) : (
+                    /* Desktop: full header */
+                    <>
                   <div className="flex items-center gap-2 mb-1 flex-shrink-0">
                     <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
                     <button onClick={addLayerStack} className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-700 text-xs flex items-center gap-1"><Plus size={10} /> New Stack</button>
@@ -8739,6 +8767,8 @@ const ThinFilmDesigner = () => {
                       <button onClick={() => { calculateCoatingStress(); setShowStressModal(true); }} disabled={layers.length === 0} className="px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-xs disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1" title="Calculate stress"><Zap size={10} />Stress</button>
                     </div>
                   </div>
+                    </>
+                  )}
 
                   {/* Compact Grid Header for horizontal mode */}
                   <div className="grid gap-x-1 bg-gray-100 p-1 rounded text-xs font-semibold text-gray-700 border-b-2 border-gray-300 flex-shrink-0 items-center" style={{ gridTemplateColumns: '0.8rem 1.5rem minmax(3rem, 1fr) minmax(2.5rem, 4rem) 2.5rem 2.5rem 2.5rem 4.5rem' }}>
