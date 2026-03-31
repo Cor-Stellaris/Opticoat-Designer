@@ -8312,13 +8312,13 @@ const ThinFilmDesigner = () => {
       )}
       <div className="h-full flex flex-col">
         {/* Tabs */}
-        <div className="flex gap-1 mb-2 flex-shrink-0 items-center" style={{ background: darkMode ? '#111225' : '#e0e7ff', borderRadius: 10, padding: '3px 4px', flexWrap: isPhone ? 'wrap' : 'nowrap' }}>
-          {[
-            { id: 'designer', label: isPhone ? 'Designer' : 'Thin-Film Designer', icon: null },
-            { id: 'assistant', label: isPhone ? 'Assistant' : 'Design Assistant', icon: <Zap size={isPhone ? 12 : 14} /> },
-            { id: 'tracking', label: isPhone ? 'Tracking' : 'Recipe Tracking', icon: <Upload size={isPhone ? 12 : 14} /> },
-            { id: 'yield', label: isPhone ? 'Yield' : 'Yield Analysis', icon: <TrendingUp size={isPhone ? 12 : 14} /> },
-          ].map(tab => (
+        <div className="flex gap-1 flex-shrink-0 items-center" style={{ background: darkMode ? '#111225' : '#e0e7ff', borderRadius: 10, padding: '3px 4px', flexWrap: (isPhone || isTablet) ? 'wrap' : 'nowrap', marginBottom: (isPhone || isTablet) ? 2 : 8 }}>
+          {(() => { const compact = isPhone || isTablet; const iconSz = compact ? 11 : 14; return [
+            { id: 'designer', label: compact ? 'Designer' : 'Thin-Film Designer', icon: null },
+            { id: 'assistant', label: compact ? 'Assist' : 'Design Assistant', icon: <Zap size={iconSz} /> },
+            { id: 'tracking', label: compact ? 'Track' : 'Recipe Tracking', icon: <Upload size={iconSz} /> },
+            { id: 'yield', label: compact ? 'Yield' : 'Yield Analysis', icon: <TrendingUp size={iconSz} /> },
+          ]; })().map(tab => (
             <button
               key={tab.id}
               onClick={() => {
@@ -8326,10 +8326,10 @@ const ThinFilmDesigner = () => {
               }}
               className="flex items-center gap-1.5 transition-all"
               style={{
-                padding: isPhone ? '8px 8px' : '6px 14px',
-                borderRadius: 8,
-                fontSize: isPhone ? 11 : 13,
-                minHeight: isPhone ? 40 : undefined,
+                padding: (isPhone || isTablet) ? '5px 7px' : '6px 14px',
+                borderRadius: (isPhone || isTablet) ? 6 : 8,
+                fontSize: (isPhone || isTablet) ? 11 : 13,
+                minHeight: isPhone ? 34 : undefined,
                 fontWeight: activeTab === tab.id ? 600 : 500,
                 background: activeTab === tab.id
                   ? (darkMode ? 'var(--accent)' : '#ffffff')
@@ -8406,7 +8406,7 @@ const ThinFilmDesigner = () => {
                       title="Team management"
                     >
                       <Users size={isPhone ? 14 : 12} />
-                      {!isPhone && <span>Team</span>}
+                      {isDesktop && <span>Team</span>}
                     </button>
                   )}
                   <UserButton afterSignOutUrl={window.location.href} />
@@ -8420,12 +8420,12 @@ const ThinFilmDesigner = () => {
                     title="View plans and pricing"
                   >
                     <Crown size={isPhone ? 14 : 12} />
-                    {!isPhone && <span>Plans</span>}
+                    {isDesktop && <span>Plans</span>}
                   </button>
                   <SignInButton mode="modal">
                     <button className="flex items-center gap-1 px-3 py-1.5 rounded text-xs bg-indigo-600 text-white hover:bg-indigo-700 font-medium" style={{ minHeight: isPhone ? 36 : undefined }}>
                       <LogIn size={isPhone ? 14 : 12} />
-                      {!isPhone && <span>Sign In</span>}
+                      {isDesktop && <span>Sign In</span>}
                     </button>
                   </SignInButton>
                 </div>
@@ -8438,7 +8438,7 @@ const ThinFilmDesigner = () => {
                 title="View plans and pricing"
               >
                 <Crown size={isPhone ? 14 : 12} />
-                {!isPhone && <span>Plans</span>}
+                {isDesktop && <span>Plans</span>}
               </button>
             )}
 
@@ -8453,7 +8453,7 @@ const ThinFilmDesigner = () => {
                   title="Save all machines, stacks, materials, and settings as a workspace"
                 >
                   <Save size={isPhone ? 16 : 12} />
-                  {!isPhone && <span>Save Workspace</span>}
+                  {isDesktop && <span>Save Workspace</span>}
                 </button>
                 <button
                   onClick={() => { loadDesignsList(); setShowLoadWorkspaceModal(true); }}
@@ -8462,7 +8462,7 @@ const ThinFilmDesigner = () => {
                   title="Load a saved workspace or individual items"
                 >
                   <FolderOpen size={isPhone ? 16 : 12} />
-                  {!isPhone && <span>Load Workspace</span>}
+                  {isDesktop && <span>Load Workspace</span>}
                 </button>
               </>
             )}
@@ -8506,15 +8506,15 @@ const ThinFilmDesigner = () => {
                   <span className="text-gray-600">λ: </span>
                   <input
                     type="number"
-                    value={wavelengthRange.min}
+                    value={wavelengthRange.min === "" ? "" : wavelengthRange.min}
                     onChange={(e) =>
                       setWavelengthRange({
                         ...wavelengthRange,
-                        min: e.target.value === "" ? 0 : Math.max(0, parseInt(e.target.value) || 0),
+                        min: e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value) || 0),
                       })
                     }
-                    onBlur={(e) => {
-                      if (e.target.value === "") {
+                    onBlur={() => {
+                      if (wavelengthRange.min === "" || wavelengthRange.min === null) {
                         setWavelengthRange({ ...wavelengthRange, min: 0 });
                       }
                     }}
@@ -8525,15 +8525,15 @@ const ThinFilmDesigner = () => {
                   <span className="mx-1">-</span>
                   <input
                     type="number"
-                    value={wavelengthRange.max}
+                    value={wavelengthRange.max === "" ? "" : wavelengthRange.max}
                     onChange={(e) =>
                       setWavelengthRange({
                         ...wavelengthRange,
-                        max: e.target.value === "" ? 0 : Math.max(0, parseInt(e.target.value) || 0),
+                        max: e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value) || 0),
                       })
                     }
-                    onBlur={(e) => {
-                      if (e.target.value === "") {
+                    onBlur={() => {
+                      if (wavelengthRange.max === "" || wavelengthRange.max === null) {
                         setWavelengthRange({ ...wavelengthRange, max: 0 });
                       }
                     }}
@@ -8558,15 +8558,15 @@ const ThinFilmDesigner = () => {
                   <span className="text-gray-600">Y: </span>
                   <input
                     type="number"
-                    value={reflectivityRange.min}
+                    value={reflectivityRange.min === "" ? "" : reflectivityRange.min}
                     onChange={(e) =>
                       setReflectivityRange({
                         ...reflectivityRange,
-                        min: e.target.value === "" ? 0 : Math.max(0, safeParseFloat(e.target.value)),
+                        min: e.target.value === "" ? "" : Math.max(0, safeParseFloat(e.target.value)),
                       })
                     }
-                    onBlur={(e) => {
-                      if (e.target.value === "") {
+                    onBlur={() => {
+                      if (reflectivityRange.min === "" || reflectivityRange.min === null) {
                         setReflectivityRange({ ...reflectivityRange, min: 0 });
                       }
                     }}
@@ -8578,15 +8578,15 @@ const ThinFilmDesigner = () => {
                   <span className="mx-1">-</span>
                   <input
                     type="number"
-                    value={reflectivityRange.max}
+                    value={reflectivityRange.max === "" ? "" : reflectivityRange.max}
                     onChange={(e) =>
                       setReflectivityRange({
                         ...reflectivityRange,
-                        max: e.target.value === "" ? 0 : Math.max(0, safeParseFloat(e.target.value)),
+                        max: e.target.value === "" ? "" : Math.max(0, safeParseFloat(e.target.value)),
                       })
                     }
-                    onBlur={(e) => {
-                      if (e.target.value === "") {
+                    onBlur={() => {
+                      if (reflectivityRange.max === "" || reflectivityRange.max === null) {
                         setReflectivityRange({ ...reflectivityRange, max: 0 });
                       }
                     }}
