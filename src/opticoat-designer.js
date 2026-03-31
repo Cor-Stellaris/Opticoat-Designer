@@ -1046,7 +1046,26 @@ const SPLASH_RINGS = [
   { color: '#6040B0', size: 40,  bw: 6,  glow: 'rgba(96,64,176,0.4)' },
 ];
 
+// Mobile responsiveness hook — detects phone/tablet/desktop breakpoints
+function useIsMobile() {
+  const [width, setWidth] = useState(
+    typeof window !== 'undefined' ? window.innerWidth : 1200
+  );
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return {
+    isPhone: width < 640,
+    isTablet: width >= 640 && width <= 1024,
+    isDesktop: width > 1024,
+    width,
+  };
+}
+
 const ThinFilmDesigner = () => {
+  const { isPhone, isTablet, isDesktop } = useIsMobile();
   const [activeTab, setActiveTab] = useState("designer");
 
   // Splash screen state: 'idle' → 'expanding' → null
@@ -1330,6 +1349,16 @@ const ThinFilmDesigner = () => {
   const [offlineReady, setOfflineReady] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const autoSaveTimerRef = useRef(null);
+
+  // Mobile interaction state
+  const [swipeOpenRowId, setSwipeOpenRowId] = useState(null);
+  const [touchDragState, setTouchDragState] = useState(null);
+  const [mobileColorExpanded, setMobileColorExpanded] = useState(false);
+  const [mobileRunListExpanded, setMobileRunListExpanded] = useState(false);
+  const touchDragTimerRef = useRef(null);
+  const touchDragStartRef = useRef({ x: 0, y: 0 });
+  const swipeTrackRef = useRef({ startX: 0, startY: 0, currentX: 0 });
+  const chartDoubleTapRef = useRef(0);
 
   // Auth state (Clerk)
   const { isSignedIn, user: authUser } = useClerkUser();
@@ -5469,32 +5498,30 @@ const ThinFilmDesigner = () => {
   };
 
   useEffect(() => {
-    const handleMouseMove = (e) => {
-      if (!isDragging) return;
-
-      // Find the container element
+    const handleMove = (clientY) => {
       const container = document.querySelector(".designer-container");
       if (!container) return;
-
       const rect = container.getBoundingClientRect();
-      const newHeight = ((e.clientY - rect.top) / rect.height) * 100;
-
-      // Constrain between 30% and 80%
-      if (newHeight > 30 && newHeight < 80) {
+      const newHeight = ((clientY - rect.top) / rect.height) * 100;
+      if (newHeight > 20 && newHeight < 80) {
         setChartHeight(newHeight);
       }
     };
 
-    const handleMouseUp = () => {
-      setIsDragging(false);
-    };
+    const handleMouseMove = (e) => { if (!isDragging) return; handleMove(e.clientY); };
+    const handleTouchMove = (e) => { if (!isDragging) return; e.preventDefault(); handleMove(e.touches[0].clientY); };
+    const handleEnd = () => { setIsDragging(false); };
 
     if (isDragging) {
       document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
+      document.addEventListener("mouseup", handleEnd);
+      document.addEventListener("touchmove", handleTouchMove, { passive: false });
+      document.addEventListener("touchend", handleEnd);
       return () => {
         document.removeEventListener("mousemove", handleMouseMove);
-        document.removeEventListener("mouseup", handleMouseUp);
+        document.removeEventListener("mouseup", handleEnd);
+        document.removeEventListener("touchmove", handleTouchMove);
+        document.removeEventListener("touchend", handleEnd);
       };
     }
   }, [isDragging]);
@@ -8133,8 +8160,11 @@ const ThinFilmDesigner = () => {
     </ResponsiveContainer>
   );
 
+  // On phone/tablet, force vertical ("tall") layout mode for the Designer tab
+  const effectiveLayoutMode = (isPhone || isTablet) ? 'tall' : layoutMode;
+
   return (
-    <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-2 overflow-hidden">
+    <div className="w-full h-screen bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden" style={{ padding: isPhone ? '4px' : '8px' }}>
       {/* Splash screen */}
       {splashPhase && (<>
         {/* Circular reveal mask — box-shadow fills the screen, growing hole reveals the app from center */}
@@ -8241,12 +8271,12 @@ const ThinFilmDesigner = () => {
       )}
       <div className="h-full flex flex-col">
         {/* Tabs */}
-        <div className="flex gap-1 mb-2 flex-shrink-0 items-center" style={{ background: darkMode ? '#111225' : '#e0e7ff', borderRadius: 10, padding: '3px 4px' }}>
+        <div className="flex gap-1 mb-2 flex-shrink-0 items-center" style={{ background: darkMode ? '#111225' : '#e0e7ff', borderRadius: 10, padding: '3px 4px', flexWrap: isPhone ? 'wrap' : 'nowrap' }}>
           {[
-            { id: 'designer', label: 'Thin-Film Designer', icon: null },
-            { id: 'assistant', label: 'Design Assistant', icon: <Zap size={14} /> },
-            { id: 'tracking', label: 'Recipe Tracking', icon: <Upload size={14} /> },
-            { id: 'yield', label: 'Yield Analysis', icon: <TrendingUp size={14} /> },
+            { id: 'designer', label: isPhone ? 'Designer' : 'Thin-Film Designer', icon: null },
+            { id: 'assistant', label: isPhone ? 'Assistant' : 'Design Assistant', icon: <Zap size={isPhone ? 12 : 14} /> },
+            { id: 'tracking', label: isPhone ? 'Tracking' : 'Recipe Tracking', icon: <Upload size={isPhone ? 12 : 14} /> },
+            { id: 'yield', label: isPhone ? 'Yield' : 'Yield Analysis', icon: <TrendingUp size={isPhone ? 12 : 14} /> },
           ].map(tab => (
             <button
               key={tab.id}
@@ -8255,9 +8285,10 @@ const ThinFilmDesigner = () => {
               }}
               className="flex items-center gap-1.5 transition-all"
               style={{
-                padding: '6px 14px',
+                padding: isPhone ? '8px 8px' : '6px 14px',
                 borderRadius: 8,
-                fontSize: 13,
+                fontSize: isPhone ? 11 : 13,
+                minHeight: isPhone ? 40 : undefined,
                 fontWeight: activeTab === tab.id ? 600 : 500,
                 background: activeTab === tab.id
                   ? (darkMode ? 'var(--accent)' : '#ffffff')
@@ -8295,14 +8326,14 @@ const ThinFilmDesigner = () => {
               onClick={() => setDarkMode(prev => !prev)}
               className="flex items-center justify-center rounded"
               style={{
-                width: 28, height: 28,
+                width: isPhone ? 36 : 28, height: isPhone ? 36 : 28,
                 background: darkMode ? 'var(--accent-light)' : 'var(--accent-lighter)',
                 color: 'var(--accent-text)',
                 transition: 'background 0.2s, color 0.2s',
               }}
               title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
             >
-              {darkMode ? <Sun size={14} /> : <Moon size={14} />}
+              {darkMode ? <Sun size={isPhone ? 16 : 14} /> : <Moon size={isPhone ? 16 : 14} />}
             </button>
 
             {/* Online/Offline indicator */}
@@ -8323,8 +8354,8 @@ const ThinFilmDesigner = () => {
                     className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-amber-100 text-amber-700 hover:bg-amber-200"
                     title="Manage subscription"
                   >
-                    <Crown size={12} />
-                    <span className="capitalize">{trialInfo?.isTrialing ? `Trial (${Math.max(1, Math.ceil((trialInfo.trialEnd - Date.now()) / 86400000))}d left)` : userTier}</span>
+                    <Crown size={isPhone ? 14 : 12} />
+                    {!isPhone && <span className="capitalize">{trialInfo?.isTrialing ? `Trial (${Math.max(1, Math.ceil((trialInfo.trialEnd - Date.now()) / 86400000))}d left)` : userTier}</span>}
                   </button>
                   {userTier === 'enterprise' && organization && membership?.role === 'org:admin' && (
                     <button
@@ -8333,8 +8364,8 @@ const ThinFilmDesigner = () => {
                       style={{ background: darkMode ? '#1e293b' : '#e0e7ff', color: darkMode ? '#93c5fd' : '#4338ca', border: 'none', cursor: 'pointer' }}
                       title="Team management"
                     >
-                      <Users size={12} />
-                      <span>Team</span>
+                      <Users size={isPhone ? 14 : 12} />
+                      {!isPhone && <span>Team</span>}
                     </button>
                   )}
                   <UserButton afterSignOutUrl={window.location.href} />
@@ -8347,13 +8378,13 @@ const ThinFilmDesigner = () => {
                     style={{ background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer' }}
                     title="View plans and pricing"
                   >
-                    <Crown size={12} />
-                    <span>Plans</span>
+                    <Crown size={isPhone ? 14 : 12} />
+                    {!isPhone && <span>Plans</span>}
                   </button>
                   <SignInButton mode="modal">
-                    <button className="flex items-center gap-1 px-3 py-1.5 rounded text-xs bg-indigo-600 text-white hover:bg-indigo-700 font-medium">
-                      <LogIn size={12} />
-                      <span>Sign In</span>
+                    <button className="flex items-center gap-1 px-3 py-1.5 rounded text-xs bg-indigo-600 text-white hover:bg-indigo-700 font-medium" style={{ minHeight: isPhone ? 36 : undefined }}>
+                      <LogIn size={isPhone ? 14 : 12} />
+                      {!isPhone && <span>Sign In</span>}
                     </button>
                   </SignInButton>
                 </div>
@@ -8365,8 +8396,8 @@ const ThinFilmDesigner = () => {
                 style={{ background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer' }}
                 title="View plans and pricing"
               >
-                <Crown size={12} />
-                <span>Plans</span>
+                <Crown size={isPhone ? 14 : 12} />
+                {!isPhone && <span>Plans</span>}
               </button>
             )}
 
@@ -8377,20 +8408,20 @@ const ThinFilmDesigner = () => {
                 <button
                   onClick={() => setShowSaveWorkspaceModal(true)}
                   className="flex items-center gap-1 rounded text-xs"
-                  style={{ padding: '4px 10px', background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer', fontWeight: 500 }}
+                  style={{ padding: isPhone ? '6px 8px' : '4px 10px', background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer', fontWeight: 500, minHeight: isPhone ? 36 : undefined }}
                   title="Save all machines, stacks, materials, and settings as a workspace"
                 >
-                  <Save size={12} />
-                  <span>Save Workspace</span>
+                  <Save size={isPhone ? 16 : 12} />
+                  {!isPhone && <span>Save Workspace</span>}
                 </button>
                 <button
                   onClick={() => { loadDesignsList(); setShowLoadWorkspaceModal(true); }}
                   className="flex items-center gap-1 rounded text-xs"
-                  style={{ padding: '4px 10px', background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer', fontWeight: 500 }}
+                  style={{ padding: isPhone ? '6px 8px' : '4px 10px', background: theme.accentLight, color: theme.accentText, border: 'none', cursor: 'pointer', fontWeight: 500, minHeight: isPhone ? 36 : undefined }}
                   title="Load a saved workspace or individual items"
                 >
-                  <FolderOpen size={12} />
-                  <span>Load Workspace</span>
+                  <FolderOpen size={isPhone ? 16 : 12} />
+                  {!isPhone && <span>Load Workspace</span>}
                 </button>
               </>
             )}
@@ -8401,8 +8432,8 @@ const ThinFilmDesigner = () => {
         {activeTab === "designer" && (
           <>
             <div className="flex justify-between items-center mb-2 flex-shrink-0 flex-wrap gap-2">
-              <h1 className="text-lg font-bold text-gray-800">
-                Thin Film Coating Stack Designer
+              <h1 className="text-lg font-bold text-gray-800" style={{ fontSize: isPhone ? 14 : undefined }}>
+                {isPhone ? 'Stack Designer' : 'Thin Film Coating Stack Designer'}
               </h1>
               <div className="flex gap-2 text-xs flex-wrap">
                 <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
@@ -8422,6 +8453,7 @@ const ThinFilmDesigner = () => {
                       }
                     }}
                     className="w-12 px-1 border rounded"
+                    style={{ fontSize: isPhone ? 16 : undefined }}
                     min="0"
                   />
                   <span className="mx-1">-</span>
@@ -8440,6 +8472,7 @@ const ThinFilmDesigner = () => {
                       }
                     }}
                     className="w-12 px-1 border rounded"
+                    style={{ fontSize: isPhone ? 16 : undefined }}
                     min="0"
                   />
                   <span className="ml-1">nm</span>
@@ -8535,14 +8568,16 @@ const ThinFilmDesigner = () => {
                   <Settings size={12} />
                   <span>Targets</span>
                 </button>
-                <button
-                  onClick={() => setLayoutMode(layoutMode === "tall" ? "wide" : "tall")}
-                  className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center justify-center flex-shrink-0"
-                  title={layoutMode === "tall" ? "Side-by-side layout" : "Stacked layout"}
-                  style={{ fontSize: 16, lineHeight: 1, width: 32 }}
-                >
-                  {layoutMode === "tall" ? "⬌" : "⬍"}
-                </button>
+                {!isPhone && (
+                  <button
+                    onClick={() => setLayoutMode(layoutMode === "tall" ? "wide" : "tall")}
+                    className="bg-white px-2 py-1 rounded shadow hover:bg-gray-50 flex items-center justify-center flex-shrink-0"
+                    title={layoutMode === "tall" ? "Side-by-side layout" : "Stacked layout"}
+                    style={{ fontSize: 16, lineHeight: 1, width: 32 }}
+                  >
+                    {layoutMode === "tall" ? "⬌" : "⬍"}
+                  </button>
+                )}
                 <div className="bg-white px-2 py-1 rounded shadow flex-shrink-0">
                   {!experimentalData ? (
                     <label className={`flex items-center gap-1 ${tierLimits.csvUpload ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
@@ -8577,10 +8612,10 @@ const ThinFilmDesigner = () => {
               </div>
             </div>
 
-            <div className={`flex-1 bg-white rounded-lg shadow-lg p-2 flex overflow-hidden designer-container min-h-0 ${layoutMode === "wide" ? "flex-row" : "flex-col"}`}>
+            <div className={`flex-1 bg-white rounded-lg shadow-lg p-2 flex overflow-hidden designer-container min-h-0 ${effectiveLayoutMode === "wide" ? "flex-row" : "flex-col"}`}>
               
               {/* In horizontal mode: Layers first (left side) */}
-              {layoutMode === "wide" && (
+              {effectiveLayoutMode === "wide" && (
                 <div
                   style={{ width: `${100 - chartWidth}%`, height: "100%", paddingRight: 8 }}
                   className="flex flex-col overflow-hidden min-h-0 min-w-0"
@@ -8986,7 +9021,7 @@ const ThinFilmDesigner = () => {
               )}
 
               {/* Horizontal mode divider */}
-              {layoutMode === "wide" && (
+              {effectiveLayoutMode === "wide" && (
                 <div
                   className="flex items-center justify-center flex-shrink-0"
                   style={{ width: '11px', padding: '0 4px', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'col-resize' }}
@@ -8999,7 +9034,7 @@ const ThinFilmDesigner = () => {
               )}
 
               {/* Chart container - horizontal mode only */}
-              {layoutMode === "wide" && (
+              {effectiveLayoutMode === "wide" && (
               <div
                 style={{ flex: 1, height: "100%" }}
                 className="min-h-0 flex gap-2 flex-shrink-0"
@@ -9303,7 +9338,7 @@ const ThinFilmDesigner = () => {
 
 
                 {/* Enhanced Color Analysis Sidebar */}
-                <div className={`bg-gray-50 rounded p-2 border flex-shrink-0 flex flex-col overflow-y-auto ${layoutMode === "wide" ? "w-36" : "w-48"}`} style={{ maxHeight: "100%" }}>
+                <div className={`bg-gray-50 rounded p-2 border flex-shrink-0 flex flex-col overflow-y-auto ${effectiveLayoutMode === "wide" ? "w-36" : "w-48"}`} style={{ maxHeight: "100%" }}>
                   <div className="text-xs font-bold text-gray-800 mb-2">
                     Color Analysis
                   </div>
@@ -9741,12 +9776,12 @@ const ThinFilmDesigner = () => {
               )}
 
               {/* VERTICAL MODE - Complete layout with sidebar on right */}
-              {layoutMode === "tall" && (
+              {effectiveLayoutMode === "tall" && (
                 <div className="flex flex-row flex-1 gap-2 min-h-0">
                   {/* Left column: Chart + Divider + Layers */}
                   <div className="flex-1 flex flex-col min-h-0 min-w-0">
                     {/* Chart section */}
-                    <div style={{ height: `${chartHeight}%`, position: 'relative' }} className="min-h-0 flex-shrink-0">
+                    <div style={{ height: `${isPhone ? Math.min(chartHeight, 45) : chartHeight}%`, position: 'relative' }} className="min-h-0 flex-shrink-0" onTouchEnd={(e) => { if (!isPhone && !isTablet) return; const now = Date.now(); if (chartDoubleTapRef.current && now - chartDoubleTapRef.current < 300) { resetChartZoom(); chartDoubleTapRef.current = 0; } else { chartDoubleTapRef.current = now; } }}>
                       {chartZoom && displayMode !== "admittance" && displayMode !== "efield" && (
                         <button
                           onClick={resetChartZoom}
@@ -9869,11 +9904,11 @@ const ThinFilmDesigner = () => {
                     </div>
 
                     {/* Resizable Divider */}
-                    <div className="flex items-center justify-center flex-shrink-0" style={{ height: '11px', padding: '4px 0', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'row-resize' }} onMouseDown={handleDividerMouseDown} title="Drag to resize" onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = theme.accentHover; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = theme.borderStrong; }}>
+                    <div className="flex items-center justify-center flex-shrink-0" style={{ height: isPhone ? '18px' : '11px', padding: isPhone ? '6px 0' : '4px 0', transition: 'background-color 0.15s', backgroundClip: 'content-box', backgroundColor: theme.borderStrong, cursor: 'row-resize' }} onMouseDown={handleDividerMouseDown} onTouchStart={(e) => { e.preventDefault(); setIsDragging(true); }} title="Drag to resize" onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = theme.accentHover; }} onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = theme.borderStrong; }}>
                     </div>
 
                     {/* Layers section */}
-                    <div style={{ height: `${100 - chartHeight - 1}%` }} className="flex flex-col overflow-hidden min-h-0 min-w-0">
+                    <div style={{ height: `${100 - (isPhone ? Math.min(chartHeight, 45) : chartHeight) - 1}%` }} className="flex flex-col overflow-hidden min-h-0 min-w-0">
                       <div className="flex justify-between items-center mb-1 flex-shrink-0">
                         <div className="flex items-center gap-2">
                           <h2 className="text-sm font-semibold text-gray-700">Layer Stacks</h2>
@@ -9911,15 +9946,15 @@ const ThinFilmDesigner = () => {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-12 gap-1 bg-gray-100 p-1 rounded text-xs font-semibold text-gray-700 border-b-2 border-gray-300 flex-shrink-0">
-                        <div className="col-span-1 text-center">#</div>
-                        <div className="col-span-1 text-center">Type</div>
-                        <div className="col-span-2">Material</div>
-                        <div className="col-span-2">Thickness (nm)</div>
-                        <div className="col-span-1 text-center">QWOT</div>
-                        <div className="col-span-2">Last (nm)</div>
-                        <div className="col-span-2">Original (nm)</div>
-                        <div className="col-span-1"></div>
+                      <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))', gap: '4px', padding: '4px', borderRadius: 6, fontSize: isPhone ? 11 : 12, fontWeight: 600, background: darkMode ? '#1e1e2e' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', borderBottom: `2px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, flexShrink: 0, alignItems: 'center' }}>
+                        <div style={{ textAlign: 'center' }}>#</div>
+                        {!isPhone && <div style={{ textAlign: 'center' }}>Type</div>}
+                        <div style={isPhone ? {} : { gridColumn: 'span 2' }}>Material</div>
+                        <div style={isPhone ? {} : { gridColumn: 'span 2' }}>{isPhone ? 'nm' : 'Thickness (nm)'}</div>
+                        {!isPhone && <div style={{ textAlign: 'center' }}>QWOT</div>}
+                        {!isPhone && <div style={{ gridColumn: 'span 2' }}>Last (nm)</div>}
+                        {!isPhone && <div style={{ gridColumn: 'span 2' }}>Original (nm)</div>}
+                        {!isPhone && <div></div>}
                       </div>
 
                       <div className="flex-1 min-h-0" style={{ overflowY: 'auto', overflowX: 'hidden' }}>
@@ -9937,15 +9972,15 @@ const ThinFilmDesigner = () => {
                           </div>
                         ) : (
                         <>
-                        <div className="grid grid-cols-12 gap-1 p-1 bg-amber-50 border-b border-gray-200 text-xs items-center">
-                          <div className="col-span-1 text-center font-medium">-</div>
-                          <div className="col-span-1 text-center text-gray-600">Sub</div>
-                          <div className="col-span-2"><div className="flex items-center gap-1"><input type="text" value={substrate.material} onChange={(e) => setSubstrate({ ...substrate, material: e.target.value })} className="flex-1 min-w-0 px-1 py-0.5 border rounded" /><div style={{ width: 12, flexShrink: 0 }}></div></div></div>
-                          <div className="col-span-2"><input type="number" value={substrate.n} onChange={(e) => setSubstrate({ ...substrate, n: safeParseFloat(e.target.value) || 1.52 })} className="w-full px-1 py-0.5 border rounded" step="0.01" title="Substrate refractive index" /></div>
-                          <div className="col-span-1 text-center">-</div>
-                          <div className="col-span-2 text-left">-</div>
-                          <div className="col-span-2 text-left">-</div>
-                          <div className="col-span-1"></div>
+                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))', gap: '4px', padding: '4px', background: darkMode ? '#2a2520' : '#fffbeb', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 13 : 12, alignItems: 'center' }}>
+                          <div style={{ textAlign: 'center', fontWeight: 500 }}>-</div>
+                          {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>Sub</div>}
+                          <div><div className="flex items-center gap-1"><input type="text" value={substrate.material} onChange={(e) => setSubstrate({ ...substrate, material: e.target.value })} className="flex-1 min-w-0 px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 16 : undefined }} />{!isPhone && <div style={{ width: 12, flexShrink: 0 }}></div>}</div></div>
+                          <div><input type="number" value={substrate.n} onChange={(e) => setSubstrate({ ...substrate, n: safeParseFloat(e.target.value) || 1.52 })} className="w-full px-1 py-0.5 border rounded" step="0.01" title="Substrate refractive index" style={{ fontSize: isPhone ? 16 : undefined }} /></div>
+                          {!isPhone && <div style={{ textAlign: 'center' }}>-</div>}
+                          {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
+                          {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
+                          {!isPhone && <div></div>}
                         </div>
 
                         <div className="relative border-b border-gray-300" style={{ height: "1px", zIndex: 3 }}>
@@ -9960,48 +9995,107 @@ const ThinFilmDesigner = () => {
                         >
                         {layers.map((layer, idx) => (
                           <React.Fragment key={layer.id}>
+                          {/* Swipe container for mobile */}
+                          <div style={isPhone ? { position: 'relative', overflow: 'hidden' } : undefined} onClick={() => { if (isPhone && swipeOpenRowId && swipeOpenRowId !== layer.id) setSwipeOpenRowId(null); }}>
                           <div
                             data-layer-row
-                            key={layer.id}
-                            className="grid grid-cols-12 gap-1 p-1 border-b text-xs items-center"
                             style={{
+                              display: 'grid',
+                              gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))',
+                              ...(isPhone ? {
+                                transform: swipeOpenRowId === layer.id ? 'translateX(-100px)' : 'translateX(0)',
+                                transition: 'transform 0.2s ease',
+                              } : {}),
+                              gap: '4px',
+                              padding: isPhone ? '6px 4px' : '4px',
+                              borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`,
+                              fontSize: isPhone ? 13 : 12,
+                              alignItems: 'center',
                               backgroundColor: getMaterialBg(allMaterials[layer.material]?.color || '#e5e7eb'),
-                              borderColor: darkMode ? '#2a2c4a' : '#e5e7eb',
                               borderLeft: layer.locked
                                 ? '3px solid #f87171'
                                 : `3px solid ${allMaterials[layer.material]?.color || '#9ca3af'}`,
-                              transform: getDragTransform(idx, dragIndex, dragOverIndex),
-                              transition: 'transform 0.2s ease, background-color 0.15s',
+                              transform: touchDragState?.isDragging && touchDragState.layerIdx === idx
+                                ? `translateY(${touchDragState.currentY - touchDragState.startY}px) scale(1.02)`
+                                : getDragTransform(idx, dragIndex, dragOverIndex),
+                              transition: touchDragState?.isDragging && touchDragState.layerIdx === idx ? 'none' : 'transform 0.2s ease, background-color 0.15s',
                               position: 'relative',
-                              zIndex: dragIndex === idx ? 2 : 0,
-                              boxShadow: dragIndex === idx ? (darkMode ? '0 2px 10px rgba(0,0,0,0.5)' : '0 2px 8px rgba(0,0,0,0.18)') : 'none',
+                              zIndex: (dragIndex === idx || (touchDragState?.isDragging && touchDragState.layerIdx === idx)) ? 100 : 0,
+                              boxShadow: (dragIndex === idx || (touchDragState?.isDragging && touchDragState.layerIdx === idx))
+                                ? '0 4px 20px rgba(0,0,0,0.25)' : 'none',
                             }}
-                            onMouseEnter={(e) => { e.currentTarget.style.filter = 'brightness(0.93)'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.filter = ''; }}
+                            onMouseEnter={(e) => { if (!isPhone) e.currentTarget.style.filter = 'brightness(0.93)'; }}
+                            onMouseLeave={(e) => { if (!isPhone) e.currentTarget.style.filter = ''; }}
                             onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+                            onTouchStart={(e) => { if (!isPhone) return; const t = e.touches[0]; swipeTrackRef.current = { startX: t.clientX, startY: t.clientY, currentX: t.clientX }; }}
+                            onTouchMove={(e) => { if (!isPhone) return; swipeTrackRef.current.currentX = e.touches[0].clientX; }}
+                            onTouchEnd={() => {
+                              if (!isPhone) return;
+                              const { startX, startY, currentX } = swipeTrackRef.current;
+                              const dx = currentX - startX;
+                              if (dx < -50) { setSwipeOpenRowId(layer.id); }
+                              else if (dx > 30 && swipeOpenRowId === layer.id) { setSwipeOpenRowId(null); }
+                            }}
                           >
-                            <div className="col-span-1 text-center font-medium flex items-center justify-center gap-0.5">
+                            <div style={{ textAlign: 'center', fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
                               <span
-                                draggable
-                                onDragStart={(e) => { setDragIndex(idx); e.dataTransfer.effectAllowed = "move"; const img = new Image(); img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; e.dataTransfer.setDragImage(img, 0, 0); handleDragStartCapture(e.currentTarget.closest('[data-drag-container]')); }}
+                                draggable={!isPhone}
+                                onDragStart={(e) => { if (isPhone) return; setDragIndex(idx); e.dataTransfer.effectAllowed = "move"; const img = new Image(); img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; e.dataTransfer.setDragImage(img, 0, 0); handleDragStartCapture(e.currentTarget.closest('[data-drag-container]')); }}
                                 className="text-gray-400 inline-flex"
-                                style={{ cursor: 'grab', transition: 'color 0.15s, transform 0.15s' }}
+                                style={{ cursor: isPhone ? 'default' : 'grab', transition: 'color 0.15s, transform 0.15s' }}
                                 title="Drag to reorder"
-                                onMouseEnter={(e) => { e.currentTarget.style.color = '#6366f1'; e.currentTarget.style.transform = 'scale(1.25)'; }}
-                                onMouseLeave={(e) => { e.currentTarget.style.color = ''; e.currentTarget.style.transform = ''; }}
-                                onMouseDown={(e) => { e.currentTarget.style.cursor = 'grabbing'; }}
-                                onMouseUp={(e) => { e.currentTarget.style.cursor = 'grab'; }}
-                              ><GripVertical size={10} /></span>{idx + 1}
+                                onMouseEnter={(e) => { if (!isPhone) { e.currentTarget.style.color = '#6366f1'; e.currentTarget.style.transform = 'scale(1.25)'; } }}
+                                onMouseLeave={(e) => { if (!isPhone) { e.currentTarget.style.color = ''; e.currentTarget.style.transform = ''; } }}
+                                onTouchStart={(e) => {
+                                  if (!isPhone && !isTablet) return;
+                                  const touch = e.touches[0];
+                                  touchDragStartRef.current = { x: touch.clientX, y: touch.clientY };
+                                  touchDragTimerRef.current = setTimeout(() => {
+                                    setTouchDragState({ layerIdx: idx, isDragging: true, startY: touch.clientY, currentY: touch.clientY });
+                                    if (navigator.vibrate) navigator.vibrate(50);
+                                    handleDragStartCapture(e.currentTarget.closest('[data-drag-container]'));
+                                  }, 300);
+                                }}
+                                onTouchMove={(e) => {
+                                  if (touchDragTimerRef.current && !touchDragState?.isDragging) {
+                                    const touch = e.touches[0];
+                                    const dx = Math.abs(touch.clientX - touchDragStartRef.current.x);
+                                    const dy = Math.abs(touch.clientY - touchDragStartRef.current.y);
+                                    if (dx > 10 || dy > 10) { clearTimeout(touchDragTimerRef.current); touchDragTimerRef.current = null; }
+                                  }
+                                  if (touchDragState?.isDragging && touchDragState.layerIdx === idx) {
+                                    e.preventDefault();
+                                    const touch = e.touches[0];
+                                    setTouchDragState(prev => prev ? { ...prev, currentY: touch.clientY } : null);
+                                    // Calculate target index from Y position
+                                    const rows = Array.from(document.querySelectorAll('[data-layer-row]'));
+                                    for (let i = 0; i < rows.length; i++) {
+                                      const rect = rows[i].getBoundingClientRect();
+                                      if (touch.clientY >= rect.top && touch.clientY <= rect.bottom) { setDragOverIndex(i); break; }
+                                    }
+                                  }
+                                }}
+                                onTouchEnd={() => {
+                                  clearTimeout(touchDragTimerRef.current); touchDragTimerRef.current = null;
+                                  if (touchDragState?.isDragging) {
+                                    if (dragOverIndex !== null && dragOverIndex !== touchDragState.layerIdx) {
+                                      moveLayer(touchDragState.layerIdx, dragOverIndex);
+                                    }
+                                    setTouchDragState(null); setDragOverIndex(null);
+                                  }
+                                }}
+                                onContextMenu={(e) => { if (isPhone || isTablet) e.preventDefault(); }}
+                              ><GripVertical size={isPhone ? 14 : 10} /></span>{idx + 1}
                             </div>
-                            <div className="col-span-1 text-center text-gray-600">L</div>
-                            <div className="col-span-2">
+                            {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>L</div>}
+                            <div style={isPhone ? {} : { gridColumn: 'span 2' }}>
                               <div className="flex items-center gap-1">
-                                <select value={layer.material} onChange={(e) => { if (e.target.value === "__manage__") { setShowMaterialLibrary(true); e.target.value = layer.material; return; } updateLayer(layer.id, "material", e.target.value); }} className="flex-1 px-1 py-0.5 border rounded bg-white">
+                                <select value={layer.material} onChange={(e) => { if (e.target.value === "__manage__") { setShowMaterialLibrary(true); e.target.value = layer.material; return; } updateLayer(layer.id, "material", e.target.value); }} className="flex-1 px-1 py-0.5 border rounded bg-white" style={{ fontSize: isPhone ? 16 : undefined, minHeight: isPhone ? 36 : undefined }}>
                                   {Object.keys(allMaterials).map((mat) => (<option key={mat} value={mat}>{mat}</option>))}
                                   <option disabled>──────────</option>
                                   <option value="__manage__">Manage Materials...</option>
                                 </select>
-                                <div
+                                {!isPhone && <div
                                   className="cursor-help text-gray-400 hover:text-blue-600"
                                   title={(() => {
                                     const mat = allMaterials[layer.material];
@@ -10021,20 +10115,36 @@ const ThinFilmDesigner = () => {
                                   })()}
                                 >
                                   <Info size={12} />
-                                </div>
+                                </div>}
                               </div>
                             </div>
-                            <div className="col-span-2"><input type="number" value={layer.thickness === 0 ? "" : layer.thickness} onChange={(e) => updateLayer(layer.id, "thickness", e.target.value === "" ? 0 : e.target.value)} className="w-full px-1 py-0.5 border rounded" step="1" /></div>
-                            <div className="col-span-1 text-center text-gray-600 text-[10px]">{qwotReference > 0 ? ((getRefractiveIndex(layer.material, qwotReference, layer.iad) * (parseFloat(layer.thickness) || 0)) / (qwotReference / 4)).toFixed(2) : "-"}</div>
-                            <div className="col-span-2 text-left text-gray-600 text-[10px]">{layer.lastThickness ? layer.lastThickness.toFixed(2) : "-"}</div>
-                            <div className="col-span-2 text-left text-gray-600 text-[10px]">{layer.originalThickness ? layer.originalThickness.toFixed(2) : "-"}</div>
-                            <div className="col-span-1 text-center flex justify-center gap-0.5">
+                            <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="number" value={layer.thickness === 0 ? "" : layer.thickness} onChange={(e) => updateLayer(layer.id, "thickness", e.target.value === "" ? 0 : e.target.value)} className="w-full px-1 py-0.5 border rounded" step="1" style={{ fontSize: isPhone ? 16 : undefined, minHeight: isPhone ? 36 : undefined }} inputMode={isPhone ? "decimal" : undefined} /></div>
+                            {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280', fontSize: 10 }}>{qwotReference > 0 ? ((getRefractiveIndex(layer.material, qwotReference, layer.iad) * (parseFloat(layer.thickness) || 0)) / (qwotReference / 4)).toFixed(2) : "-"}</div>}
+                            {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.lastThickness ? layer.lastThickness.toFixed(2) : "-"}</div>}
+                            {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.originalThickness ? layer.originalThickness.toFixed(2) : "-"}</div>}
+                            {!isPhone && <div style={{ textAlign: 'center', display: 'flex', justifyContent: 'center', gap: '2px' }}>
                               <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} className={`p-0.5 rounded transition-colors ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`} title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}><Lock size={12} /></button>
                               <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, originalThickness: l.originalThickness ? undefined : l.thickness } : l)); }} className={`p-0.5 rounded ${layer.originalThickness ? "bg-green-100 text-green-600 hover:bg-red-100 hover:text-red-600" : "hover:bg-green-100 text-gray-400"}`} title={layer.originalThickness ? "Click to clear original" : "Save as original thickness"}>{"\uD83D\uDCCC"}</button>
                               <button onClick={() => openIADModal(layer.id)} className={`p-0.5 rounded transition-colors ${layer.iad && layer.iad.enabled ? "bg-yellow-100 text-yellow-600 hover:bg-yellow-200" : "hover:bg-gray-100 text-gray-400"}`} title="IAD Settings"><Zap size={12} /></button>
                               <button onClick={() => removeLayer(layer.id)} className="p-0.5 hover:bg-red-100 rounded text-red-600" disabled={layers.length === 1}><Trash2 size={12} /></button>
-                            </div>
+                            </div>}
                           </div>
+                          {/* Swipe-revealed action buttons (phone only) */}
+                          {isPhone && (
+                            <div style={{
+                              position: 'absolute', right: 0, top: 0, bottom: 0, width: '100px',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                              background: darkMode ? '#1e1e2e' : '#f8fafc',
+                            }}>
+                              <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l)); setSwipeOpenRowId(null); }} style={{ width: 40, height: 40, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', background: layer.locked ? '#fecaca' : '#e5e7eb', color: layer.locked ? '#dc2626' : '#6b7280' }}>
+                                <Lock size={16} />
+                              </button>
+                              <button onClick={() => { removeLayer(layer.id); setSwipeOpenRowId(null); }} disabled={layers.length === 1} style={{ width: 40, height: 40, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer', background: '#fecaca', color: '#dc2626' }}>
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          )}
+                          </div>{/* close swipe container */}
                           <div className="relative border-b border-gray-300" style={{ height: "1px", zIndex: 3 }}>
                             <button onClick={() => insertLayerAfter(idx)} className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 bg-white hover:bg-green-100 rounded-full text-green-600 border border-gray-300 hover:border-green-500 transition-colors shadow-sm" title={`Insert layer after layer ${idx + 1}`}><Plus size={10} /></button>
                           </div>
@@ -10042,15 +10152,15 @@ const ThinFilmDesigner = () => {
                         ))}
                         </div>
 
-                        <div className="grid grid-cols-12 gap-1 p-1 bg-sky-50 border-b border-gray-200 text-xs items-center">
-                          <div className="col-span-1 text-center font-medium">-</div>
-                          <div className="col-span-1 text-center text-gray-600">Inc</div>
-                          <div className="col-span-2"><input type="text" value={incident.material} onChange={(e) => setIncident({ ...incident, material: e.target.value })} className="w-full px-1 py-0.5 border rounded" /></div>
-                          <div className="col-span-2 text-center">-</div>
-                          <div className="col-span-1 text-center">-</div>
-                          <div className="col-span-2 text-left">-</div>
-                          <div className="col-span-2 text-left">-</div>
-                          <div className="col-span-1"></div>
+                        <div style={{ display: 'grid', gridTemplateColumns: isPhone ? '1.2rem 1.5rem 1fr 5rem' : 'repeat(12, minmax(0, 1fr))', gap: '4px', padding: '4px', background: darkMode ? '#1e2a30' : '#f0f9ff', borderBottom: `1px solid ${darkMode ? '#2a2c4a' : '#e5e7eb'}`, fontSize: isPhone ? 13 : 12, alignItems: 'center' }}>
+                          <div style={{ textAlign: 'center', fontWeight: 500 }}>-</div>
+                          {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280' }}>Inc</div>}
+                          <div style={isPhone ? {} : { gridColumn: 'span 2' }}><input type="text" value={incident.material} onChange={(e) => setIncident({ ...incident, material: e.target.value })} className="w-full px-1 py-0.5 border rounded" style={{ fontSize: isPhone ? 16 : undefined }} /></div>
+                          <div style={isPhone ? {} : { gridColumn: 'span 2', textAlign: 'center' }}>-</div>
+                          {!isPhone && <div style={{ textAlign: 'center' }}>-</div>}
+                          {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
+                          {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left' }}>-</div>}
+                          {!isPhone && <div></div>}
                         </div>
                         </>
                         )}
@@ -10093,7 +10203,15 @@ const ThinFilmDesigner = () => {
                   </div>
 
                   {/* Right column: Color Analysis Sidebar */}
-                  <div className="w-48 flex-shrink-0 bg-gray-50 rounded p-2 border flex flex-col overflow-y-auto">
+                  {isPhone && (
+                    <button
+                      onClick={() => setMobileColorExpanded(!mobileColorExpanded)}
+                      style={{ position: 'absolute', top: 4, left: 4, zIndex: 10, padding: '4px 10px', borderRadius: 6, fontSize: 10, fontWeight: 600, background: darkMode ? '#1e1e2e' : '#f3f4f6', color: darkMode ? '#a0a0b8' : '#374151', border: `1px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, cursor: 'pointer' }}
+                    >
+                      Color {mobileColorExpanded ? '▲' : '▼'}
+                    </button>
+                  )}
+                  <div className={isPhone ? "flex-shrink-0 flex flex-col overflow-y-auto" : "w-48 flex-shrink-0 bg-gray-50 rounded p-2 border flex flex-col overflow-y-auto"} style={isPhone ? (mobileColorExpanded ? { position: 'absolute', top: 28, left: 4, zIndex: 20, width: '90%', maxHeight: '60%', background: darkMode ? '#1e1e2e' : '#f8fafc', borderRadius: 8, padding: 8, border: `1px solid ${darkMode ? '#2a2c4a' : '#d1d5db'}`, overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' } : { display: 'none' }) : undefined}>
                     <div className="text-xs font-bold text-gray-800 mb-2">Color Analysis</div>
 
                     {/* Current Stack Color */}
@@ -10529,10 +10647,10 @@ const ThinFilmDesigner = () => {
               <h2 className="text-lg font-bold text-gray-800">Design Assistant</h2>
               <p className="text-xs text-gray-500">Define targets or upload CSV to reverse engineer a layer stack</p>
             </div>
-            <div className="flex flex-row gap-4 flex-1 overflow-hidden min-h-0">
+            <div className="flex gap-4 flex-1 overflow-hidden min-h-0" style={{ flexDirection: isPhone ? 'column' : 'row' }}>
 
             {/* Left column: Config + Mode Selection + Generate */}
-            <div className="flex flex-col overflow-hidden min-h-0" style={{ width: '45%', flexShrink: 0 }}>
+            <div className="flex flex-col overflow-hidden min-h-0" style={{ width: isPhone ? '100%' : '45%', flexShrink: 0 }}>
 
             {/* Mode Selection — compact, inside left column */}
             <div className="mb-3 p-2 bg-blue-50 rounded border border-blue-200 flex-shrink-0">
@@ -11958,9 +12076,9 @@ const ThinFilmDesigner = () => {
                 </div>
               </div>
             ) : (
-              <div className="flex-1 overflow-hidden flex gap-3">
+              <div className="flex-1 overflow-hidden flex gap-3" style={{ flexDirection: isPhone ? 'column' : 'row' }}>
                 {/* Left Panel - Controls and Runs List */}
-                <div className="w-48 flex-shrink-0 flex flex-col gap-2" style={{ overflowY: 'auto', overflowX: 'hidden' }}>
+                <div className="flex-shrink-0 flex flex-col gap-2" style={{ width: isPhone ? '100%' : '12rem', overflowY: 'auto', overflowX: 'hidden' }}>
                   {/* Selection and Upload Controls */}
                   <div className="p-2 bg-gray-50 rounded border">
                     <h3 className="text-xs font-bold text-gray-700 mb-2">
@@ -12829,7 +12947,7 @@ const ThinFilmDesigner = () => {
                   runs with realistic process variations.
                 </p>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className={isPhone ? "" : "grid grid-cols-2 gap-4"} style={isPhone ? { display: 'flex', flexDirection: 'column', gap: '16px' } : undefined}>
                   {/* Left: Configuration */}
                   <div className="flex flex-col">
                 <div className="bg-gray-50 p-3 rounded mb-3 flex-shrink-0">
@@ -13415,7 +13533,7 @@ const ThinFilmDesigner = () => {
                   Identify which layers have the most impact on spectral performance to prioritize manufacturing tolerances.
                 </p>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className={isPhone ? "" : "grid grid-cols-2 gap-4"} style={isPhone ? { display: 'flex', flexDirection: 'column', gap: '16px' } : undefined}>
                 {/* Left: SA Configuration */}
                 <div>
                   <div className="bg-gray-50 p-3 rounded mb-3">
@@ -13986,7 +14104,7 @@ const ThinFilmDesigner = () => {
       {/* ========== COLOR COMPARISON MODAL ========== */}
       {showColorCompareModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowColorCompareModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl p-4 flex flex-col" style={{ width: '560px', maxWidth: '95vw', maxHeight: 'calc(100vh - 40px)' }} onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-lg shadow-xl p-4 flex flex-col" style={{ width: isPhone ? '95vw' : '560px', maxWidth: '95vw', maxHeight: isPhone ? '90vh' : 'calc(100vh - 40px)' }} onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-3 flex-shrink-0">
               <h2 className="text-base font-bold text-gray-800">
                 Color Comparison
@@ -14640,7 +14758,7 @@ const ThinFilmDesigner = () => {
       {/* ========== SAVE WORKSPACE MODAL ========== */}
       {showSaveWorkspaceModal && (
         <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'rgba(0,0,0,0.5)' }}>
-          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 420, boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: isPhone ? 16 : 24, width: isPhone ? '95vw' : 420, maxWidth: '95vw', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 4 }}>Save Workspace</h3>
             <p style={{ fontSize: 11, color: theme.textTertiary, marginBottom: 16 }}>Saves all machines, layer stacks, materials, optimizer targets, and settings.{isSignedIn ? ' A local backup is also saved automatically.' : ''}</p>
 
@@ -14686,7 +14804,7 @@ const ThinFilmDesigner = () => {
       {/* ========== LOAD WORKSPACE MODAL ========== */}
       {showLoadWorkspaceModal && (
         <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'rgba(0,0,0,0.5)' }}>
-          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 560, maxHeight: '75vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: isPhone ? 16 : 24, width: isPhone ? '95vw' : 560, maxWidth: '95vw', maxHeight: isPhone ? '90vh' : '75vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div>
                 <h3 style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, margin: 0 }}>Load Workspace</h3>
@@ -14826,7 +14944,7 @@ const ThinFilmDesigner = () => {
       {/* ========== REPLACE WORKSPACE CONFIRM DIALOG ========== */}
       {showReplaceConfirmDialog && (
         <div className="fixed inset-0 flex items-center justify-center z-[60]" style={{ background: 'rgba(0,0,0,0.6)' }}>
-          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 24, width: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
+          <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: isPhone ? 16 : 24, width: isPhone ? '95vw' : 380, maxWidth: '95vw', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
             <h3 style={{ fontSize: 15, fontWeight: 700, color: theme.textPrimary, marginBottom: 8 }}>Replace Current Workspace?</h3>
             <p style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 6 }}>
               Loading <strong>"{showReplaceConfirmDialog.name}"</strong> will replace everything in your current workspace.
@@ -15078,7 +15196,7 @@ const ThinFilmDesigner = () => {
       {/* ========== TEAM MANAGEMENT MODAL ========== */}
       {showTeamModal && organization && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={(e) => { if (e.target === e.currentTarget) setShowTeamModal(false); }}>
-          <div style={{ background: theme.surface, color: theme.textPrimary, borderRadius: 12, boxShadow: '0 25px 50px rgba(0,0,0,0.25)', width: 480, maxHeight: '80vh', overflow: 'auto', padding: 24 }}>
+          <div style={{ background: theme.surface, color: theme.textPrimary, borderRadius: 12, boxShadow: '0 25px 50px rgba(0,0,0,0.25)', width: isPhone ? '95vw' : 480, maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', padding: isPhone ? 16 : 24 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <h3 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
                 <Users size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 8 }} />
@@ -15266,7 +15384,7 @@ const ThinFilmDesigner = () => {
       {/* ========== LUMI ADD-ON PROMPT MODAL ========== */}
       {showLumiAddonPrompt && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
-          <div style={{ background: theme.surface, borderRadius: '12px', padding: '28px', width: '380px', textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', border: `1px solid ${theme.border}` }}>
+          <div style={{ background: theme.surface, borderRadius: '12px', padding: isPhone ? '20px' : '28px', width: isPhone ? '95vw' : '380px', maxWidth: '95vw', textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', border: `1px solid ${theme.border}` }}>
             <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #06b6d4)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}>
               <Zap size={24} style={{ color: '#fff' }} />
             </div>
@@ -15317,10 +15435,10 @@ const ThinFilmDesigner = () => {
           }}
           style={{
             position: 'fixed',
-            bottom: '10px',
-            right: '10px',
-            height: '24px',
-            borderRadius: '12px',
+            bottom: isPhone ? '16px' : '10px',
+            right: isPhone ? '16px' : '10px',
+            height: isPhone ? '44px' : '24px',
+            borderRadius: isPhone ? '22px' : '12px',
             background: theme.accentLight,
             border: `1px solid ${darkMode ? '#363860' : '#c7d2fe'}`,
             cursor: 'pointer',
@@ -15332,14 +15450,14 @@ const ThinFilmDesigner = () => {
             zIndex: 9998,
             transition: 'width 0.2s ease, background 0.2s ease, box-shadow 0.2s ease',
             overflow: 'hidden',
-            padding: '0 8px',
-            width: '46px',
-            fontSize: '11px',
+            padding: isPhone ? '0 14px' : '0 8px',
+            width: isPhone ? '90px' : '46px',
+            fontSize: isPhone ? '13px' : '11px',
             fontWeight: 700,
             letterSpacing: '0.5px',
           }}
-          onMouseEnter={e => { e.currentTarget.style.width = '82px'; e.currentTarget.style.background = darkMode ? '#22244a' : '#dbeafe'; e.currentTarget.style.boxShadow = '0 2px 6px rgba(79,70,229,0.2)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'ASK LUMI'; }}
-          onMouseLeave={e => { e.currentTarget.style.width = '46px'; e.currentTarget.style.background = darkMode ? '#1e1f3a' : '#eef2ff'; e.currentTarget.style.boxShadow = darkMode ? '0 1px 3px rgba(0,0,0,0.3)' : '0 1px 3px rgba(0,0,0,0.08)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'LUMI'; }}
+          onMouseEnter={isPhone ? undefined : (e => { e.currentTarget.style.width = '82px'; e.currentTarget.style.background = darkMode ? '#22244a' : '#dbeafe'; e.currentTarget.style.boxShadow = '0 2px 6px rgba(79,70,229,0.2)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'ASK LUMI'; })}
+          onMouseLeave={isPhone ? undefined : (e => { e.currentTarget.style.width = '46px'; e.currentTarget.style.background = darkMode ? '#1e1f3a' : '#eef2ff'; e.currentTarget.style.boxShadow = darkMode ? '0 1px 3px rgba(0,0,0,0.3)' : '0 1px 3px rgba(0,0,0,0.08)'; e.currentTarget.querySelector('[data-lumi]').textContent = 'LUMI'; })}
         >
           <span data-lumi="" style={{
             whiteSpace: 'nowrap',
@@ -15365,7 +15483,7 @@ const ThinFilmDesigner = () => {
           position: 'fixed',
           top: 0,
           right: 0,
-          width: '380px',
+          width: isPhone ? '100vw' : '380px',
           height: '100vh',
           background: theme.surface,
           boxShadow: darkMode ? '-4px 0 20px rgba(0,0,0,0.4)' : '-4px 0 20px rgba(0,0,0,0.15)',
