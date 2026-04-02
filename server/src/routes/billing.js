@@ -55,6 +55,7 @@ router.post('/checkout', ...requireUser, async (req, res) => {
       customer: customerId,
       mode: 'subscription',
       line_items: lineItems,
+      allow_promotion_codes: true,
       success_url: `${process.env.FRONTEND_URL}?billing=success`,
       cancel_url: `${process.env.FRONTEND_URL}?billing=cancelled`,
       metadata: { userId: req.user.id },
