@@ -35,10 +35,15 @@ const requireUser = [
 
       if (!user) {
         // Auto-create user on first authenticated request
+        // Try multiple Clerk session claim fields for email
+        const email = auth.sessionClaims?.email
+          || auth.sessionClaims?.primary_email_address
+          || auth.sessionClaims?.email_address
+          || `${clerkId}@placeholder.com`;
         user = await prisma.user.create({
           data: {
             clerkId,
-            email: auth.sessionClaims?.email || `${clerkId}@placeholder.com`,
+            email,
             tier: 'free',
           },
         });

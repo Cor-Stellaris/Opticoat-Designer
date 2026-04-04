@@ -1564,8 +1564,9 @@ const ThinFilmDesigner = () => {
         console.warn('Failed to fetch tier:', e);
       }
     }
-    // Also sync user to backend on first sign-in
-    apiPost('/api/auth/sync', {}).catch(() => {});
+    // Also sync user to backend on first sign-in (send email so DB stays current)
+    const clerkEmail = authUser?.primaryEmailAddress?.emailAddress || authUser?.emailAddresses?.[0]?.emailAddress;
+    apiPost('/api/auth/sync', { email: clerkEmail || undefined }).catch(() => {});
     fetchTier();
     return () => { cancelled = true; };
   }, [isSignedIn]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -5071,6 +5072,9 @@ const ThinFilmDesigner = () => {
     try {
       const body = { tier, interval };
       if (tier === 'enterprise') body.seats = enterpriseSeats;
+      // Send Clerk email so Stripe customer gets the correct email
+      const clerkEmail = authUser?.primaryEmailAddress?.emailAddress || authUser?.emailAddresses?.[0]?.emailAddress;
+      if (clerkEmail) body.email = clerkEmail;
       const data = await apiPost('/api/billing/checkout', body);
       if (data.url) window.location.href = data.url;
     } catch (e) {

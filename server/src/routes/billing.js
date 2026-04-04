@@ -22,18 +22,28 @@ router.post('/checkout', ...requireUser, async (req, res) => {
       return res.status(400).json({ error: 'Price not configured for this tier/interval' });
     }
 
+    // Use email from request body (sent by frontend from Clerk) or fall back to DB
+    const userEmail = req.body.email || req.user.email;
+
     // Get or create Stripe customer
     let customerId = req.user.stripeCustomerId;
     if (!customerId) {
       const customer = await stripe.customers.create({
-        email: req.user.email,
+        email: userEmail,
         metadata: { userId: req.user.id, clerkId: req.user.clerkId },
       });
       customerId = customer.id;
 
       await prisma.user.update({
         where: { id: req.user.id },
-        data: { stripeCustomerId: customerId },
+        data: { stripeCustomerId: customerId, email: userEmail },
+      });
+    } else if (req.user.email?.includes('@placeholder.com') && userEmail && !userEmail.includes('@placeholder.com')) {
+      // Fix placeholder email on existing Stripe customer
+      await stripe.customers.update(customerId, { email: userEmail });
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { email: userEmail },
       });
     }
 
