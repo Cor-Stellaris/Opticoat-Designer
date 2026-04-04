@@ -10730,9 +10730,8 @@ const ThinFilmDesigner = () => {
               )}
             </div>
 
-            <div className="flex flex-col flex-1 overflow-hidden min-h-0">
-              <div className="flex flex-col overflow-hidden min-h-0">
-                
+            <div className="flex flex-col flex-1 min-h-0">
+
                 {/* Scrollable content area */}
                 <div className="flex-1 overflow-y-auto min-h-0 pr-2">
 
@@ -11392,7 +11391,6 @@ const ThinFilmDesigner = () => {
                   </div>
                 </details>
 
-                <div className="flex-1 min-h-0 overflow-y-auto pr-2">
                   {!reverseEngineerMode && (
                     <details className="mb-3" open>
                       <summary className="p-2 cursor-pointer select-none font-semibold text-sm hover:bg-gray-100 rounded bg-gray-50">
@@ -11682,8 +11680,7 @@ const ThinFilmDesigner = () => {
                       )}
                     </div>
                   )}
-                </div>
-                
+
                 </div>
                 {/* End scrollable content area */}
 
@@ -11747,7 +11744,6 @@ const ThinFilmDesigner = () => {
                     </p>
                   </div>
                 )}
-              </div>
             </div>
 
             {/* Right: Solutions */}
