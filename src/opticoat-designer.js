@@ -11745,6 +11745,7 @@ const ThinFilmDesigner = () => {
                   </div>
                 )}
             </div>
+            </div>
 
             {/* Right: Solutions */}
             <div className="flex flex-col overflow-hidden min-h-0 flex-1 border rounded p-3" style={{ borderColor: darkMode ? '#2a2c4a' : '#e5e7eb', background: darkMode ? '#111225' : '#f9fafb', display: (isPhone || isTablet) && mobileAssistantView === 'config' ? 'none' : undefined }}>
@@ -11924,7 +11925,6 @@ const ThinFilmDesigner = () => {
                 </div>
               </div>
             </div>
-          </div>
           </div>
         )}
 
