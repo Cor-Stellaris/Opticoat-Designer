@@ -1,0 +1,56 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark background for contrast -->
+  <rect width="512" height="512" rx="96" fill="#1e1b4b"/>
+  <g transform="translate(256, 256)">
+    <!-- Deep red outer band -->
+    <circle cx="0" cy="0" r="190" fill="none" stroke="#C83040" stroke-width="16" opacity="0.35"/>
+    <circle cx="0" cy="0" r="182" fill="none" stroke="#C83040" stroke-width="5" opacity="0.6"/>
+
+    <!-- Red band -->
+    <circle cx="0" cy="0" r="170" fill="none" stroke="#E84848" stroke-width="14" opacity="0.4"/>
+    <circle cx="0" cy="0" r="164" fill="none" stroke="#E84848" stroke-width="4" opacity="0.7"/>
+
+    <!-- Orange band -->
+    <circle cx="0" cy="0" r="152" fill="none" stroke="#F07830" stroke-width="12" opacity="0.45"/>
+    <circle cx="0" cy="0" r="147" fill="none" stroke="#F07830" stroke-width="4" opacity="0.75"/>
+
+    <!-- Amber band -->
+    <circle cx="0" cy="0" r="136" fill="none" stroke="#F09828" stroke-width="11" opacity="0.45"/>
+    <circle cx="0" cy="0" r="131" fill="none" stroke="#F09828" stroke-width="4" opacity="0.75"/>
+
+    <!-- Yellow band -->
+    <circle cx="0" cy="0" r="120" fill="none" stroke="#E8D028" stroke-width="10" opacity="0.5"/>
+    <circle cx="0" cy="0" r="116" fill="none" stroke="#E8D028" stroke-width="3.5" opacity="0.8"/>
+
+    <!-- Green band -->
+    <circle cx="0" cy="0" r="104" fill="none" stroke="#60C048" stroke-width="10" opacity="0.5"/>
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#40B868" stroke-width="3.5" opacity="0.8"/>
+
+    <!-- Teal/cyan band -->
+    <circle cx="0" cy="0" r="88" fill="none" stroke="#38B0C0" stroke-width="10" opacity="0.5"/>
+    <circle cx="0" cy="0" r="84" fill="none" stroke="#38B0C0" stroke-width="3.5" opacity="0.8"/>
+
+    <!-- Blue band -->
+    <circle cx="0" cy="0" r="72" fill="none" stroke="#3888E0" stroke-width="10" opacity="0.55"/>
+    <circle cx="0" cy="0" r="68" fill="none" stroke="#3888E0" stroke-width="4" opacity="0.85"/>
+
+    <!-- Indigo band -->
+    <circle cx="0" cy="0" r="55" fill="none" stroke="#5060D8" stroke-width="10" opacity="0.55"/>
+    <circle cx="0" cy="0" r="51" fill="none" stroke="#5060D8" stroke-width="4" opacity="0.85"/>
+
+    <!-- Violet band -->
+    <circle cx="0" cy="0" r="39" fill="none" stroke="#7858C8" stroke-width="10" opacity="0.55"/>
+    <circle cx="0" cy="0" r="35" fill="none" stroke="#7858C8" stroke-width="4" opacity="0.85"/>
+
+    <!-- Deep violet core -->
+    <circle cx="0" cy="0" r="24" fill="none" stroke="#6040B0" stroke-width="8" opacity="0.5"/>
+    <circle cx="0" cy="0" r="20" fill="none" stroke="#6040B0" stroke-width="4" opacity="0.8"/>
+
+    <!-- Center white glow -->
+    <circle cx="0" cy="0" r="13" fill="#FFFFFF" opacity="0.08"/>
+    <circle cx="0" cy="0" r="9" fill="#FFFFFF" opacity="0.2"/>
+    <circle cx="0" cy="0" r="6" fill="#FFFFFF" opacity="0.45"/>
+    <circle cx="0" cy="0" r="3.5" fill="#FFFFFF" opacity="0.75"/>
+    <circle cx="0" cy="0" r="1.5" fill="#FFFFFF" opacity="0.95"/>
+  </g>
+</svg>
