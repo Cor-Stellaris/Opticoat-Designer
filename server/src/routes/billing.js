@@ -22,6 +22,32 @@ router.post('/checkout', ...requireUser, async (req, res) => {
       return res.status(400).json({ error: 'Price not configured for this tier/interval' });
     }
 
+    // Block checkout if user already has an active/trialing subscription for a tier plan
+    if (req.user.stripeCustomerId) {
+      const existing = await stripe.subscriptions.list({
+        customer: req.user.stripeCustomerId,
+        status: 'active',
+        limit: 10,
+      });
+      const trialingSubs = await stripe.subscriptions.list({
+        customer: req.user.stripeCustomerId,
+        status: 'trialing',
+        limit: 10,
+      });
+      const allSubs = [...existing.data, ...trialingSubs.data];
+      const hasTierSub = allSubs.some(sub =>
+        sub.items.data.some(item => {
+          const tid = getTierFromPriceId(item.price?.id);
+          return tid !== null; // has a tier subscription (not LUMI add-on)
+        })
+      );
+      if (hasTierSub) {
+        return res.status(409).json({
+          error: 'You already have an active subscription. Please manage it from your account settings or cancel before subscribing to a new plan.',
+        });
+      }
+    }
+
     // Use email from request body (sent by frontend from Clerk) or fall back to DB
     const userEmail = req.body.email || req.user.email;
 
@@ -125,6 +151,21 @@ router.post('/lumi-addon', ...requireUser, async (req, res) => {
 
     if (req.user.lumiAddonActive) {
       return res.status(400).json({ error: 'Lumi AI add-on is already active on your account.' });
+    }
+
+    // Double-check Stripe directly to prevent race condition (two fast clicks)
+    if (req.user.stripeCustomerId) {
+      const existing = await stripe.subscriptions.list({
+        customer: req.user.stripeCustomerId,
+        status: 'active',
+        limit: 10,
+      });
+      const hasLumiSub = existing.data.some(sub =>
+        sub.items.data.some(item => isLumiAddonPriceId(item.price?.id))
+      );
+      if (hasLumiSub) {
+        return res.status(409).json({ error: 'Lumi AI add-on is already active on your account.' });
+      }
     }
 
     const priceId = STRIPE_PRICES.lumiAddon?.monthly;

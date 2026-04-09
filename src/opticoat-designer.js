@@ -2210,7 +2210,9 @@ const ThinFilmDesigner = () => {
 
     const calculateAngleColors = useCallback(
     (layerStack, stackId) => {
-      const angles = [0, 15, 30, 45, 60];
+      const angles = tierLimits.allowedAngles && tierLimits.allowedAngles.length > 0
+        ? [0, 15, 30, 45, 60].filter(a => tierLimits.allowedAngles.includes(a))
+        : [0];
       const angleResults = [];
 
       angles.forEach((angle) => {
@@ -2420,7 +2422,7 @@ const ThinFilmDesigner = () => {
 
       return angleResults;
     },
-    [calculateReflectivityAtWavelength]
+    [calculateReflectivityAtWavelength, tierLimits.allowedAngles]
   );
 
   const calculateColorInfo = useCallback((visibleData, illuminant = "D65") => {
@@ -4349,6 +4351,11 @@ const ThinFilmDesigner = () => {
 
   // Monte Carlo Simulation Function
   const runMonteCarloSimulation = async () => {
+    if (!tierLimits.yieldCalculator) {
+      setUpgradeFeature('Yield Calculator');
+      setShowUpgradePrompt(true);
+      return;
+    }
     if (targets.length === 0) {
       showToast("Please define at least one target specification before running Monte Carlo simulation.", 'error');
       return;
@@ -5067,8 +5074,11 @@ const ThinFilmDesigner = () => {
 
   const [enterpriseSeats, setEnterpriseSeats] = useState(5);
   const [billingInterval, setBillingInterval] = useState('monthly');
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   const handleCheckout = useCallback(async (tier, interval = 'monthly') => {
+    if (checkoutLoading) return; // Prevent double-click
+    setCheckoutLoading(true);
     try {
       const body = { tier, interval };
       if (tier === 'enterprise') body.seats = enterpriseSeats;
@@ -5079,8 +5089,9 @@ const ThinFilmDesigner = () => {
       if (data.url) window.location.href = data.url;
     } catch (e) {
       showToast('Failed to start checkout: ' + e.message, 'error');
+      setCheckoutLoading(false);
     }
-  }, [enterpriseSeats]);
+  }, [enterpriseSeats, checkoutLoading]);
 
   const handleBillingPortal = useCallback(async () => {
     try {
@@ -6748,6 +6759,12 @@ const ThinFilmDesigner = () => {
 
 
   const optimizeDesign = async () => {
+    // Tier gating
+    if (!tierLimits.designAssistant) {
+      setUpgradeFeature('Design Assistant');
+      setShowUpgradePrompt(true);
+      return;
+    }
     // Validation
     if (!reverseEngineerMode && designPoints.length === 0) {
       showToast("Please add at least one target point or upload a CSV file for reverse engineering", 'error');
@@ -10626,13 +10643,16 @@ const ThinFilmDesigner = () => {
 
         {/* Design Assistant Tab Content */}
         {activeTab === "assistant" && (
-          <div className="flex-1 bg-white rounded-lg shadow-lg flex flex-col min-h-0" style={{ padding: (isPhone || isTablet) ? '8px' : '16px', overflow: (isPhone || isTablet) ? 'auto' : 'hidden' }}>
+          <div className="flex-1 bg-white rounded-lg shadow-lg flex flex-col min-h-0" style={{ padding: (isPhone || isTablet) ? '8px' : '16px', overflow: (isPhone || isTablet) ? 'auto' : 'hidden', position: 'relative' }}>
             {!tierLimits.designAssistant && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', marginBottom: (isPhone || isTablet) ? 6 : 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b', flexShrink: 0 }}>
+              <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', marginBottom: (isPhone || isTablet) ? 6 : 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b', flexShrink: 0, position: 'relative', zIndex: 10 }}>
                 <Lock size={14} style={{ color: '#b45309', flexShrink: 0 }} />
                 <span style={{ fontSize: (isPhone || isTablet) ? 11 : 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Requires a higher plan.</span>
                 <button onClick={() => setShowPricingModal(true)} style={{ padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, background: '#f59e0b', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>Plans</button>
               </div>
+              <div style={{ position: 'absolute', inset: 0, zIndex: 5, background: 'rgba(255,255,255,0.5)', cursor: 'not-allowed' }} onClick={() => { setUpgradeFeature('Design Assistant'); setShowUpgradePrompt(true); }} />
+              </>
             )}
             {isDesktop && (
               <div className="flex items-baseline gap-4 mb-3 flex-shrink-0">
@@ -11691,6 +11711,7 @@ const ThinFilmDesigner = () => {
                 <button
                   onClick={optimizeDesign}
                   disabled={
+                    !tierLimits.designAssistant ||
                     optimizing ||
                     (!reverseEngineerMode && designPoints.length === 0) ||
                     (reverseEngineerMode && !reverseEngineerData) ||
@@ -12931,13 +12952,16 @@ const ThinFilmDesigner = () => {
 
         {/* Yield Analysis Tab Content */}
         {activeTab === "yield" && (
-          <div className="flex-1 bg-white rounded-lg shadow-lg p-4 overflow-y-auto flex flex-col min-h-0">
+          <div className="flex-1 bg-white rounded-lg shadow-lg p-4 overflow-y-auto flex flex-col min-h-0" style={{ position: 'relative' }}>
             {!tierLimits.yieldCalculator && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', marginBottom: 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b' }}>
+              <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', marginBottom: 12, borderRadius: 8, background: 'linear-gradient(135deg, #fef3c7, #fde68a)', border: '1px solid #f59e0b', position: 'relative', zIndex: 10 }}>
                 <Lock size={14} style={{ color: '#b45309', flexShrink: 0 }} />
-                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Yield Analysis requires a higher plan. Explore the interface below!</span>
+                <span style={{ fontSize: 13, color: '#92400e', fontWeight: 500, flex: 1 }}>Yield Analysis requires a higher plan.</span>
                 <button onClick={() => setShowPricingModal(true)} style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, background: '#f59e0b', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>View Plans</button>
               </div>
+              <div style={{ position: 'absolute', inset: 0, zIndex: 5, background: 'rgba(255,255,255,0.5)', cursor: 'not-allowed' }} onClick={() => { setUpgradeFeature('Yield Calculator'); setShowUpgradePrompt(true); }} />
+              </>
             )}
             <details className="bg-gray-50 rounded mb-3 flex-shrink-0" open>
               <summary className="p-3 cursor-pointer select-none font-semibold text-lg hover:bg-gray-100 rounded">
@@ -13089,7 +13113,7 @@ const ThinFilmDesigner = () => {
 
                 <button
                   onClick={runMonteCarloSimulation}
-                  disabled={mcRunning || targets.length === 0}
+                  disabled={!tierLimits.yieldCalculator || mcRunning || targets.length === 0}
                   className="w-full py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2 flex-shrink-0"
                 >
                   {mcRunning ? (
@@ -15064,7 +15088,7 @@ const ThinFilmDesigner = () => {
                           ) : TIER_ORDER[userTier] >= TIER_ORDER[tier.key] ? (
                             <div style={{ marginTop: 6, height: 28 }}></div>
                           ) : isSignedIn ? (
-                            <button onClick={() => { setShowPricingModal(false); handleCheckout(tier.key, billingInterval); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: tier.key === 'professional' ? '#22c55e' : theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>{tier.key === 'professional' ? 'Start Free Trial' : 'Upgrade'}</button>
+                            <button disabled={checkoutLoading} onClick={() => { setShowPricingModal(false); handleCheckout(tier.key, billingInterval); }} style={{ marginTop: 6, width: '100%', padding: '5px 0', fontSize: 11, fontWeight: 600, background: tier.key === 'professional' ? '#22c55e' : theme.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: checkoutLoading ? 'not-allowed' : 'pointer', opacity: checkoutLoading ? 0.6 : 1 }}>{checkoutLoading ? 'Processing...' : tier.key === 'professional' ? 'Start Free Trial' : 'Upgrade'}</button>
                           ) : (
                             <div style={{ marginTop: 6, fontSize: 10, color: theme.textMuted, textAlign: 'center', padding: '4px 0' }}>Sign in to upgrade</div>
                           )}
@@ -15403,22 +15427,27 @@ const ThinFilmDesigner = () => {
                 style={{ padding: '8px 18px', fontSize: '13px', color: theme.textSecondary, background: 'transparent', border: `1px solid ${theme.border}`, borderRadius: '6px', cursor: 'pointer' }}
               >Not now</button>
               <button
+                disabled={checkoutLoading}
                 onClick={async () => {
-                  setShowLumiAddonPrompt(false);
+                  if (checkoutLoading) return;
+                  setCheckoutLoading(true);
                   try {
                     const data = await apiPost('/api/billing/lumi-addon', {});
                     if (data.url) window.location.href = data.url;
                   } catch (err) {
                     showToast(err.message || 'Failed to start checkout', 'error');
+                    setCheckoutLoading(false);
                   }
+                  setShowLumiAddonPrompt(false);
                 }}
                 style={{
                   padding: '8px 18px', fontSize: '13px', fontWeight: 600, color: '#fff',
-                  background: 'linear-gradient(135deg, #6366f1, #4f46e5)', border: 'none', borderRadius: '6px', cursor: 'pointer',
+                  background: 'linear-gradient(135deg, #6366f1, #4f46e5)', border: 'none', borderRadius: '6px',
+                  cursor: checkoutLoading ? 'not-allowed' : 'pointer', opacity: checkoutLoading ? 0.6 : 1,
                 }}
                 onMouseEnter={e => { e.currentTarget.style.background = 'linear-gradient(135deg, #4f46e5, #4338ca)'; }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'linear-gradient(135deg, #6366f1, #4f46e5)'; }}
-              >Add Lumi — $19/mo</button>
+              >{checkoutLoading ? 'Processing...' : 'Add Lumi — $19/mo'}</button>
             </div>
             <p style={{ fontSize: '11px', color: theme.textMuted, marginTop: '14px' }}>
               Or <span style={{ color: theme.accentText, cursor: 'pointer', textDecoration: 'underline' }} onClick={() => { setShowLumiAddonPrompt(false); setShowPricingModal(true); }}>upgrade to Professional</span> for unlimited access.
