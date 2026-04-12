@@ -1319,6 +1319,8 @@ const ThinFilmDesigner = () => {
   const [chatStreaming, setChatStreaming] = useState(false);
   const chatEndRef = useRef(null);
   const chatAbortRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  const userScrolledUpRef = useRef(false);
   const [lumiAddon, setLumiAddon] = useState({ active: false, messagesUsed: 0, messageLimit: 100 });
   const [showLumiAddonPrompt, setShowLumiAddonPrompt] = useState(false);
 
@@ -1509,9 +1511,9 @@ const ThinFilmDesigner = () => {
     if (getToken) setTokenProvider(getToken);
   }, [getToken]);
 
-  // Auto-scroll chat to bottom when messages change
+  // Auto-scroll chat to bottom when messages change (only if user hasn't scrolled up)
   useEffect(() => {
-    if (chatEndRef.current) {
+    if (chatEndRef.current && !userScrolledUpRef.current) {
       chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [chatMessages]);
@@ -1694,6 +1696,7 @@ const ThinFilmDesigner = () => {
     setChatMessages(prev => [...prev, userMsg]);
     setChatInput('');
     setChatStreaming(true);
+    userScrolledUpRef.current = false;
 
     // Build context from current design state
     const context = {
@@ -1702,9 +1705,16 @@ const ThinFilmDesigner = () => {
       incident: { material: incident.material, n: incident.n },
       wavelengthRange,
       displayMode,
-      targets: targets.map(t => ({ wavelength: t.wavelength, value: t.value, type: t.type })),
+      targets: targets.map(t => ({
+        name: t.name,
+        wavelengthMin: t.wavelengthMin,
+        wavelengthMax: t.wavelengthMax,
+        reflectivityMin: t.reflectivityMin,
+        reflectivityMax: t.reflectivityMax,
+      })),
       colorData: colorData ? { L: Number(colorData.L), a: Number(colorData.a), b: Number(colorData.b) } : null,
       stackCount: layerStacks.length,
+      materials: Object.keys(allMaterials),
     };
 
     // Add thinking placeholder
@@ -15586,14 +15596,23 @@ const ThinFilmDesigner = () => {
           </div>
 
           {/* Chat Messages */}
-          <div style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-          }}>
+          <div
+            ref={chatContainerRef}
+            onScroll={() => {
+              const el = chatContainerRef.current;
+              if (!el) return;
+              const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+              userScrolledUpRef.current = !atBottom;
+            }}
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
             {chatMessages.length === 0 && (
               <div style={{
                 textAlign: 'center',
