@@ -7,20 +7,29 @@ const { stripe } = require('../services/stripe');
 // POST /api/auth/sync — Sync Clerk user to local DB (called on frontend login)
 router.post('/sync', ...requireUser, async (req, res) => {
   try {
-    // User is already created/fetched by requireUser middleware
     const user = req.user;
+    let email = user.email;
 
-    // Update email if provided in body
+    // Update email if provided in body and different from stored value
     if (req.body.email && req.body.email !== user.email) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { email: req.body.email },
-      });
+      try {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { email: req.body.email },
+        });
+        email = req.body.email;
+      } catch (updateErr) {
+        if (updateErr.code === 'P2002') {
+          console.warn(`Sync: email ${req.body.email} already taken, keeping ${user.email}`);
+        } else {
+          throw updateErr;
+        }
+      }
     }
 
     res.json({
       id: user.id,
-      email: user.email,
+      email,
       tier: user.tier,
       createdAt: user.createdAt,
     });

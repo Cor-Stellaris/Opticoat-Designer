@@ -1,4 +1,4 @@
-const { requireAuth } = require('@clerk/express');
+const { requireAuth, clerkClient } = require('@clerk/express');
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { URL } = require('url');
@@ -34,19 +34,52 @@ const requireUser = [
       let user = await prisma.user.findUnique({ where: { clerkId } });
 
       if (!user) {
-        // Auto-create user on first authenticated request
-        // Try multiple Clerk session claim fields for email
-        const email = auth.sessionClaims?.email
+        // Auto-create user on first authenticated request.
+        // Try session claims first (fast path if JWT is configured to include email).
+        let email = auth.sessionClaims?.email
           || auth.sessionClaims?.primary_email_address
-          || auth.sessionClaims?.email_address
-          || `${clerkId}@placeholder.com`;
+          || auth.sessionClaims?.email_address;
+
+        // If session claims lack email, fetch from Clerk Backend API (authoritative source).
+        if (!email) {
+          try {
+            const clerkUser = await clerkClient.users.getUser(clerkId);
+            const primaryAddr = clerkUser.emailAddresses?.find(e => e.id === clerkUser.primaryEmailAddressId);
+            email = primaryAddr?.emailAddress || clerkUser.emailAddresses?.[0]?.emailAddress;
+          } catch (err) {
+            console.error('Failed to fetch Clerk user email:', err.message);
+          }
+        }
+
+        if (!email) {
+          email = `${clerkId}@placeholder.com`;
+        }
+
         user = await prisma.user.create({
-          data: {
-            clerkId,
-            email,
-            tier: 'free',
-          },
+          data: { clerkId, email, tier: 'free' },
         });
+      }
+
+      // Opportunistically fix placeholder email for existing users
+      if (user.email?.endsWith('@placeholder.com')) {
+        try {
+          const clerkUser = await clerkClient.users.getUser(clerkId);
+          const primaryAddr = clerkUser.emailAddresses?.find(e => e.id === clerkUser.primaryEmailAddressId);
+          const realEmail = primaryAddr?.emailAddress || clerkUser.emailAddresses?.[0]?.emailAddress;
+          if (realEmail && !realEmail.endsWith('@placeholder.com')) {
+            await prisma.user.update({
+              where: { id: user.id },
+              data: { email: realEmail },
+            });
+            user.email = realEmail;
+          }
+        } catch (err) {
+          if (err.code === 'P2002') {
+            console.warn(`Email already taken by another user, keeping placeholder for clerkId=${clerkId}`);
+          } else {
+            console.warn('Failed to repair placeholder email:', err.message);
+          }
+        }
       }
 
       // Org-aware tier inheritance: if user belongs to an org with an Enterprise admin,
