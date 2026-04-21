@@ -162,6 +162,55 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Kramers-Kronig validation for tabular n,k data.
+// Computes the KK-predicted n(E) from k(E) via the causal integral and compares
+// against the user-supplied n. Uses trapezoidal rule with singularity skip.
+// Note: finite integration range truncates the true KK integral, so expect some
+// absolute offset even for perfectly consistent data. The *shape* is what matters —
+// we compare via Pearson correlation and relative RMS deviation.
+function validateKK(data) {
+  if (!data || data.length < 5) {
+    return { valid: false, message: 'Need ≥5 data points for KK validation', correlation: 0 };
+  }
+  // Use energy E (eV) — KK integrand is ω·k/(ω'²-ω²) (ω proportional to E)
+  const E = data.map(r => 1239.84 / r[0]);
+  const n = data.map(r => r[1]);
+  const k = data.map(r => r[2]);
+  // Compute KK-predicted n - 1 at each point
+  const predicted = new Array(data.length);
+  for (let i = 0; i < data.length; i++) {
+    const Ei = E[i];
+    let integral = 0;
+    for (let j = 0; j < data.length - 1; j++) {
+      if (j === i || j + 1 === i) continue;
+      const Ej = E[j], Ejp = E[j + 1];
+      const dE = Math.abs(Ejp - Ej);
+      if (dE === 0) continue;
+      const fj = (Ej * k[j]) / (Ej * Ej - Ei * Ei);
+      const fjp = (Ejp * k[j + 1]) / (Ejp * Ejp - Ei * Ei);
+      integral += 0.5 * (fj + fjp) * dE;
+    }
+    predicted[i] = 1 + (2 / Math.PI) * integral;
+  }
+  // Compare shapes: Pearson correlation between predicted and actual
+  const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const nMean = mean(n), pMean = mean(predicted);
+  let cov = 0, nVar = 0, pVar = 0;
+  for (let i = 0; i < n.length; i++) {
+    const dn = n[i] - nMean, dp = predicted[i] - pMean;
+    cov += dn * dp;
+    nVar += dn * dn;
+    pVar += dp * dp;
+  }
+  const corr = (nVar > 0 && pVar > 0) ? cov / Math.sqrt(nVar * pVar) : 0;
+  // Relative RMS: shape-match quality
+  const diffs = predicted.map((p, i) => (p - pMean) - (n[i] - nMean));
+  const rmsDiff = Math.sqrt(diffs.reduce((a, b) => a + b * b, 0) / diffs.length);
+  const nRMS = Math.sqrt(nVar / n.length);
+  const relErr = nRMS > 0 ? rmsDiff / nRMS : 0;
+  return { valid: true, correlation: corr, relativeError: relErr, predicted, meanActual: nMean, meanPredicted: pMean };
+}
+
 // Brendel-Bormann (1992) — Lorentz oscillators with Gaussian-broadened lineshapes.
 // Better than Lorentz-Drude for noble metals in the visible (smoother peaks).
 // Each oscillator: {A, E0, gamma, sigma}. sigma = 0 → pure Lorentz (back-compat).
@@ -1508,6 +1557,8 @@ const ThinFilmDesigner = () => {
     lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
     // Cody-Lorentz adds Urbach width Eu to TL params (typical HfO2: Eu=0.1 eV)
     clA: 110, clE0: 6.0, clC: 3.0, clEg: 5.5, clEpsInf: 2.0, clEu: 0.1,
+    // Last-run KK validation result (transient, not persisted)
+    kkResult: null,
   });
 
   const [layerStacks, setLayerStacks] = useState([
@@ -6105,6 +6156,7 @@ const ThinFilmDesigner = () => {
       tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
       lzEpsInf: 1.0, lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
       clA: 110, clE0: 6.0, clC: 3.0, clEg: 5.5, clEpsInf: 2.0, clEu: 0.1,
+      kkResult: null,
     });
   };
 
@@ -15267,6 +15319,7 @@ const ThinFilmDesigner = () => {
                                   tabularText: text,
                                   tabularData: parsed,
                                   tabularError: parsed.length === 0 ? 'No valid data rows found. Check format.' : '',
+                                  kkResult: null,
                                 }));
                               };
                               reader.readAsText(file);
@@ -15276,7 +15329,7 @@ const ThinFilmDesigner = () => {
                         </label>
                         <button
                           onClick={() => {
-                            setNewMaterialForm(prev => ({ ...prev, tabularText: '', tabularData: [], tabularError: '' }));
+                            setNewMaterialForm(prev => ({ ...prev, tabularText: '', tabularData: [], tabularError: '', kkResult: null }));
                           }}
                           className="px-2 py-1 bg-gray-100 hover:bg-gray-200 border rounded text-xs text-gray-700"
                           disabled={newMaterialForm.tabularData.length === 0}
@@ -15294,6 +15347,7 @@ const ThinFilmDesigner = () => {
                             tabularText: text,
                             tabularData: parsed,
                             tabularError: text.trim() && parsed.length === 0 ? 'No valid data rows found. Check format.' : '',
+                            kkResult: null,
                           }));
                         }}
                         className="w-full px-2 py-1 border rounded text-[11px] font-mono"
@@ -15309,6 +15363,38 @@ const ThinFilmDesigner = () => {
                           {' '}Range: {newMaterialForm.tabularData[0][0].toFixed(1)}–{newMaterialForm.tabularData[newMaterialForm.tabularData.length-1][0].toFixed(1)} nm.
                           {' '}n@550: {interpolateNk(newMaterialForm.tabularData, 550).n.toFixed(3)},
                           {' '}k@550: {interpolateNk(newMaterialForm.tabularData, 550).k.toExponential(2)}
+                        </div>
+                      )}
+                      {newMaterialForm.tabularData.length >= 5 && (
+                        <div className="flex items-start gap-2">
+                          <button
+                            onClick={() => {
+                              const result = validateKK(newMaterialForm.tabularData);
+                              setNewMaterialForm(prev => ({ ...prev, kkResult: result }));
+                            }}
+                            className="px-2 py-1 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded text-xs text-amber-800 font-medium"
+                            title="Check whether the n and k columns are Kramers-Kronig consistent (i.e., physically causal)."
+                          >
+                            Check KK consistency
+                          </button>
+                          {newMaterialForm.kkResult && newMaterialForm.kkResult.valid && (() => {
+                            const { correlation, relativeError } = newMaterialForm.kkResult;
+                            const ok = correlation > 0.9 && relativeError < 0.3;
+                            const warn = correlation > 0.7 && correlation <= 0.9;
+                            const bg = ok ? 'bg-green-50 border-green-200 text-green-800' : warn ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-800';
+                            const label = ok ? '✓ KK-consistent' : warn ? '⚠ Borderline' : '✗ Likely inconsistent';
+                            return (
+                              <div className={`flex-1 text-[11px] border rounded px-2 py-1 ${bg}`}>
+                                <div><b>{label}</b> — shape correlation: {(correlation * 100).toFixed(1)}%, relative RMS error: {(relativeError * 100).toFixed(1)}%</div>
+                                <div className="text-[10px] mt-0.5 opacity-80">Absolute-offset mismatch is normal due to finite wavelength range. Correlation &gt; 90% means n and k shapes are causally linked.</div>
+                              </div>
+                            );
+                          })()}
+                          {newMaterialForm.kkResult && !newMaterialForm.kkResult.valid && (
+                            <div className="flex-1 text-[11px] bg-gray-50 border border-gray-200 rounded px-2 py-1 text-gray-700">
+                              {newMaterialForm.kkResult.message}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
