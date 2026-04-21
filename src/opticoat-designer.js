@@ -9002,7 +9002,57 @@ const ThinFilmDesigner = () => {
                               {!(isPhone || isTablet) && <div className="text-[10px] text-gray-600 truncate">
                                 {layer.originalThickness ? layer.originalThickness.toFixed(1) : "-"}
                               </div>}
-                              <div className="flex items-center justify-center">
+                              <div className="flex items-center gap-0.5 justify-center">
+                                {!(isPhone || isTablet) && layer.packingDensity && layer.packingDensity < 1.0 && (
+                                  <span className="px-0.5 bg-purple-100 text-purple-700 rounded text-[7px] font-bold" title={`Packing Density: ${layer.packingDensity.toFixed(2)}`}>
+                                    P
+                                  </span>
+                                )}
+                                {!(isPhone || isTablet) && (
+                                  <button
+                                    onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))}
+                                    className={`p-0.5 rounded transition-colors text-[10px] ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`}
+                                    title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}
+                                  >
+                                    <Lock size={10} />
+                                  </button>
+                                )}
+                                {!(isPhone || isTablet) && (
+                                  <button
+                                    onClick={() => {
+                                      if (layer.originalThickness !== undefined) {
+                                        setLayers(layers.map(l =>
+                                          l.id === layer.id ? { ...l, originalThickness: undefined } : l
+                                        ));
+                                      } else {
+                                        setLayers(layers.map(l =>
+                                          l.id === layer.id ? { ...l, originalThickness: layer.thickness } : l
+                                        ));
+                                      }
+                                    }}
+                                    className={`p-0.5 rounded transition-colors text-[10px] ${
+                                      layer.originalThickness !== undefined
+                                        ? "bg-blue-100 text-blue-600"
+                                        : "text-gray-400"
+                                    }`}
+                                    title={layer.originalThickness !== undefined ? "Clear original thickness" : "Save as original thickness"}
+                                  >
+                                    {"\uD83D\uDCCC"}
+                                  </button>
+                                )}
+                                {!(isPhone || isTablet) && (
+                                  <button
+                                    onClick={() => openIADModal(layer.id)}
+                                    className={`p-0.5 rounded transition-colors ${
+                                      layer.iad && layer.iad.enabled
+                                        ? "bg-yellow-100 text-yellow-600"
+                                        : "text-gray-400"
+                                    }`}
+                                    title="IAD Settings"
+                                  >
+                                    <Zap size={10} />
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => removeLayer(layer.id)}
                                   className="p-0.5 hover:bg-red-100 rounded text-red-600"
@@ -10141,10 +10191,19 @@ const ThinFilmDesigner = () => {
                             {!isPhone && <div style={{ textAlign: 'center', color: '#6b7280', fontSize: 10 }}>{qwotReference > 0 ? ((getRefractiveIndex(layer.material, qwotReference, layer.iad) * (parseFloat(layer.thickness) || 0)) / (qwotReference / 4)).toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.lastThickness ? layer.lastThickness.toFixed(2) : "-"}</div>}
                             {!isPhone && <div style={{ gridColumn: 'span 2', textAlign: 'left', color: '#6b7280', fontSize: 10 }}>{layer.originalThickness ? layer.originalThickness.toFixed(2) : "-"}</div>}
-                            {/* Action button — delete only */}
-                            <div style={{ display: 'flex', justifyContent: 'center' }}>
-                              <button onClick={() => removeLayer(layer.id)} style={{ padding: 2, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: '#dc2626' }} disabled={layers.length === 1}><Trash2 size={isPhone ? 13 : 12} /></button>
-                            </div>
+                            {/* Action buttons — Lock/Pin/IAD on desktop, delete only on mobile */}
+                            {isPhone || isTablet ? (
+                              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                                <button onClick={() => removeLayer(layer.id)} style={{ padding: 2, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'transparent', color: '#dc2626' }} disabled={layers.length === 1}><Trash2 size={isPhone ? 13 : 12} /></button>
+                              </div>
+                            ) : (
+                              <div style={{ textAlign: 'center', display: 'flex', justifyContent: 'center', gap: '2px' }}>
+                                <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} className={`p-0.5 rounded transition-colors ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`} title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}><Lock size={12} /></button>
+                                <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, originalThickness: l.originalThickness ? undefined : l.thickness } : l)); }} className={`p-0.5 rounded ${layer.originalThickness ? "bg-green-100 text-green-600 hover:bg-red-100 hover:text-red-600" : "hover:bg-green-100 text-gray-400"}`} title={layer.originalThickness ? "Click to clear original" : "Save as original thickness"}>{"\uD83D\uDCCC"}</button>
+                                <button onClick={() => openIADModal(layer.id)} className={`p-0.5 rounded transition-colors ${layer.iad && layer.iad.enabled ? "bg-yellow-100 text-yellow-600 hover:bg-yellow-200" : "hover:bg-gray-100 text-gray-400"}`} title="IAD Settings"><Zap size={12} /></button>
+                                <button onClick={() => removeLayer(layer.id)} className="p-0.5 hover:bg-red-100 rounded text-red-600" disabled={layers.length === 1}><Trash2 size={12} /></button>
+                              </div>
+                            )}
                           </div>
                           <div className="relative border-b border-gray-300" style={{ height: "1px", zIndex: 3 }}>
                             <button onClick={() => insertLayerAfter(idx)} className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 bg-white hover:bg-green-100 rounded-full text-green-600 border border-gray-300 hover:border-green-500 transition-colors shadow-sm" title={`Insert layer after layer ${idx + 1}`}><Plus size={10} /></button>
