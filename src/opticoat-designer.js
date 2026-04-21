@@ -15233,7 +15233,19 @@ const ThinFilmDesigner = () => {
                   {newMaterialForm.mode === 'tabular' && (
                     <div className="space-y-2">
                       <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
-                        Paste or upload measured n,k data. Format: <code>wavelength n k</code> per line (comma, tab, or space separated). Wavelength in nm (or μm — auto-detected). Lines starting with <code>#</code> are ignored.
+                        Paste or upload measured n,k data. Format: <code>wavelength n k</code> per line (comma, tab, or space separated). Wavelength in nm (or μm — auto-detected). Lines starting with <code>#</code> are ignored (YAML headers, CSV headers OK).
+                      </div>
+                      <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 flex items-center gap-2">
+                        <span className="font-semibold">Need data?</span>
+                        <a
+                          href="https://refractiveindex.info/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-indigo-600 hover:text-indigo-800 underline"
+                        >
+                          Browse RefractiveIndex.info →
+                        </a>
+                        <span className="text-gray-500">Open a material page, click <em>Tabulated Data</em> → <em>Download</em>, then paste the file contents below.</span>
                       </div>
                       <div className="flex gap-2 items-center">
                         <label className="flex-1 cursor-pointer inline-flex items-center justify-center gap-1 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700 font-medium">
