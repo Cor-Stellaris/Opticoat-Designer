@@ -162,6 +162,50 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Graded-index profile mapper — maps a normalized position [0,1] to an interpolation fraction [0,1]
+// based on the chosen gradient shape.
+function applyGradientProfile(x, profile) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  switch (profile) {
+    case 'cubic': return x * x * (3 - 2 * x);  // smoothstep
+    case 'sinusoidal': return 0.5 - 0.5 * Math.cos(Math.PI * x);
+    case 'quintic': return x * x * x * (x * (x * 6 - 15) + 10);
+    case 'linear':
+    default: return x;
+  }
+}
+
+// Expand graded-index layers into homogeneous sub-layer slices.
+// Each slice inherits the parent layer's iad/packingDensity/etc. Material n,k at each
+// slice is linearly interpolated between gradient.fromMaterial and gradient.toMaterial
+// using applyGradientProfile(fraction, gradient.profile).
+function expandGradedLayers(layerStack) {
+  const out = [];
+  for (let i = 0; i < layerStack.length; i++) {
+    const layer = layerStack[i];
+    const g = layer.gradient;
+    if (g && g.enabled && g.toMaterial && g.nSlices >= 2) {
+      const N = Math.max(2, Math.min(100, Math.floor(g.nSlices)));
+      const sliceT = layer.thickness / N;
+      for (let k = 0; k < N; k++) {
+        const frac = (k + 0.5) / N;
+        const t = applyGradientProfile(frac, g.profile || 'linear');
+        out.push({
+          ...layer,
+          thickness: sliceT,
+          _gradientT: t,
+          _gradientFrom: layer.material,
+          _gradientTo: g.toMaterial,
+        });
+      }
+    } else {
+      out.push(layer);
+    }
+  }
+  return out;
+}
+
 // Kramers-Kronig validation for tabular n,k data.
 // Computes the KK-predicted n(E) from k(E) via the causal integral and compares
 // against the user-supplied n. Uses trapezoidal rule with singularity skip.
@@ -1610,6 +1654,8 @@ const ThinFilmDesigner = () => {
   const [showTargetsModal, setShowTargetsModal] = useState(false);
   const [showIADModal, setShowIADModal] = useState(false);
   const [currentIADLayer, setCurrentIADLayer] = useState(null);
+  const [showGradientModal, setShowGradientModal] = useState(false);
+  const [currentGradientLayer, setCurrentGradientLayer] = useState(null);
   const [targets, setTargets] = useState([]);
   const [recipes, setRecipes] = useState([
     { id: 1, name: "Default Recipe", targets: [] },
@@ -2370,6 +2416,24 @@ const ThinFilmDesigner = () => {
         const machine = machines.find((m) => m.id === stack?.machineId);
         const toolingFactors = machine?.toolingFactors || {};
 
+        // Expand graded-index layers into homogeneous slices up front — the matrix
+        // loops below treat every element as a discrete layer.
+        layerStack = expandGradedLayers(layerStack);
+
+        // Helpers that honor the gradient interpolation flag on a slice (if present).
+        const getLayerN = (layer) => {
+          const base = getRefractiveIndex(layer.material, lambda, layer.iad, layer.packingDensity || 1.0);
+          if (layer._gradientT == null) return base;
+          const toN = getRefractiveIndex(layer._gradientTo, lambda, layer.iad, layer.packingDensity || 1.0);
+          return base + layer._gradientT * (toN - base);
+        };
+        const getLayerK = (layer) => {
+          const base = getExtinctionCoefficient(layer.material, lambda);
+          if (layer._gradientT == null) return base;
+          const toK = getExtinctionCoefficient(layer._gradientTo, lambda);
+          return base + layer._gradientT * (toK - base);
+        };
+
         // Normal incidence (angle = 0) - with complex refractive index support
         if (angle === 0) {
           let M11r = 1,
@@ -2382,14 +2446,9 @@ const ThinFilmDesigner = () => {
             M22i = 0;
 
           for (let i = layerStack.length - 1; i >= 0; i--) {
-            // Get real part of refractive index (n)
-            const nr = getRefractiveIndex(
-              layerStack[i].material,
-              lambda,
-              layerStack[i].iad,
-              layerStack[i].packingDensity || 1.0
-            );
-            const ni = getExtinctionCoefficient(layerStack[i].material, lambda);
+            // Get real and imag parts of refractive index (honors gradient slicing)
+            const nr = getLayerN(layerStack[i]);
+            const ni = getLayerK(layerStack[i]);
             
             const toolingFactor = toolingFactors[layerStack[i].material] || 1.0;
             const d = layerStack[i].thickness * toolingFactor;
@@ -2497,11 +2556,8 @@ const ThinFilmDesigner = () => {
         // Precompute per-layer [nr, ni, cosR, cosI]
         const layerData = new Array(layerStack.length);
         for (let i = 0; i < layerStack.length; i++) {
-          const nr = getRefractiveIndex(
-            layerStack[i].material, lambda,
-            layerStack[i].iad, layerStack[i].packingDensity || 1.0
-          );
-          const ni = getExtinctionCoefficient(layerStack[i].material, lambda);
+          const nr = getLayerN(layerStack[i]);
+          const ni = getLayerK(layerStack[i]);
           // sin(θ_layer) = q / N = q·(nr + i·ni)/|N|²
           const magSq = nr * nr + ni * ni;
           const sinR = (q * nr) / magSq;
@@ -9591,6 +9647,19 @@ const ThinFilmDesigner = () => {
                                     <Zap size={10} />
                                   </button>
                                 )}
+                                {!(isPhone || isTablet) && (
+                                  <button
+                                    onClick={() => { setCurrentGradientLayer(layer.id); setShowGradientModal(true); }}
+                                    className={`p-0.5 rounded transition-colors text-[10px] font-bold ${
+                                      layer.gradient && layer.gradient.enabled
+                                        ? "bg-cyan-100 text-cyan-700"
+                                        : "text-gray-400"
+                                    }`}
+                                    title="Graded-index Settings"
+                                  >
+                                    ∇
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => removeLayer(layer.id)}
                                   className="p-0.5 hover:bg-red-100 rounded text-red-600"
@@ -10754,6 +10823,7 @@ const ThinFilmDesigner = () => {
                                 <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} className={`p-0.5 rounded transition-colors ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`} title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}><Lock size={12} /></button>
                                 <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, originalThickness: l.originalThickness ? undefined : l.thickness } : l)); }} className={`p-0.5 rounded ${layer.originalThickness ? "bg-green-100 text-green-600 hover:bg-red-100 hover:text-red-600" : "hover:bg-green-100 text-gray-400"}`} title={layer.originalThickness ? "Click to clear original" : "Save as original thickness"}>{"\uD83D\uDCCC"}</button>
                                 <button onClick={() => openIADModal(layer.id)} className={`p-0.5 rounded transition-colors ${layer.iad && layer.iad.enabled ? "bg-yellow-100 text-yellow-600 hover:bg-yellow-200" : "hover:bg-gray-100 text-gray-400"}`} title="IAD Settings"><Zap size={12} /></button>
+                                <button onClick={() => { setCurrentGradientLayer(layer.id); setShowGradientModal(true); }} className={`p-0.5 rounded transition-colors text-xs font-bold ${layer.gradient && layer.gradient.enabled ? "bg-cyan-100 text-cyan-700 hover:bg-cyan-200" : "hover:bg-gray-100 text-gray-400"}`} title="Graded-index Settings">∇</button>
                                 <button onClick={() => removeLayer(layer.id)} className="p-0.5 hover:bg-red-100 rounded text-red-600" disabled={layers.length === 1}><Trash2 size={12} /></button>
                               </div>
                             )}
@@ -14754,6 +14824,83 @@ const ThinFilmDesigner = () => {
 
       {/* IAD Modal */}
       {showIADModal && <IADModal />}
+
+      {/* ========== GRADIENT (GRADED-INDEX) MODAL ========== */}
+      {showGradientModal && currentGradientLayer != null && (() => {
+        const layer = layers.find(l => l.id === currentGradientLayer);
+        if (!layer) return null;
+        const g = layer.gradient || { enabled: false, toMaterial: layer.material, profile: 'linear', nSlices: 20 };
+        const update = (patch) => {
+          const nextG = { ...g, ...patch };
+          setLayers(layers.map(l => l.id === layer.id ? { ...l, gradient: nextG } : l));
+          setLayerStacks(prev => prev.map(stack =>
+            stack.id === currentStackId ? { ...stack, layers: stack.layers.map(l => l.id === layer.id ? { ...l, gradient: nextG } : l) } : stack
+          ));
+        };
+        const fromN = getRefractiveIndex(layer.material, 550, layer.iad, layer.packingDensity || 1.0);
+        const toN = g.toMaterial ? getRefractiveIndex(g.toMaterial, 550, layer.iad, layer.packingDensity || 1.0) : fromN;
+        return (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-5">
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="text-lg font-bold text-gray-800">Graded-Index Layer — {layer.material}</h3>
+                <button onClick={() => setShowGradientModal(false)} className="text-gray-500 hover:text-gray-700 text-2xl leading-none">×</button>
+              </div>
+              <p className="text-xs text-gray-600 mb-3">
+                Model a continuous index transition across this layer by slicing it into homogeneous sub-layers. From-material: the layer's current material. To-material: the target. Transfer matrix handles each slice normally.
+              </p>
+              <label className="flex items-center gap-2 mb-3 cursor-pointer">
+                <input type="checkbox" checked={!!g.enabled} onChange={(e) => update({ enabled: e.target.checked, toMaterial: g.toMaterial || layer.material, profile: g.profile || 'linear', nSlices: g.nSlices || 20 })} />
+                <span className="text-sm font-medium">Enable graded index for this layer</span>
+              </label>
+              {g.enabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">From material (n@550 = {fromN.toFixed(3)})</label>
+                      <input type="text" value={layer.material} disabled className="w-full px-2 py-1 border rounded bg-gray-50 text-xs" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">To material (n@550 = {toN.toFixed(3)})</label>
+                      <select value={g.toMaterial} onChange={(e) => update({ toMaterial: e.target.value })} className="w-full px-2 py-1 border rounded bg-white text-xs">
+                        {Object.keys(allMaterials).map((mat) => (<option key={mat} value={mat}>{mat}</option>))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Profile</label>
+                      <select value={g.profile} onChange={(e) => update({ profile: e.target.value })} className="w-full px-2 py-1 border rounded bg-white text-xs">
+                        <option value="linear">Linear</option>
+                        <option value="cubic">Smoothstep (cubic)</option>
+                        <option value="quintic">Smoothstep (quintic)</option>
+                        <option value="sinusoidal">Sinusoidal</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1" title="Number of homogeneous sub-layers. More slices = smoother gradient but slower.">Slices (2–100)</label>
+                      <input type="number" value={g.nSlices} onChange={(e) => update({ nSlices: Math.max(2, Math.min(100, parseInt(e.target.value) || 20)) })} className="w-full px-2 py-1 border rounded text-xs" min="2" max="100" step="1" />
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 mb-3">
+                    Δn @ 550nm: {(toN - fromN).toFixed(3)} across {g.nSlices} slices of {(layer.thickness / (g.nSlices || 1)).toFixed(2)} nm each.
+                  </div>
+                </>
+              )}
+              <div className="flex gap-2">
+                {g.enabled && (
+                  <button onClick={() => { update({ enabled: false }); setShowGradientModal(false); }} className="flex-1 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-red-700 text-sm">
+                    Disable gradient
+                  </button>
+                )}
+                <button onClick={() => setShowGradientModal(false)} className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-sm font-semibold">
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ========== COLOR COMPARISON MODAL ========== */}
       {showColorCompareModal && (
