@@ -1590,6 +1590,7 @@ const ThinFilmDesigner = () => {
   const [autoYAxis, setAutoYAxis] = useState(false);
   const [displayMode, setDisplayMode] = useState("reflectivity"); // 'reflectivity' or 'transmission'
   const [doubleSidedAR, setDoubleSidedAR] = useState(true); // Account for backside reflection (no black backing)
+  const [surfaceRoughness, setSurfaceRoughness] = useState(0); // RMS surface roughness in nm (Davies-Bennett scalar scattering)
   const [selectedIlluminant, setSelectedIlluminant] = useState("D65");
   const [chartHeight, setChartHeight] = useState(65);
   const [isDragging, setIsDragging] = useState(false);
@@ -2475,7 +2476,13 @@ const ThinFilmDesigner = () => {
           const rI = (numI * denR - numR * denI) / denMag;
           const R = rR * rR + rI * rI;
           if (phaseOut) phaseOut.phase = Math.atan2(rI, rR) * 180 / Math.PI;
-          return Math.min(Math.max(R, 0), 1);
+          // Davies-Bennett scalar scattering loss (normal incidence: cosθ = 1)
+          let Rout = R;
+          if (surfaceRoughness > 0) {
+            const arg = (4 * Math.PI * surfaceRoughness) / lambda;
+            Rout = R * Math.exp(-arg * arg);
+          }
+          return Math.min(Math.max(Rout, 0), 1);
         }
 
         // Oblique incidence — full complex transfer matrix.
@@ -2656,7 +2663,13 @@ const ThinFilmDesigner = () => {
           const phase_p = Math.atan2(rI_p, rR_p) * 180 / Math.PI;
           phaseOut.phase = (phase_s + phase_p) / 2;
         }
-        return Math.min(Math.max(R_avg, 0), 1);
+        // Davies-Bennett scalar scattering loss (angle-dependent: cosθ factor)
+        let Rout2 = R_avg;
+        if (surfaceRoughness > 0) {
+          const arg = (4 * Math.PI * surfaceRoughness * cosTheta0) / lambda;
+          Rout2 = R_avg * Math.exp(-arg * arg);
+        }
+        return Math.min(Math.max(Rout2, 0), 1);
       } catch (e) {
         if (phaseOut) phaseOut.phase = 0;
         return 0;
@@ -2670,6 +2683,7 @@ const ThinFilmDesigner = () => {
       layerStacks,
       machines,
       currentStackId,
+      surfaceRoughness,
     ]
   );
 
@@ -9083,14 +9097,26 @@ const ThinFilmDesigner = () => {
                 </div>
                 <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
                   <label className="flex items-center gap-1 cursor-pointer" title="Enable if measured without black backing (includes backside reflection)">
-                    <input 
-                      type="checkbox" 
-                      checked={doubleSidedAR} 
+                    <input
+                      type="checkbox"
+                      checked={doubleSidedAR}
                       onChange={(e) => setDoubleSidedAR(e.target.checked)}
                       className="cursor-pointer"
                     />
                     <span className="text-xs">+Backside</span>
                   </label>
+                </div>
+                <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0" title="Davies-Bennett scalar scattering loss: R_specular = R·exp(-(4πσ·cosθ/λ)²). Set 0 to disable. Typical values: 2–5nm (IAD), 5–15nm (e-beam), 20–50nm (rough sputter).">
+                  <span className="text-xs text-gray-600">σ:</span>
+                  <input
+                    type="number"
+                    value={surfaceRoughness === 0 ? "" : surfaceRoughness}
+                    placeholder="0"
+                    onChange={(e) => setSurfaceRoughness(parseFloat(e.target.value) || 0)}
+                    className="w-10 px-1 py-0 border rounded text-xs"
+                    step="1" min="0" max="200"
+                  />
+                  <span className="text-xs text-gray-500">nm</span>
                 </div>
                 <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
                   <span className="text-gray-600">Y: </span>
