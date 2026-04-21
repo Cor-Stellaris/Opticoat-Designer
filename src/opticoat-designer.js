@@ -162,6 +162,25 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Cody-Lorentz dispersion — Tauc-Lorentz with an explicit Urbach tail below Eg.
+// Adds sub-bandgap absorption (defect/disorder states) that TL misses.
+// Best-in-class for HfO2, Ta2O5, Nb2O5, complex amorphous oxides.
+// Extra param: Eu (Urbach width, eV). When Eu → 0, reduces to Tauc-Lorentz.
+function codyLorentzNK(wavelength, params) {
+  const E = 1239.84 / wavelength;
+  const Eg = params.Eg;
+  const Eu = params.Eu || 0;
+  // TL base result (n and above-Eg k)
+  const tl = taucLorentzNK(wavelength, params);
+  if (E >= Eg || Eu <= 0) return tl;
+  // Urbach tail below Eg: k(E) = k_edge · exp((E - Eg)/Eu)
+  // Self-consistent edge value: evaluate TL k at Eg + Eu (one Urbach width above)
+  const edgeWl = 1239.84 / (Eg + Eu);
+  const tlEdge = taucLorentzNK(edgeWl, params);
+  const k = tlEdge.k * Math.exp((E - Eg) / Eu);
+  return { n: tl.n, k };
+}
+
 // Lorentz oscillator model (with optional Drude term for metals).
 // Returns {n, k} at given wavelength (nm) from:
 //   ε(E) = εInf + Σⱼ Aⱼ / (E₀ⱼ² - E² - i·γⱼ·E)
@@ -1400,6 +1419,8 @@ const ThinFilmDesigner = () => {
     // Lorentz / Drude-Lorentz params
     lzEpsInf: 1.0,
     lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
+    // Cody-Lorentz adds Urbach width Eu to TL params (typical HfO2: Eu=0.1 eV)
+    clA: 110, clE0: 6.0, clC: 3.0, clEg: 5.5, clEpsInf: 2.0, clEu: 0.1,
   });
 
   const [layerStacks, setLayerStacks] = useState([
@@ -2120,6 +2141,11 @@ const ThinFilmDesigner = () => {
       return drudeLorentzNK(wavelength, data).k;
     }
 
+    // Cody-Lorentz: TL + Urbach tail below bandgap.
+    if (data.type === "cody-lorentz") {
+      return codyLorentzNK(wavelength, data).k;
+    }
+
     if (data.kType === "none") return 0;
 
     if (data.kType === "constant") return data.kValue || 0;
@@ -2150,6 +2176,8 @@ const ThinFilmDesigner = () => {
         baseN = taucLorentzNK(wavelength, data).n;
       } else if (data.type === "lorentz") {
         baseN = drudeLorentzNK(wavelength, data).n;
+      } else if (data.type === "cody-lorentz") {
+        baseN = codyLorentzNK(wavelength, data).n;
       } else if (data.type === "sellmeier") {
         const { B1, B2, B3, C1, C2, C3 } = data;
         const lambda2 = lambdaMicrons * lambdaMicrons;
@@ -5933,6 +5961,15 @@ const ThinFilmDesigner = () => {
         materialData.epsInf = newMaterialForm.tlEpsInf;
         // TL has built-in absorption; override kType
         materialData.kType = 'tauc-lorentz';
+      } else if (newMaterialForm.dispersionType === 'cody-lorentz') {
+        materialData.type = 'cody-lorentz';
+        materialData.A = newMaterialForm.clA;
+        materialData.E0 = newMaterialForm.clE0;
+        materialData.C = newMaterialForm.clC;
+        materialData.Eg = newMaterialForm.clEg;
+        materialData.epsInf = newMaterialForm.clEpsInf;
+        materialData.Eu = newMaterialForm.clEu;
+        materialData.kType = 'cody-lorentz';
       } else if (newMaterialForm.dispersionType === 'lorentz') {
         if (!newMaterialForm.lzOscillators || newMaterialForm.lzOscillators.length === 0) {
           showToast('Lorentz material requires at least 1 oscillator.', 'error');
@@ -5951,7 +5988,7 @@ const ThinFilmDesigner = () => {
         materialData.C2 = newMaterialForm.C2;
         materialData.C3 = newMaterialForm.C3;
       }
-      if (newMaterialForm.dispersionType !== 'tauc-lorentz' && newMaterialForm.dispersionType !== 'lorentz') {
+      if (newMaterialForm.dispersionType !== 'tauc-lorentz' && newMaterialForm.dispersionType !== 'lorentz' && newMaterialForm.dispersionType !== 'cody-lorentz') {
         if (newMaterialForm.kType === 'constant') {
           materialData.kValue = newMaterialForm.kValue;
         }
@@ -5973,6 +6010,7 @@ const ThinFilmDesigner = () => {
       tabularText: '', tabularData: [], tabularError: '',
       tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
       lzEpsInf: 1.0, lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
+      clA: 110, clE0: 6.0, clC: 3.0, clEg: 5.5, clEpsInf: 2.0, clEu: 0.1,
     });
   };
 
@@ -9285,6 +9323,8 @@ const ThinFilmDesigner = () => {
                                         kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                       } else if (mat.type === "tauc-lorentz") {
                                         kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "cody-lorentz") {
+                                        kInfo = `Cody-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf}, Eu=${mat.Eu})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                       } else if (mat.type === "lorentz") {
                                         const nosc = (mat.oscillators || []).length;
                                         const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
@@ -10498,6 +10538,8 @@ const ThinFilmDesigner = () => {
                                       kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                     } else if (mat.type === "tauc-lorentz") {
                                       kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "cody-lorentz") {
+                                      kInfo = `Cody-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf}, Eu=${mat.Eu})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                     } else if (mat.type === "lorentz") {
                                       const nosc = (mat.oscillators || []).length;
                                       const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
@@ -14838,24 +14880,28 @@ const ThinFilmDesigner = () => {
                             <option value="cauchy">Cauchy</option>
                             <option value="sellmeier">Sellmeier</option>
                             <option value="tauc-lorentz">Tauc-Lorentz (amorphous oxides)</option>
+                            <option value="cody-lorentz">Cody-Lorentz (TL + Urbach tail)</option>
                             <option value="lorentz">Lorentz / Drude-Lorentz (metals)</option>
                           </select>
                         </div>
                         <div>
                           <label className="block text-xs text-gray-600 mb-0.5">Absorption Model</label>
-                          <select
-                            value={(newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz') ? 'builtin' : newMaterialForm.kType}
-                            onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kType: e.target.value })}
-                            className="w-full px-2 py-1 border rounded text-xs bg-white"
-                            disabled={newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz'}
-                          >
-                            {(newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz') && (
-                              <option value="builtin">Built-in (model includes k)</option>
-                            )}
-                            <option value="none">None (transparent)</option>
-                            <option value="constant">Constant k</option>
-                            <option value="urbach">Urbach Tail</option>
-                          </select>
+                          {(() => {
+                            const builtIn = newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz' || newMaterialForm.dispersionType === 'cody-lorentz';
+                            return (
+                              <select
+                                value={builtIn ? 'builtin' : newMaterialForm.kType}
+                                onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kType: e.target.value })}
+                                className="w-full px-2 py-1 border rounded text-xs bg-white"
+                                disabled={builtIn}
+                              >
+                                {builtIn && <option value="builtin">Built-in (model includes k)</option>}
+                                <option value="none">None (transparent)</option>
+                                <option value="constant">Constant k</option>
+                                <option value="urbach">Urbach Tail</option>
+                              </select>
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -14934,6 +14980,48 @@ const ThinFilmDesigner = () => {
                           </div>
                           {(() => {
                             const preview = taucLorentzNK(550, { A: newMaterialForm.tlA, E0: newMaterialForm.tlE0, C: newMaterialForm.tlC, Eg: newMaterialForm.tlEg, epsInf: newMaterialForm.tlEpsInf });
+                            return (
+                              <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                                Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+
+                      {newMaterialForm.dispersionType === 'cody-lorentz' && (
+                        <>
+                          <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                            Cody-Lorentz extends Tauc-Lorentz with an Urbach tail below Eg. Best for HfO2, Ta2O5, Nb2O5 where sub-gap defect absorption matters. Eu=0 reduces to Tauc-Lorentz. Typical Eu: 0.05–0.2 eV.
+                          </div>
+                          <div className="grid grid-cols-6 gap-1">
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Oscillator amplitude (eV)">A</label>
+                              <input type="number" value={newMaterialForm.clA} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clA: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Peak energy (eV)">E₀</label>
+                              <input type="number" value={newMaterialForm.clE0} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clE0: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.1" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Broadening (eV)">C</label>
+                              <input type="number" value={newMaterialForm.clC} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clC: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.01" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Bandgap (eV)">Eg</label>
+                              <input type="number" value={newMaterialForm.clEg} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clEg: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="High-frequency ε">ε∞</label>
+                              <input type="number" value={newMaterialForm.clEpsInf} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clEpsInf: parseFloat(e.target.value) || 1 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="1" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Urbach width (eV)">Eu</label>
+                              <input type="number" value={newMaterialForm.clEu} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clEu: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.01" min="0" />
+                            </div>
+                          </div>
+                          {(() => {
+                            const preview = codyLorentzNK(550, { A: newMaterialForm.clA, E0: newMaterialForm.clE0, C: newMaterialForm.clC, Eg: newMaterialForm.clEg, epsInf: newMaterialForm.clEpsInf, Eu: newMaterialForm.clEu });
                             return (
                               <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
                                 Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
