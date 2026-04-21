@@ -162,6 +162,59 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Brendel-Bormann (1992) — Lorentz oscillators with Gaussian-broadened lineshapes.
+// Better than Lorentz-Drude for noble metals in the visible (smoother peaks).
+// Each oscillator: {A, E0, gamma, sigma}. sigma = 0 → pure Lorentz (back-compat).
+// E0 = 0 → Drude (no Gaussian broadening applied — Drude is already monotonic).
+// Approximated via 5-point Gauss-Hermite quadrature of the Gaussian convolution
+// (exact for polynomials up to degree 9; ~10⁻⁴ accuracy for smooth Lorentzians).
+function brendelBormannNK(wavelength, params) {
+  const E = 1239.84 / wavelength;
+  const epsInf = params.epsInf != null ? params.epsInf : 1;
+  const oscillators = params.oscillators || [];
+  // Gauss-Hermite 5-point nodes and weights (for ∫ exp(-t²)·f(t) dt ≈ Σ wᵢ f(xᵢ))
+  const ghX = [-2.020183, -0.958572, 0, 0.958572, 2.020183];
+  const ghW = [0.019953, 0.393619, 0.945309, 0.393619, 0.019953];
+  const invSqrtPi = 0.5641895835477563;
+  let epsRe = epsInf;
+  let epsIm = 0;
+  for (let j = 0; j < oscillators.length; j++) {
+    const osc = oscillators[j];
+    const A = osc.A || 0, E0 = osc.E0 || 0, g = osc.gamma || 0, sigma = osc.sigma || 0;
+    if (A === 0) continue;
+    if (E0 === 0) {
+      // Drude term
+      const dn = E * E + g * g;
+      if (dn === 0) continue;
+      epsRe -= A / dn;
+      epsIm += (A * g) / (E * dn);
+    } else if (sigma === 0) {
+      // Pure Lorentz (fast path — no quadrature needed)
+      const delta = E0 * E0 - E * E;
+      const dn = delta * delta + g * g * E * E;
+      if (dn === 0) continue;
+      epsRe += (A * delta) / dn;
+      epsIm += (A * g * E) / dn;
+    } else {
+      // Gaussian-convolved Lorentz: sample over Ê = E0 + σ√2·xᵢ
+      for (let i = 0; i < 5; i++) {
+        const Ehat = E0 + sigma * Math.SQRT2 * ghX[i];
+        if (Ehat <= 0) continue;
+        const delta = Ehat * Ehat - E * E;
+        const dn = delta * delta + g * g * E * E;
+        if (dn === 0) continue;
+        const w = ghW[i] * invSqrtPi;
+        epsRe += w * (A * delta) / dn;
+        epsIm += w * (A * g * E) / dn;
+      }
+    }
+  }
+  const mag = Math.sqrt(epsRe * epsRe + epsIm * epsIm);
+  const n = Math.sqrt(Math.max(0, (mag + epsRe) / 2));
+  const k = Math.sqrt(Math.max(0, (mag - epsRe) / 2));
+  return { n, k };
+}
+
 // Cody-Lorentz dispersion — Tauc-Lorentz with an explicit Urbach tail below Eg.
 // Adds sub-bandgap absorption (defect/disorder states) that TL misses.
 // Best-in-class for HfO2, Ta2O5, Nb2O5, complex amorphous oxides.
@@ -527,6 +580,40 @@ const materialDispersion = {
     iadIncrease: 0,
     stress: 0,
     kType: "lorentz",
+  },
+  // Silver — Brendel-Bormann fit (Rakic 1998) — smoother visible-range peaks
+  Ag_BB: {
+    type: "brendel-bormann",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 66.65,  E0: 0,      gamma: 0.049, sigma: 0     },  // Drude
+      { A: 4.059,  E0: 2.025,  gamma: 0.189, sigma: 1.894 },
+      { A: 10.80,  E0: 5.185,  gamma: 0.067, sigma: 0.665 },
+      { A: 4.140,  E0: 4.343,  gamma: 0.019, sigma: 0.189 },
+      { A: 37.91,  E0: 9.809,  gamma: 0.117, sigma: 1.170 },
+      { A: 324.72, E0: 18.56,  gamma: 0.052, sigma: 0.516 },
+    ],
+    color: "#D3D3D3",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "brendel-bormann",
+  },
+  // Gold — Brendel-Bormann fit (Rakic 1998)
+  Au_BB: {
+    type: "brendel-bormann",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 62.78,  E0: 0,      gamma: 0.050, sigma: 0     },  // Drude
+      { A: 4.403,  E0: 0.218,  gamma: 0.074, sigma: 0.742 },
+      { A: 4.077,  E0: 2.885,  gamma: 0.035, sigma: 0.349 },
+      { A: 25.43,  E0: 4.069,  gamma: 0.083, sigma: 0.830 },
+      { A: 58.62,  E0: 6.137,  gamma: 0.125, sigma: 1.246 },
+      { A: 134.38, E0: 27.97,  gamma: 0.179, sigma: 1.795 },
+    ],
+    color: "#FFD700",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "brendel-bormann",
   },
 };
 
@@ -2146,6 +2233,11 @@ const ThinFilmDesigner = () => {
       return codyLorentzNK(wavelength, data).k;
     }
 
+    // Brendel-Bormann: Gaussian-broadened Lorentz oscillators.
+    if (data.type === "brendel-bormann") {
+      return brendelBormannNK(wavelength, data).k;
+    }
+
     if (data.kType === "none") return 0;
 
     if (data.kType === "constant") return data.kValue || 0;
@@ -2178,6 +2270,8 @@ const ThinFilmDesigner = () => {
         baseN = drudeLorentzNK(wavelength, data).n;
       } else if (data.type === "cody-lorentz") {
         baseN = codyLorentzNK(wavelength, data).n;
+      } else if (data.type === "brendel-bormann") {
+        baseN = brendelBormannNK(wavelength, data).n;
       } else if (data.type === "sellmeier") {
         const { B1, B2, B3, C1, C2, C3 } = data;
         const lambda2 = lambdaMicrons * lambdaMicrons;
@@ -9329,6 +9423,9 @@ const ThinFilmDesigner = () => {
                                         const nosc = (mat.oscillators || []).length;
                                         const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
                                         kInfo = `${hasDrude ? 'Drude-Lorentz' : 'Lorentz'} (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "brendel-bormann") {
+                                        const nosc = (mat.oscillators || []).length;
+                                        kInfo = `Brendel-Bormann (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''}, Gaussian-broadened)\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                       } else if (mat.kType === "none") {
                                         kInfo = "No absorption (transparent)";
                                       } else if (mat.kType === "constant") {
@@ -10544,6 +10641,9 @@ const ThinFilmDesigner = () => {
                                       const nosc = (mat.oscillators || []).length;
                                       const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
                                       kInfo = `${hasDrude ? 'Drude-Lorentz' : 'Lorentz'} (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "brendel-bormann") {
+                                      const nosc = (mat.oscillators || []).length;
+                                      kInfo = `Brendel-Bormann (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''}, Gaussian-broadened)\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                     } else if (mat.kType === "none") {
                                       kInfo = "No absorption (transparent)";
                                     } else if (mat.kType === "constant") {
