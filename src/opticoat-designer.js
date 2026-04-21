@@ -162,6 +162,21 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Incoherent back-surface reflectance correction.
+// Models a substrate with the coating on front and bare back-surface (default air).
+// R_back = Fresnel reflectance at substrate/back-medium interface.
+// R_total = R_front + (1-R_front)²·R_back / (1 - R_front·R_back)  (infinite-series incoherent sum)
+// Previous code used R_front + (1-R_front)²·R_front — physically wrong (assumes back = front coating).
+function applyBackSurfaceCorrection(R_front, nSubstrate, nBackMedium = 1.0) {
+  if (!(R_front > 0)) return R_front;
+  const dn = nSubstrate - nBackMedium;
+  const sn = nSubstrate + nBackMedium;
+  const R_back = (dn * dn) / (sn * sn);
+  const denom = 1 - R_front * R_back;
+  if (denom <= 0) return R_front;
+  return R_front + Math.pow(1 - R_front, 2) * R_back / denom;
+}
+
 // Tauc-Lorentz dispersion (Jellison-Modine 1996, Appl. Phys. Lett. 69, 371).
 // Standard for amorphous oxides (TiO2, HfO2, Ta2O5, Nb2O5). Returns {n, k} at wavelength (nm).
 // Params: A (eV amplitude), E0 (eV peak), C (eV broadening), Eg (eV bandgap), epsInf (high-freq ε).
@@ -3458,7 +3473,7 @@ const ThinFilmDesigner = () => {
                 // Total reflection = front surface + transmitted light × back surface × transmitted back
                 // For symmetric coating: R_total = R + (1-R)² × R
                 if (doubleSidedAR) {
-                  R = R + Math.pow(1 - R, 2) * R;
+                  R = applyBackSurfaceCorrection(R, substrate.n);
                 }
 
                 const key =
@@ -6146,7 +6161,7 @@ const ThinFilmDesigner = () => {
 
         // Apply double-sided calculation if enabled
         if (doubleSidedAR) {
-          R = R + Math.pow(1 - R, 2) * R;
+          R = applyBackSurfaceCorrection(R, substrate.n);
         }
 
         data.push({
@@ -6166,7 +6181,7 @@ const ThinFilmDesigner = () => {
 
         // Apply double-sided calculation if enabled
         if (doubleSidedAR) {
-          R = R + Math.pow(1 - R, 2) * R;
+          R = applyBackSurfaceCorrection(R, substrate.n);
         }
 
         const shiftedR = Math.max(0, Math.min(100, R * 100 + shift));
@@ -6571,7 +6586,7 @@ const ThinFilmDesigner = () => {
       reverseEngineerData.forEach((dataPoint) => {
         let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
         if (doubleSidedAR) {
-          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+          calcR = applyBackSurfaceCorrection(calcR, substrate.n);
         }
         calcR = calcR * 100;
         const deviation = Math.abs(calcR - dataPoint.reflectivity);
@@ -6726,7 +6741,7 @@ const ThinFilmDesigner = () => {
       reverseEngineerData.forEach((dataPoint) => {
         let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
         if (doubleSidedAR) {
-          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+          calcR = applyBackSurfaceCorrection(calcR, substrate.n);
         }
         calcR = calcR * 100;
         const deviation = Math.abs(calcR - dataPoint.reflectivity);
@@ -6852,7 +6867,7 @@ const ThinFilmDesigner = () => {
         const dataPoint = reverseEngineerData[i];
         let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
         if (doubleSidedAR) {
-          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+          calcR = applyBackSurfaceCorrection(calcR, substrate.n);
         }
         calcR = calcR * 100;
         const deviation = Math.abs(calcR - dataPoint.reflectivity);
@@ -7515,7 +7530,7 @@ const ThinFilmDesigner = () => {
         for (let i = 0; i < lmEvalPoints.length; i++) {
           let calcR = calculateReflectivityAtWavelength(lmEvalPoints[i].wavelength, lmLayers);
           if (reverseEngineerMode && doubleSidedAR) {
-            calcR = calcR + (1 - calcR) * (1 - calcR) * calcR;
+            calcR = applyBackSurfaceCorrection(calcR, substrate.n);
           }
           r[i] = calcR * 100 - lmEvalPoints[i].target;
         }
@@ -7793,7 +7808,7 @@ const ThinFilmDesigner = () => {
         for (let i = 0; i < lmEvalPointsFinal.length; i++) {
           let calcR = calculateReflectivityAtWavelength(lmEvalPointsFinal[i].wavelength, lmLayers);
           if (reverseEngineerMode && doubleSidedAR) {
-            calcR = calcR + (1 - calcR) * (1 - calcR) * calcR;
+            calcR = applyBackSurfaceCorrection(calcR, substrate.n);
           }
           r[i] = calcR * 100 - lmEvalPointsFinal[i].target;
         }
