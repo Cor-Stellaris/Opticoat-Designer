@@ -220,6 +220,24 @@ const materialDispersion = {
     stress: -50,
     kType: "none",
   },
+  // Thin-film SiO2, e-beam deposition (no ion assist) — n≈1.45 @ 550nm
+  SiO2_ebeam: {
+    type: "cauchy",
+    A: 1.438, B: 0.00420, C: 0,
+    color: "#E8F4F8",
+    iadIncrease: 1.5,
+    stress: -80,
+    kType: "none",
+  },
+  // Thin-film SiO2, ion-assisted deposition — n≈1.465 @ 550nm (close to bulk)
+  SiO2_IAD: {
+    type: "cauchy",
+    A: 1.453, B: 0.00375, C: 0,
+    color: "#D5EBF2",
+    iadIncrease: 0.5,
+    stress: -40,
+    kType: "none",
+  },
   SiO: {
     type: "cauchy",
     A: 1.85,
@@ -245,6 +263,42 @@ const materialDispersion = {
     k0: 0.15,
     kEdge: 380,
     kDecay: 0.025,
+  },
+  // Thin-film TiO2, e-beam (no ion assist) — n≈2.42 @ 550nm, Tauc-Lorentz
+  TiO2_ebeam: {
+    type: "tauc-lorentz",
+    A: 95, E0: 4.3, C: 2.3, Eg: 3.3, epsInf: 2.10,
+    color: "#FFE8CC",
+    iadIncrease: 3.0,
+    stress: 100,
+    kType: "tauc-lorentz",
+  },
+  // Thin-film TiO2, ion-assisted — n≈2.52 @ 550nm, Tauc-Lorentz (denser, amorphous)
+  TiO2_IAD: {
+    type: "tauc-lorentz",
+    A: 115, E0: 4.1, C: 2.0, Eg: 3.3, epsInf: 2.30,
+    color: "#FFD9B3",
+    iadIncrease: 1.0,
+    stress: 200,
+    kType: "tauc-lorentz",
+  },
+  // Thin-film TiO2, magnetron sputter — n≈2.48 @ 550nm, Tauc-Lorentz
+  TiO2_sputter: {
+    type: "tauc-lorentz",
+    A: 108, E0: 4.2, C: 2.1, Eg: 3.3, epsInf: 2.25,
+    color: "#FFDCC2",
+    iadIncrease: 1.5,
+    stress: 170,
+    kType: "tauc-lorentz",
+  },
+  // Thin-film TiO2, atomic layer deposition — n≈2.40 @ 550nm, lowest loss
+  TiO2_ALD: {
+    type: "tauc-lorentz",
+    A: 90, E0: 4.4, C: 2.4, Eg: 3.35, epsInf: 2.05,
+    color: "#FFF0DD",
+    iadIncrease: 0.5,
+    stress: 80,
+    kType: "tauc-lorentz",
   },
   Al2O3: {
     type: "sellmeier",
