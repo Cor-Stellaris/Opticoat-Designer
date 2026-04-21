@@ -126,6 +126,42 @@ const FREE_TIER_LIMITS = {
 
 const admittanceColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be185d", "#65a30d", "#7c3aed", "#d97706"];
 
+// Parse tabular n,k text (CSV/TSV/whitespace). Format per line: wavelength n [k]
+// Lines starting with # or // are ignored. Auto-detects μm vs nm (max wavelength < 20 → μm).
+function parseNkTable(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const rows = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    const parts = line.split(/[\s,;\t]+/).filter(Boolean).map(Number);
+    if (parts.length < 2 || parts.some(v => !Number.isFinite(v))) continue;
+    rows.push([parts[0], parts[1], parts[2] || 0]);
+  }
+  if (rows.length === 0) return [];
+  const maxWl = Math.max(...rows.map(r => r[0]));
+  if (maxWl < 20) { for (const r of rows) r[0] *= 1000; }
+  rows.sort((a, b) => a[0] - b[0]);
+  return rows;
+}
+
+// Linear interpolation of {n, k} at given wavelength (nm). Clamps at boundaries.
+function interpolateNk(data, wavelength) {
+  if (!data || data.length === 0) return { n: 1.5, k: 0 };
+  if (data.length === 1) return { n: data[0][1], k: data[0][2] };
+  if (wavelength <= data[0][0]) return { n: data[0][1], k: data[0][2] };
+  const last = data[data.length - 1];
+  if (wavelength >= last[0]) return { n: last[1], k: last[2] };
+  let lo = 0, hi = data.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (data[mid][0] <= wavelength) lo = mid; else hi = mid;
+  }
+  const a = data[lo], b = data[hi];
+  const t = (wavelength - a[0]) / (b[0] - a[0]);
+  return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
+}
+
 const materialDispersion = {
   SiO2: {
     type: "sellmeier",
@@ -1139,6 +1175,10 @@ const ThinFilmDesigner = () => {
     color: '#E0E0E0',
     iadIncrease: 2.0,
     stress: 0,
+    // Tabular n,k mode
+    tabularText: '',
+    tabularData: [],
+    tabularError: '',
   });
 
   const [layerStacks, setLayerStacks] = useState([
@@ -1844,6 +1884,11 @@ const ThinFilmDesigner = () => {
     const data = allMaterials[material];
     if (!data) return 0;
 
+    // Tabular n,k materials: k comes directly from the table, independent of kType.
+    if (data.type === "tabular") {
+      return interpolateNk(data.data, wavelength).k;
+    }
+
     if (data.kType === "none") return 0;
 
     if (data.kType === "constant") return data.kValue || 0;
@@ -1868,7 +1913,9 @@ const ThinFilmDesigner = () => {
       const lambdaMicrons = wavelength / 1000;
 
       let baseN;
-      if (data.type === "sellmeier") {
+      if (data.type === "tabular") {
+        baseN = interpolateNk(data.data, wavelength).n;
+      } else if (data.type === "sellmeier") {
         const { B1, B2, B3, C1, C2, C3 } = data;
         const lambda2 = lambdaMicrons * lambdaMicrons;
         const nSquared =
@@ -5621,6 +5668,20 @@ const ThinFilmDesigner = () => {
         kValue: newMaterialForm.k,
         isCustom: true,
       };
+    } else if (newMaterialForm.mode === 'tabular') {
+      if (!newMaterialForm.tabularData || newMaterialForm.tabularData.length < 2) {
+        showToast('Tabular material requires at least 2 data points. Upload or paste n,k data first.', 'error');
+        return;
+      }
+      materialData = {
+        type: 'tabular',
+        data: newMaterialForm.tabularData,
+        color: newMaterialForm.color,
+        iadIncrease: newMaterialForm.iadIncrease,
+        stress: newMaterialForm.stress,
+        kType: 'tabular',
+        isCustom: true,
+      };
     } else {
       materialData = {
         isCustom: true,
@@ -5660,6 +5721,7 @@ const ThinFilmDesigner = () => {
       B1: 0.6, B2: 0.4, B3: 0.9, C1: 0.07, C2: 0.12, C3: 10.0,
       kType: 'none', kValue: 0, k0: 0.05, kEdge: 350, kDecay: 0.02,
       color: '#E0E0E0', iadIncrease: 2.0, stress: 0,
+      tabularText: '', tabularData: [], tabularError: '',
     });
   };
 
@@ -8966,7 +9028,11 @@ const ThinFilmDesigner = () => {
                                       const k400 = getExtinctionCoefficient(layer.material, 400);
                                       const k550 = getExtinctionCoefficient(layer.material, 550);
                                       let kInfo = "";
-                                      if (mat.kType === "none") {
+                                      if (mat.type === "tabular") {
+                                        const pts = mat.data ? mat.data.length : 0;
+                                        const range = mat.data && mat.data.length > 0 ? `${mat.data[0][0].toFixed(0)}-${mat.data[mat.data.length-1][0].toFixed(0)}nm` : "";
+                                        kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.kType === "none") {
                                         kInfo = "No absorption (transparent)";
                                       } else if (mat.kType === "constant") {
                                         kInfo = `k = ${mat.kValue || 0} (constant)`;
@@ -10169,7 +10235,11 @@ const ThinFilmDesigner = () => {
                                     const k400 = getExtinctionCoefficient(layer.material, 400);
                                     const k550 = getExtinctionCoefficient(layer.material, 550);
                                     let kInfo = "";
-                                    if (mat.kType === "none") {
+                                    if (mat.type === "tabular") {
+                                      const pts = mat.data ? mat.data.length : 0;
+                                      const range = mat.data && mat.data.length > 0 ? `${mat.data[0][0].toFixed(0)}-${mat.data[mat.data.length-1][0].toFixed(0)}nm` : "";
+                                      kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.kType === "none") {
                                       kInfo = "No absorption (transparent)";
                                     } else if (mat.kType === "constant") {
                                       kInfo = `k = ${mat.kValue || 0} (constant)`;
@@ -14462,6 +14532,7 @@ const ThinFilmDesigner = () => {
                       >
                         <option value="simple">Simple (constant n, k)</option>
                         <option value="advanced">Advanced (dispersion)</option>
+                        <option value="tabular">Tabular n,k (measured data)</option>
                       </select>
                     </div>
                   </div>
@@ -14586,6 +14657,78 @@ const ThinFilmDesigner = () => {
                             <label className="block text-xs text-gray-600 mb-0.5">Decay</label>
                             <input type="number" value={newMaterialForm.kDecay} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kDecay: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.001" min="0" />
                           </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {newMaterialForm.mode === 'tabular' && (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                        Paste or upload measured n,k data. Format: <code>wavelength n k</code> per line (comma, tab, or space separated). Wavelength in nm (or μm — auto-detected). Lines starting with <code>#</code> are ignored.
+                      </div>
+                      <div className="flex gap-2 items-center">
+                        <label className="flex-1 cursor-pointer inline-flex items-center justify-center gap-1 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700 font-medium">
+                          <Upload size={12} />
+                          Upload file (.csv, .txt, .nk, .dat)
+                          <input
+                            type="file"
+                            accept=".csv,.txt,.nk,.dat,.tsv"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const reader = new FileReader();
+                              reader.onload = (ev) => {
+                                const text = String(ev.target?.result || '');
+                                const parsed = parseNkTable(text);
+                                setNewMaterialForm(prev => ({
+                                  ...prev,
+                                  tabularText: text,
+                                  tabularData: parsed,
+                                  tabularError: parsed.length === 0 ? 'No valid data rows found. Check format.' : '',
+                                }));
+                              };
+                              reader.readAsText(file);
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
+                        <button
+                          onClick={() => {
+                            setNewMaterialForm(prev => ({ ...prev, tabularText: '', tabularData: [], tabularError: '' }));
+                          }}
+                          className="px-2 py-1 bg-gray-100 hover:bg-gray-200 border rounded text-xs text-gray-700"
+                          disabled={newMaterialForm.tabularData.length === 0}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <textarea
+                        value={newMaterialForm.tabularText}
+                        onChange={(e) => {
+                          const text = e.target.value;
+                          const parsed = parseNkTable(text);
+                          setNewMaterialForm(prev => ({
+                            ...prev,
+                            tabularText: text,
+                            tabularData: parsed,
+                            tabularError: text.trim() && parsed.length === 0 ? 'No valid data rows found. Check format.' : '',
+                          }));
+                        }}
+                        className="w-full px-2 py-1 border rounded text-[11px] font-mono"
+                        rows={6}
+                        placeholder={"# wavelength(nm)  n       k\n380  2.601  0.0012\n400  2.552  0.0008\n450  2.480  0.0003\n500  2.430  0.0001\n550  2.395  0.00005\n600  2.370  0.00002"}
+                      />
+                      {newMaterialForm.tabularError && (
+                        <div className="text-xs text-red-600">{newMaterialForm.tabularError}</div>
+                      )}
+                      {newMaterialForm.tabularData.length > 0 && (
+                        <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                          <span className="font-semibold text-green-700">✓ Parsed {newMaterialForm.tabularData.length} points.</span>
+                          {' '}Range: {newMaterialForm.tabularData[0][0].toFixed(1)}–{newMaterialForm.tabularData[newMaterialForm.tabularData.length-1][0].toFixed(1)} nm.
+                          {' '}n@550: {interpolateNk(newMaterialForm.tabularData, 550).n.toFixed(3)},
+                          {' '}k@550: {interpolateNk(newMaterialForm.tabularData, 550).k.toExponential(2)}
                         </div>
                       )}
                     </div>
