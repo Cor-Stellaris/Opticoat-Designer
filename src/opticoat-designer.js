@@ -162,6 +162,50 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Tauc-Lorentz dispersion (Jellison-Modine 1996, Appl. Phys. Lett. 69, 371).
+// Standard for amorphous oxides (TiO2, HfO2, Ta2O5, Nb2O5). Returns {n, k} at wavelength (nm).
+// Params: A (eV amplitude), E0 (eV peak), C (eV broadening), Eg (eV bandgap), epsInf (high-freq ε).
+function taucLorentzNK(wavelength, params) {
+  const A = params.A, E0 = params.E0, C = params.C, Eg = params.Eg;
+  const epsInf = params.epsInf != null ? params.epsInf : 1;
+  const E = 1239.84 / wavelength;
+
+  // ε₂ (imaginary part) — zero below bandgap
+  let eps2 = 0;
+  if (E > Eg) {
+    const num = A * E0 * C * (E - Eg) * (E - Eg);
+    const den = (Math.pow(E * E - E0 * E0, 2) + C * C * E * E) * E;
+    eps2 = num / den;
+  }
+
+  // ε₁ (real part) — Jellison-Modine closed-form Kramers-Kronig integral
+  const alpha2 = 4 * E0 * E0 - C * C;
+  const alpha = Math.sqrt(Math.max(1e-20, alpha2));
+  const gamma2 = E0 * E0 - C * C / 2;
+  const zeta4 = Math.pow(E * E - gamma2, 2) + alpha2 * C * C / 4;
+  const a_ln = (Eg * Eg - E0 * E0) * E * E + Eg * Eg * C * C - E0 * E0 * (E0 * E0 + 3 * Eg * Eg);
+  const a_atan = (E * E - E0 * E0) * (E0 * E0 + Eg * Eg) + Eg * Eg * C * C;
+  const EminusEg = Math.abs(E - Eg) + 1e-12;
+  const EplusEg = E + Eg;
+
+  const t1 = (A * C * a_ln) / (2 * Math.PI * zeta4 * alpha * E0)
+    * Math.log((E0 * E0 + Eg * Eg + alpha * Eg) / Math.max(1e-20, E0 * E0 + Eg * Eg - alpha * Eg));
+  const t2 = -(A * a_atan) / (Math.PI * zeta4 * E0)
+    * (Math.PI - Math.atan((2 * Eg + alpha) / C) + Math.atan((alpha - 2 * Eg) / C));
+  const t3 = (4 * A * E0 * Eg * (E * E - gamma2)) / (Math.PI * zeta4 * alpha)
+    * (Math.PI / 2 + Math.atan((2 * (gamma2 - Eg * Eg)) / (alpha * C)));
+  const t4 = -(A * E0 * C * (E * E + Eg * Eg)) / (Math.PI * zeta4 * E)
+    * Math.log(EminusEg / EplusEg);
+  const t5 = (2 * A * E0 * C * Eg) / (Math.PI * zeta4)
+    * Math.log((EminusEg * EplusEg) / Math.sqrt(Math.pow(E0 * E0 - Eg * Eg, 2) + Eg * Eg * C * C));
+
+  const eps1 = epsInf + t1 + t2 + t3 + t4 + t5;
+  const mag = Math.sqrt(eps1 * eps1 + eps2 * eps2);
+  const n = Math.sqrt(Math.max(0, (mag + eps1) / 2));
+  const k = Math.sqrt(Math.max(0, (mag - eps1) / 2));
+  return { n, k };
+}
+
 const materialDispersion = {
   SiO2: {
     type: "sellmeier",
@@ -1179,6 +1223,8 @@ const ThinFilmDesigner = () => {
     tabularText: '',
     tabularData: [],
     tabularError: '',
+    // Tauc-Lorentz params (typical TiO2 defaults)
+    tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
   });
 
   const [layerStacks, setLayerStacks] = useState([
@@ -1889,6 +1935,11 @@ const ThinFilmDesigner = () => {
       return interpolateNk(data.data, wavelength).k;
     }
 
+    // Tauc-Lorentz: absorption is built into the dispersion model.
+    if (data.type === "tauc-lorentz") {
+      return taucLorentzNK(wavelength, data).k;
+    }
+
     if (data.kType === "none") return 0;
 
     if (data.kType === "constant") return data.kValue || 0;
@@ -1915,6 +1966,8 @@ const ThinFilmDesigner = () => {
       let baseN;
       if (data.type === "tabular") {
         baseN = interpolateNk(data.data, wavelength).n;
+      } else if (data.type === "tauc-lorentz") {
+        baseN = taucLorentzNK(wavelength, data).n;
       } else if (data.type === "sellmeier") {
         const { B1, B2, B3, C1, C2, C3 } = data;
         const lambda2 = lambdaMicrons * lambdaMicrons;
@@ -5695,6 +5748,15 @@ const ThinFilmDesigner = () => {
         materialData.A = newMaterialForm.A;
         materialData.B = newMaterialForm.B;
         materialData.C = newMaterialForm.C;
+      } else if (newMaterialForm.dispersionType === 'tauc-lorentz') {
+        materialData.type = 'tauc-lorentz';
+        materialData.A = newMaterialForm.tlA;
+        materialData.E0 = newMaterialForm.tlE0;
+        materialData.C = newMaterialForm.tlC;
+        materialData.Eg = newMaterialForm.tlEg;
+        materialData.epsInf = newMaterialForm.tlEpsInf;
+        // TL has built-in absorption; override kType
+        materialData.kType = 'tauc-lorentz';
       } else {
         materialData.type = 'sellmeier';
         materialData.B1 = newMaterialForm.B1;
@@ -5704,13 +5766,15 @@ const ThinFilmDesigner = () => {
         materialData.C2 = newMaterialForm.C2;
         materialData.C3 = newMaterialForm.C3;
       }
-      if (newMaterialForm.kType === 'constant') {
-        materialData.kValue = newMaterialForm.kValue;
-      }
-      if (newMaterialForm.kType === 'urbach') {
-        materialData.k0 = newMaterialForm.k0;
-        materialData.kEdge = newMaterialForm.kEdge;
-        materialData.kDecay = newMaterialForm.kDecay;
+      if (newMaterialForm.dispersionType !== 'tauc-lorentz') {
+        if (newMaterialForm.kType === 'constant') {
+          materialData.kValue = newMaterialForm.kValue;
+        }
+        if (newMaterialForm.kType === 'urbach') {
+          materialData.k0 = newMaterialForm.k0;
+          materialData.kEdge = newMaterialForm.kEdge;
+          materialData.kDecay = newMaterialForm.kDecay;
+        }
       }
     }
 
@@ -5722,6 +5786,7 @@ const ThinFilmDesigner = () => {
       kType: 'none', kValue: 0, k0: 0.05, kEdge: 350, kDecay: 0.02,
       color: '#E0E0E0', iadIncrease: 2.0, stress: 0,
       tabularText: '', tabularData: [], tabularError: '',
+      tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
     });
   };
 
@@ -9032,6 +9097,8 @@ const ThinFilmDesigner = () => {
                                         const pts = mat.data ? mat.data.length : 0;
                                         const range = mat.data && mat.data.length > 0 ? `${mat.data[0][0].toFixed(0)}-${mat.data[mat.data.length-1][0].toFixed(0)}nm` : "";
                                         kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "tauc-lorentz") {
+                                        kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                       } else if (mat.kType === "none") {
                                         kInfo = "No absorption (transparent)";
                                       } else if (mat.kType === "constant") {
@@ -10239,6 +10306,8 @@ const ThinFilmDesigner = () => {
                                       const pts = mat.data ? mat.data.length : 0;
                                       const range = mat.data && mat.data.length > 0 ? `${mat.data[0][0].toFixed(0)}-${mat.data[mat.data.length-1][0].toFixed(0)}nm` : "";
                                       kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "tauc-lorentz") {
+                                      kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                     } else if (mat.kType === "none") {
                                       kInfo = "No absorption (transparent)";
                                     } else if (mat.kType === "constant") {
@@ -14574,15 +14643,20 @@ const ThinFilmDesigner = () => {
                           >
                             <option value="cauchy">Cauchy</option>
                             <option value="sellmeier">Sellmeier</option>
+                            <option value="tauc-lorentz">Tauc-Lorentz (amorphous oxides)</option>
                           </select>
                         </div>
                         <div>
                           <label className="block text-xs text-gray-600 mb-0.5">Absorption Model</label>
                           <select
-                            value={newMaterialForm.kType}
+                            value={newMaterialForm.dispersionType === 'tauc-lorentz' ? 'builtin' : newMaterialForm.kType}
                             onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kType: e.target.value })}
                             className="w-full px-2 py-1 border rounded text-xs bg-white"
+                            disabled={newMaterialForm.dispersionType === 'tauc-lorentz'}
                           >
+                            {newMaterialForm.dispersionType === 'tauc-lorentz' && (
+                              <option value="builtin">Built-in (Tauc-Lorentz includes k)</option>
+                            )}
                             <option value="none">None (transparent)</option>
                             <option value="constant">Constant k</option>
                             <option value="urbach">Urbach Tail</option>
@@ -14634,6 +14708,44 @@ const ThinFilmDesigner = () => {
                             <input type="number" value={newMaterialForm.C3} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, C3: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" />
                           </div>
                         </div>
+                      )}
+
+                      {newMaterialForm.dispersionType === 'tauc-lorentz' && (
+                        <>
+                          <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                            Jellison-Modine Tauc-Lorentz (1996). Industry standard for amorphous oxides (TiO2, HfO2, Ta2O5, Nb2O5). Absorption is built-in. Typical TiO2: A=100, E₀=4.2, C=2.2, Eg=3.2, ε∞=2.2.
+                          </div>
+                          <div className="grid grid-cols-5 gap-1">
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Oscillator amplitude (eV)">A (eV)</label>
+                              <input type="number" value={newMaterialForm.tlA} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlA: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Peak energy (eV)">E₀ (eV)</label>
+                              <input type="number" value={newMaterialForm.tlE0} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlE0: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.1" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Broadening (eV)">C (eV)</label>
+                              <input type="number" value={newMaterialForm.tlC} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlC: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.01" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Bandgap (eV)">Eg (eV)</label>
+                              <input type="number" value={newMaterialForm.tlEg} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlEg: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="High-frequency dielectric constant">ε∞</label>
+                              <input type="number" value={newMaterialForm.tlEpsInf} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlEpsInf: parseFloat(e.target.value) || 1 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="1" />
+                            </div>
+                          </div>
+                          {(() => {
+                            const preview = taucLorentzNK(550, { A: newMaterialForm.tlA, E0: newMaterialForm.tlE0, C: newMaterialForm.tlC, Eg: newMaterialForm.tlEg, epsInf: newMaterialForm.tlEpsInf });
+                            return (
+                              <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                                Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
+                              </div>
+                            );
+                          })()}
+                        </>
                       )}
 
                       {newMaterialForm.kType === 'constant' && (
