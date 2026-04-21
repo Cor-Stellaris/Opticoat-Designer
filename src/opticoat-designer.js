@@ -162,6 +162,42 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Lorentz oscillator model (with optional Drude term for metals).
+// Returns {n, k} at given wavelength (nm) from:
+//   ε(E) = εInf + Σⱼ Aⱼ / (E₀ⱼ² - E² - i·γⱼ·E)
+// Set E₀ = 0 to make that oscillator a Drude (free-electron) term.
+// Params: { epsInf, oscillators: [{A, E0, gamma}, ...] } with A, E0, gamma in eV.
+function drudeLorentzNK(wavelength, params) {
+  const E = 1239.84 / wavelength;
+  const epsInf = params.epsInf != null ? params.epsInf : 1;
+  const oscillators = params.oscillators || [];
+  let epsRe = epsInf;
+  let epsIm = 0;
+  for (let i = 0; i < oscillators.length; i++) {
+    const osc = oscillators[i];
+    const A = osc.A || 0, E0 = osc.E0 || 0, g = osc.gamma || 0;
+    if (A === 0) continue;
+    if (E0 === 0) {
+      // Drude term: ε = -A / (E² + i·γ·E)
+      const dn = E * E + g * g;
+      if (dn === 0) continue;
+      epsRe -= A / dn;
+      epsIm += (A * g) / (E * dn);
+    } else {
+      // Lorentz oscillator: ε = A / (E₀² - E² - i·γ·E)
+      const delta = E0 * E0 - E * E;
+      const dn = delta * delta + g * g * E * E;
+      if (dn === 0) continue;
+      epsRe += (A * delta) / dn;
+      epsIm += (A * g * E) / dn;
+    }
+  }
+  const mag = Math.sqrt(epsRe * epsRe + epsIm * epsIm);
+  const n = Math.sqrt(Math.max(0, (mag + epsRe) / 2));
+  const k = Math.sqrt(Math.max(0, (mag - epsRe) / 2));
+  return { n, k };
+}
+
 // Incoherent back-surface reflectance correction.
 // Models a substrate with the coating on front and bare back-surface (default air).
 // R_back = Fresnel reflectance at substrate/back-medium interface.
@@ -405,6 +441,73 @@ const materialDispersion = {
     k0: 0.03,
     kEdge: 320,
     kDecay: 0.02,
+  },
+  // Metals — Rakic 1998 Lorentz-Drude fits (ε∞=1, A = f·ωₚ² with ωₚ from fit)
+  // Silver — ωₚ = 9.01 eV
+  Ag: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 68.61, E0: 0,      gamma: 0.048 },  // Drude
+      { A: 5.28,  E0: 0.816,  gamma: 3.886 },
+      { A: 10.07, E0: 4.481,  gamma: 0.452 },
+      { A: 0.893, E0: 8.185,  gamma: 0.065 },
+      { A: 68.21, E0: 9.083,  gamma: 0.916 },
+      { A: 458.5, E0: 20.29,  gamma: 2.419 },
+    ],
+    color: "#C0C0C0",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
+  },
+  // Gold — ωₚ = 9.03 eV
+  Au: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 61.98,  E0: 0,      gamma: 0.053 },  // Drude
+      { A: 1.958,  E0: 0.415,  gamma: 0.241 },
+      { A: 0.816,  E0: 0.830,  gamma: 0.345 },
+      { A: 5.789,  E0: 2.969,  gamma: 0.870 },
+      { A: 49.00,  E0: 4.304,  gamma: 2.494 },
+      { A: 357.51, E0: 13.32,  gamma: 2.214 },
+    ],
+    color: "#D4AF37",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
+  },
+  // Aluminum — ωₚ = 14.98 eV
+  Al: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 117.35, E0: 0,      gamma: 0.047 },  // Drude
+      { A: 50.93,  E0: 0.162,  gamma: 0.333 },
+      { A: 11.22,  E0: 1.544,  gamma: 0.312 },
+      { A: 37.25,  E0: 1.808,  gamma: 1.351 },
+      { A: 6.73,   E0: 3.473,  gamma: 3.382 },
+    ],
+    color: "#A8A9AD",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
+  },
+  // Copper — ωₚ = 10.83 eV
+  Cu: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 69.72,  E0: 0,      gamma: 0.030 },  // Drude
+      { A: 7.12,   E0: 0.291,  gamma: 0.378 },
+      { A: 4.92,   E0: 2.957,  gamma: 1.056 },
+      { A: 122.67, E0: 5.300,  gamma: 3.213 },
+      { A: 133.86, E0: 11.18,  gamma: 4.305 },
+    ],
+    color: "#B87333",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
   },
 };
 
@@ -1294,6 +1397,9 @@ const ThinFilmDesigner = () => {
     tabularError: '',
     // Tauc-Lorentz params (typical TiO2 defaults)
     tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
+    // Lorentz / Drude-Lorentz params
+    lzEpsInf: 1.0,
+    lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
   });
 
   const [layerStacks, setLayerStacks] = useState([
@@ -2009,6 +2115,11 @@ const ThinFilmDesigner = () => {
       return taucLorentzNK(wavelength, data).k;
     }
 
+    // Lorentz / Drude / Drude-Lorentz: built-in k.
+    if (data.type === "lorentz") {
+      return drudeLorentzNK(wavelength, data).k;
+    }
+
     if (data.kType === "none") return 0;
 
     if (data.kType === "constant") return data.kValue || 0;
@@ -2037,6 +2148,8 @@ const ThinFilmDesigner = () => {
         baseN = interpolateNk(data.data, wavelength).n;
       } else if (data.type === "tauc-lorentz") {
         baseN = taucLorentzNK(wavelength, data).n;
+      } else if (data.type === "lorentz") {
+        baseN = drudeLorentzNK(wavelength, data).n;
       } else if (data.type === "sellmeier") {
         const { B1, B2, B3, C1, C2, C3 } = data;
         const lambda2 = lambdaMicrons * lambdaMicrons;
@@ -5820,6 +5933,15 @@ const ThinFilmDesigner = () => {
         materialData.epsInf = newMaterialForm.tlEpsInf;
         // TL has built-in absorption; override kType
         materialData.kType = 'tauc-lorentz';
+      } else if (newMaterialForm.dispersionType === 'lorentz') {
+        if (!newMaterialForm.lzOscillators || newMaterialForm.lzOscillators.length === 0) {
+          showToast('Lorentz material requires at least 1 oscillator.', 'error');
+          return;
+        }
+        materialData.type = 'lorentz';
+        materialData.epsInf = newMaterialForm.lzEpsInf;
+        materialData.oscillators = newMaterialForm.lzOscillators.map(o => ({ A: o.A, E0: o.E0, gamma: o.gamma }));
+        materialData.kType = 'lorentz';
       } else {
         materialData.type = 'sellmeier';
         materialData.B1 = newMaterialForm.B1;
@@ -5829,7 +5951,7 @@ const ThinFilmDesigner = () => {
         materialData.C2 = newMaterialForm.C2;
         materialData.C3 = newMaterialForm.C3;
       }
-      if (newMaterialForm.dispersionType !== 'tauc-lorentz') {
+      if (newMaterialForm.dispersionType !== 'tauc-lorentz' && newMaterialForm.dispersionType !== 'lorentz') {
         if (newMaterialForm.kType === 'constant') {
           materialData.kValue = newMaterialForm.kValue;
         }
@@ -5850,6 +5972,7 @@ const ThinFilmDesigner = () => {
       color: '#E0E0E0', iadIncrease: 2.0, stress: 0,
       tabularText: '', tabularData: [], tabularError: '',
       tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
+      lzEpsInf: 1.0, lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
     });
   };
 
@@ -9162,6 +9285,10 @@ const ThinFilmDesigner = () => {
                                         kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                       } else if (mat.type === "tauc-lorentz") {
                                         kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "lorentz") {
+                                        const nosc = (mat.oscillators || []).length;
+                                        const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
+                                        kInfo = `${hasDrude ? 'Drude-Lorentz' : 'Lorentz'} (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                       } else if (mat.kType === "none") {
                                         kInfo = "No absorption (transparent)";
                                       } else if (mat.kType === "constant") {
@@ -10371,6 +10498,10 @@ const ThinFilmDesigner = () => {
                                       kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                     } else if (mat.type === "tauc-lorentz") {
                                       kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "lorentz") {
+                                      const nosc = (mat.oscillators || []).length;
+                                      const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
+                                      kInfo = `${hasDrude ? 'Drude-Lorentz' : 'Lorentz'} (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
                                     } else if (mat.kType === "none") {
                                       kInfo = "No absorption (transparent)";
                                     } else if (mat.kType === "constant") {
@@ -14707,18 +14838,19 @@ const ThinFilmDesigner = () => {
                             <option value="cauchy">Cauchy</option>
                             <option value="sellmeier">Sellmeier</option>
                             <option value="tauc-lorentz">Tauc-Lorentz (amorphous oxides)</option>
+                            <option value="lorentz">Lorentz / Drude-Lorentz (metals)</option>
                           </select>
                         </div>
                         <div>
                           <label className="block text-xs text-gray-600 mb-0.5">Absorption Model</label>
                           <select
-                            value={newMaterialForm.dispersionType === 'tauc-lorentz' ? 'builtin' : newMaterialForm.kType}
+                            value={(newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz') ? 'builtin' : newMaterialForm.kType}
                             onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kType: e.target.value })}
                             className="w-full px-2 py-1 border rounded text-xs bg-white"
-                            disabled={newMaterialForm.dispersionType === 'tauc-lorentz'}
+                            disabled={newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz'}
                           >
-                            {newMaterialForm.dispersionType === 'tauc-lorentz' && (
-                              <option value="builtin">Built-in (Tauc-Lorentz includes k)</option>
+                            {(newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz') && (
+                              <option value="builtin">Built-in (model includes k)</option>
                             )}
                             <option value="none">None (transparent)</option>
                             <option value="constant">Constant k</option>
@@ -14802,6 +14934,79 @@ const ThinFilmDesigner = () => {
                           </div>
                           {(() => {
                             const preview = taucLorentzNK(550, { A: newMaterialForm.tlA, E0: newMaterialForm.tlE0, C: newMaterialForm.tlC, Eg: newMaterialForm.tlEg, epsInf: newMaterialForm.tlEpsInf });
+                            return (
+                              <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                                Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+
+                      {newMaterialForm.dispersionType === 'lorentz' && (
+                        <>
+                          <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                            Multi-oscillator Lorentz model. For a <b>Drude</b> (free-electron) term, set E₀ = 0. Standard for metals (Au, Ag, Al) and materials with known absorption peaks. Oscillator: A/(E₀² − E² − i·γ·E).
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-24">
+                              <label className="block text-xs text-gray-600 mb-0.5">ε∞</label>
+                              <input type="number" value={newMaterialForm.lzEpsInf} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, lzEpsInf: parseFloat(e.target.value) || 1 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="1" />
+                            </div>
+                            <button
+                              onClick={() => {
+                                if (newMaterialForm.lzOscillators.length >= 8) return;
+                                setNewMaterialForm({ ...newMaterialForm, lzOscillators: [...newMaterialForm.lzOscillators, { A: 1.0, E0: 4.0, gamma: 0.5 }] });
+                              }}
+                              className="ml-auto px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700"
+                              disabled={newMaterialForm.lzOscillators.length >= 8}
+                            >
+                              + Add oscillator
+                            </button>
+                          </div>
+                          <div className="space-y-1">
+                            {newMaterialForm.lzOscillators.map((osc, idx) => (
+                              <div key={idx} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1 items-end">
+                                <div>
+                                  {idx === 0 && <label className="block text-[10px] text-gray-600">A (eV²)</label>}
+                                  <input type="number" value={osc.A} onChange={(e) => {
+                                    const next = [...newMaterialForm.lzOscillators];
+                                    next[idx] = { ...next[idx], A: parseFloat(e.target.value) || 0 };
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: next });
+                                  }} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" />
+                                </div>
+                                <div>
+                                  {idx === 0 && <label className="block text-[10px] text-gray-600">E₀ (eV, 0=Drude)</label>}
+                                  <input type="number" value={osc.E0} onChange={(e) => {
+                                    const next = [...newMaterialForm.lzOscillators];
+                                    next[idx] = { ...next[idx], E0: parseFloat(e.target.value) || 0 };
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: next });
+                                  }} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0" />
+                                </div>
+                                <div>
+                                  {idx === 0 && <label className="block text-[10px] text-gray-600">γ (eV)</label>}
+                                  <input type="number" value={osc.gamma} onChange={(e) => {
+                                    const next = [...newMaterialForm.lzOscillators];
+                                    next[idx] = { ...next[idx], gamma: parseFloat(e.target.value) || 0 };
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: next });
+                                  }} className="w-full px-1.5 py-1 border rounded text-xs" step="0.01" min="0" />
+                                </div>
+                                <button
+                                  onClick={() => {
+                                    if (newMaterialForm.lzOscillators.length <= 1) return;
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: newMaterialForm.lzOscillators.filter((_, i) => i !== idx) });
+                                  }}
+                                  className="p-1 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-red-600 text-xs disabled:opacity-30"
+                                  disabled={newMaterialForm.lzOscillators.length <= 1}
+                                  title="Remove oscillator"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                          {(() => {
+                            const preview = drudeLorentzNK(550, { epsInf: newMaterialForm.lzEpsInf, oscillators: newMaterialForm.lzOscillators });
                             return (
                               <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
                                 Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
