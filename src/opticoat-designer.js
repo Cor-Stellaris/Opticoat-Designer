@@ -2177,184 +2177,178 @@ const ThinFilmDesigner = () => {
           return Math.min(Math.max(R, 0), 1);
         }
 
-        // Oblique incidence - calculate using Snell's law for each layer
+        // Oblique incidence — full complex transfer matrix.
+        // Uses complex refractive index N = nr - i·ni throughout (including
+        // complex Snell's law and complex cos θ). This preserves absorption
+        // at angles, which the previous real-n approximation dropped.
         const angleRad = (angle * Math.PI) / 180;
-        const theta0 = angleRad;
+        const sinTheta0 = Math.sin(angleRad);
+        const cosTheta0 = Math.cos(angleRad);
+        const q = n0 * sinTheta0;  // n0·sin(θ0) — real (incident medium lossless)
 
-        const angles = [theta0];
-        const ns_array = [n0];
-
-        for (let i = layerStack.length - 1; i >= 0; i--) {
-          const n = getRefractiveIndex(
-              layerStack[i].material,
-              lambda,
-              layerStack[i].iad,
-              layerStack[i].packingDensity || 1.0
-            );
-          ns_array.push(n);
-          const sinTheta = (n0 * Math.sin(theta0)) / n;
-          if (sinTheta > 1) return 0; // Total internal reflection
-          angles.push(Math.asin(sinTheta));
+        // Precompute per-layer [nr, ni, cosR, cosI]
+        const layerData = new Array(layerStack.length);
+        for (let i = 0; i < layerStack.length; i++) {
+          const nr = getRefractiveIndex(
+            layerStack[i].material, lambda,
+            layerStack[i].iad, layerStack[i].packingDensity || 1.0
+          );
+          const ni = getExtinctionCoefficient(layerStack[i].material, lambda);
+          // sin(θ_layer) = q / N = q·(nr + i·ni)/|N|²
+          const magSq = nr * nr + ni * ni;
+          const sinR = (q * nr) / magSq;
+          const sinI = (q * ni) / magSq;
+          // sin²(θ_layer)
+          const sin2R = sinR * sinR - sinI * sinI;
+          const sin2I = 2 * sinR * sinI;
+          // cos²(θ_layer) = 1 - sin²
+          const cos2R = 1 - sin2R;
+          const cos2I = -sin2I;
+          // cos(θ_layer) = sqrt(cos²) — principal branch (preserves Im sign)
+          let cosR, cosI;
+          if (cos2I === 0) {
+            if (cos2R >= 0) { cosR = Math.sqrt(cos2R); cosI = 0; }
+            else { cosR = 0; cosI = Math.sqrt(-cos2R); }
+          } else {
+            const mag = Math.hypot(cos2R, cos2I);
+            cosR = Math.sqrt((mag + cos2R) / 2);
+            cosI = (cos2I >= 0 ? 1 : -1) * Math.sqrt((mag - cos2R) / 2);
+          }
+          layerData[i] = [nr, ni, cosR, cosI];
         }
 
-        ns_array.push(ns);
-        const sinThetaS = (n0 * Math.sin(theta0)) / ns;
-        if (sinThetaS > 1) return 0;
-        angles.push(Math.asin(sinThetaS));
+        // Substrate cos(θ) — substrate index is real (OptiCoat doesn't track substrate k)
+        const sinThetaS = q / ns;
+        let cosSubR, cosSubI;
+        const cos2Sub = 1 - sinThetaS * sinThetaS;
+        if (cos2Sub >= 0) { cosSubR = Math.sqrt(cos2Sub); cosSubI = 0; }
+        else { cosSubR = 0; cosSubI = Math.sqrt(-cos2Sub); }  // TIR → evanescent
 
-        // Calculate s-polarization (TE mode)
-        let M11r_s = 1,
-          M11i_s = 0,
-          M12r_s = 0,
-          M12i_s = 0,
-          M21r_s = 0,
-          M21i_s = 0,
-          M22r_s = 1,
-          M22i_s = 0;
+        // ─── s-polarization (TE) — η = N·cos(θ) ───
+        let M11r_s = 1, M11i_s = 0, M12r_s = 0, M12i_s = 0;
+        let M21r_s = 0, M21i_s = 0, M22r_s = 1, M22i_s = 0;
 
         for (let i = layerStack.length - 1; i >= 0; i--) {
-          const n = getRefractiveIndex(
-            layerStack[i].material,
-            lambda,
-            layerStack[i].iad,
-            layerStack[i].packingDensity || 1.0
-          );
+          const [nr, ni, cR, cI] = layerData[i];
           const toolingFactor = toolingFactors[layerStack[i].material] || 1.0;
           const d = layerStack[i].thickness * toolingFactor;
-          const theta = angles[angles.length - 2 - i];
-          const cosTheta = Math.cos(theta);
-          const delta = (2 * Math.PI * n * d * cosTheta) / lambda;
-          const cosD = Math.cos(delta);
-          const sinD = Math.sin(delta);
-          const eta = n * cosTheta;
-
-          const L11r = cosD,
-            L11i = 0,
-            L12r = 0,
-            L12i = sinD / eta,
-            L21r = 0,
-            L21i = eta * sinD,
-            L22r = cosD,
-            L22i = 0;
-          const newM11r =
-            M11r_s * L11r - M11i_s * L11i + M12r_s * L21r - M12i_s * L21i;
-          const newM11i =
-            M11r_s * L11i + M11i_s * L11r + M12r_s * L21i + M12i_s * L21r;
-          const newM12r =
-            M11r_s * L12r - M11i_s * L12i + M12r_s * L22r - M12i_s * L22i;
-          const newM12i =
-            M11r_s * L12i + M11i_s * L12r + M12r_s * L22i + M12i_s * L22r;
-          const newM21r =
-            M21r_s * L11r - M21i_s * L11i + M22r_s * L21r - M22i_s * L21i;
-          const newM21i =
-            M21r_s * L11i + M21i_s * L11r + M22r_s * L21i + M22i_s * L21r;
-          const newM22r =
-            M21r_s * L12r - M21i_s * L12i + M22r_s * L22r - M22i_s * L22i;
-          const newM22i =
-            M21r_s * L12i + M21i_s * L12r + M22r_s * L22i + M22i_s * L22r;
-
-          M11r_s = newM11r;
-          M11i_s = newM11i;
-          M12r_s = newM12r;
-          M12i_s = newM12i;
-          M21r_s = newM21r;
-          M21i_s = newM21i;
-          M22r_s = newM22r;
-          M22i_s = newM22i;
+          const factor = (2 * Math.PI * d) / lambda;
+          // δ = factor · N · cos(θ) = factor · (nr - i·ni)(cR + i·cI)
+          const deltaR = factor * (nr * cR + ni * cI);
+          const deltaI = factor * (nr * cI - ni * cR);
+          // cos(δR + i·δI) = cos(δR)cosh(δI) - i·sin(δR)sinh(δI)
+          const cdR = Math.cos(deltaR), cdI_sh = Math.sin(deltaR);
+          const coshDI = Math.cosh(deltaI), sinhDI = Math.sinh(deltaI);
+          const cosDR = cdR * coshDI;
+          const cosDI = -cdI_sh * sinhDI;
+          const sinDR = cdI_sh * coshDI;
+          const sinDI = cdR * sinhDI;
+          // η_s = N·cos(θ) = (nr - i·ni)(cR + i·cI)
+          const etaR = nr * cR + ni * cI;
+          const etaI = nr * cI - ni * cR;
+          // L11 = L22 = cos(δ)
+          const L11r = cosDR, L11i = cosDI, L22r = cosDR, L22i = cosDI;
+          // L12 = i·sin(δ)/η   and   L21 = i·η·sin(δ)
+          const etaMagSq = etaR * etaR + etaI * etaI;
+          const sOverEta_r = (sinDR * etaR + sinDI * etaI) / etaMagSq;
+          const sOverEta_i = (sinDI * etaR - sinDR * etaI) / etaMagSq;
+          const L12r = -sOverEta_i, L12i = sOverEta_r;
+          const etaSin_r = etaR * sinDR - etaI * sinDI;
+          const etaSin_i = etaR * sinDI + etaI * sinDR;
+          const L21r = -etaSin_i, L21i = etaSin_r;
+          // M = M · L
+          const nM11r = M11r_s * L11r - M11i_s * L11i + M12r_s * L21r - M12i_s * L21i;
+          const nM11i = M11r_s * L11i + M11i_s * L11r + M12r_s * L21i + M12i_s * L21r;
+          const nM12r = M11r_s * L12r - M11i_s * L12i + M12r_s * L22r - M12i_s * L22i;
+          const nM12i = M11r_s * L12i + M11i_s * L12r + M12r_s * L22i + M12i_s * L22r;
+          const nM21r = M21r_s * L11r - M21i_s * L11i + M22r_s * L21r - M22i_s * L21i;
+          const nM21i = M21r_s * L11i + M21i_s * L11r + M22r_s * L21i + M22i_s * L21r;
+          const nM22r = M21r_s * L12r - M21i_s * L12i + M22r_s * L22r - M22i_s * L22i;
+          const nM22i = M21r_s * L12i + M21i_s * L12r + M22r_s * L22i + M22i_s * L22r;
+          M11r_s = nM11r; M11i_s = nM11i; M12r_s = nM12r; M12i_s = nM12i;
+          M21r_s = nM21r; M21i_s = nM21i; M22r_s = nM22r; M22i_s = nM22i;
         }
 
-        const eta0_s = n0 * Math.cos(theta0);
-        const etas_s = ns * Math.cos(angles[angles.length - 1]);
-        const numR_s =
-          eta0_s * M11r_s + eta0_s * etas_s * M12r_s - M21r_s - etas_s * M22r_s;
-        const numI_s =
-          eta0_s * M11i_s + eta0_s * etas_s * M12i_s - M21i_s - etas_s * M22i_s;
-        const denR_s =
-          eta0_s * M11r_s + eta0_s * etas_s * M12r_s + M21r_s + etas_s * M22r_s;
-        const denI_s =
-          eta0_s * M11i_s + eta0_s * etas_s * M12i_s + M21i_s + etas_s * M22i_s;
+        // η0_s = n0·cos(θ0) — real (lossless incident)
+        const eta0_s = n0 * cosTheta0;
+        // etas_s = ns·cos(θ_sub) — possibly complex (TIR)
+        const etasS_r = ns * cosSubR, etasS_i = ns * cosSubI;
+        // num = η0·M11 + η0·ηs·M12 - M21 - ηs·M22   (each term complex)
+        const h0hsM12_r = eta0_s * (etasS_r * M12r_s - etasS_i * M12i_s);
+        const h0hsM12_i = eta0_s * (etasS_r * M12i_s + etasS_i * M12r_s);
+        const hsM22_r = etasS_r * M22r_s - etasS_i * M22i_s;
+        const hsM22_i = etasS_r * M22i_s + etasS_i * M22r_s;
+        const numR_s = eta0_s * M11r_s + h0hsM12_r - M21r_s - hsM22_r;
+        const numI_s = eta0_s * M11i_s + h0hsM12_i - M21i_s - hsM22_i;
+        const denR_s = eta0_s * M11r_s + h0hsM12_r + M21r_s + hsM22_r;
+        const denI_s = eta0_s * M11i_s + h0hsM12_i + M21i_s + hsM22_i;
         const denMag_s = denR_s * denR_s + denI_s * denI_s;
         const rR_s = (numR_s * denR_s + numI_s * denI_s) / denMag_s;
         const rI_s = (numI_s * denR_s - numR_s * denI_s) / denMag_s;
         const Rs = rR_s * rR_s + rI_s * rI_s;
 
-        // Calculate p-polarization (TM mode)
-        let M11r_p = 1,
-          M11i_p = 0,
-          M12r_p = 0,
-          M12i_p = 0,
-          M21r_p = 0,
-          M21i_p = 0,
-          M22r_p = 1,
-          M22i_p = 0;
+        // ─── p-polarization (TM) — η = N/cos(θ) ───
+        let M11r_p = 1, M11i_p = 0, M12r_p = 0, M12i_p = 0;
+        let M21r_p = 0, M21i_p = 0, M22r_p = 1, M22i_p = 0;
 
         for (let i = layerStack.length - 1; i >= 0; i--) {
-          const n = getRefractiveIndex(
-            layerStack[i].material,
-            lambda,
-            layerStack[i].iad,
-            layerStack[i].packingDensity || 1.0
-          );
+          const [nr, ni, cR, cI] = layerData[i];
           const toolingFactor = toolingFactors[layerStack[i].material] || 1.0;
           const d = layerStack[i].thickness * toolingFactor;
-          const theta = angles[angles.length - 2 - i];
-          const cosTheta = Math.cos(theta);
-          const delta = (2 * Math.PI * n * d * cosTheta) / lambda;
-          const cosD = Math.cos(delta);
-          const sinD = Math.sin(delta);
-          const eta = n / cosTheta;
-
-          const L11r = cosD,
-            L11i = 0,
-            L12r = 0,
-            L12i = sinD / eta,
-            L21r = 0,
-            L21i = eta * sinD,
-            L22r = cosD,
-            L22i = 0;
-          const newM11r =
-            M11r_p * L11r - M11i_p * L11i + M12r_p * L21r - M12i_p * L21i;
-          const newM11i =
-            M11r_p * L11i + M11i_p * L11r + M12r_p * L21i + M12i_p * L21r;
-          const newM12r =
-            M11r_p * L12r - M11i_p * L12i + M12r_p * L22r - M12i_p * L22i;
-          const newM12i =
-            M11r_p * L12i + M11i_p * L12r + M12r_p * L22i + M12i_p * L22r;
-          const newM21r =
-            M21r_p * L11r - M21i_p * L11i + M22r_p * L21r - M22i_p * L21i;
-          const newM21i =
-            M21r_p * L11i + M21i_p * L11r + M22r_p * L21i + M22i_p * L21r;
-          const newM22r =
-            M21r_p * L12r - M21i_p * L12i + M22r_p * L22r - M22i_p * L22i;
-          const newM22i =
-            M21r_p * L12i + M21i_p * L12r + M22r_p * L22i + M22i_p * L22r;
-
-          M11r_p = newM11r;
-          M11i_p = newM11i;
-          M12r_p = newM12r;
-          M12i_p = newM12i;
-          M21r_p = newM21r;
-          M21i_p = newM21i;
-          M22r_p = newM22r;
-          M22i_p = newM22i;
+          const factor = (2 * Math.PI * d) / lambda;
+          // δ same as s-pol (depends only on N·cos(θ))
+          const deltaR = factor * (nr * cR + ni * cI);
+          const deltaI = factor * (nr * cI - ni * cR);
+          const cdR = Math.cos(deltaR), cdI_sh = Math.sin(deltaR);
+          const coshDI = Math.cosh(deltaI), sinhDI = Math.sinh(deltaI);
+          const cosDR = cdR * coshDI;
+          const cosDI = -cdI_sh * sinhDI;
+          const sinDR = cdI_sh * coshDI;
+          const sinDI = cdR * sinhDI;
+          // η_p = N/cos(θ) = (nr - i·ni)·conj(cos)/|cos|² = (nr - i·ni)(cR - i·cI)/(cR²+cI²)
+          const cosMagSq = cR * cR + cI * cI;
+          const etaR = (nr * cR - ni * cI) / cosMagSq;
+          const etaI = -(nr * cI + ni * cR) / cosMagSq;
+          const L11r = cosDR, L11i = cosDI, L22r = cosDR, L22i = cosDI;
+          const etaMagSq = etaR * etaR + etaI * etaI;
+          const sOverEta_r = (sinDR * etaR + sinDI * etaI) / etaMagSq;
+          const sOverEta_i = (sinDI * etaR - sinDR * etaI) / etaMagSq;
+          const L12r = -sOverEta_i, L12i = sOverEta_r;
+          const etaSin_r = etaR * sinDR - etaI * sinDI;
+          const etaSin_i = etaR * sinDI + etaI * sinDR;
+          const L21r = -etaSin_i, L21i = etaSin_r;
+          const nM11r = M11r_p * L11r - M11i_p * L11i + M12r_p * L21r - M12i_p * L21i;
+          const nM11i = M11r_p * L11i + M11i_p * L11r + M12r_p * L21i + M12i_p * L21r;
+          const nM12r = M11r_p * L12r - M11i_p * L12i + M12r_p * L22r - M12i_p * L22i;
+          const nM12i = M11r_p * L12i + M11i_p * L12r + M12r_p * L22i + M12i_p * L22r;
+          const nM21r = M21r_p * L11r - M21i_p * L11i + M22r_p * L21r - M22i_p * L21i;
+          const nM21i = M21r_p * L11i + M21i_p * L11r + M22r_p * L21i + M22i_p * L21r;
+          const nM22r = M21r_p * L12r - M21i_p * L12i + M22r_p * L22r - M22i_p * L22i;
+          const nM22i = M21r_p * L12i + M21i_p * L12r + M22r_p * L22i + M22i_p * L22r;
+          M11r_p = nM11r; M11i_p = nM11i; M12r_p = nM12r; M12i_p = nM12i;
+          M21r_p = nM21r; M21i_p = nM21i; M22r_p = nM22r; M22i_p = nM22i;
         }
 
-        const eta0_p = n0 / Math.cos(theta0);
-        const etas_p = ns / Math.cos(angles[angles.length - 1]);
-        const numR_p =
-          eta0_p * M11r_p + eta0_p * etas_p * M12r_p - M21r_p - etas_p * M22r_p;
-        const numI_p =
-          eta0_p * M11i_p + eta0_p * etas_p * M12i_p - M21i_p - etas_p * M22i_p;
-        const denR_p =
-          eta0_p * M11r_p + eta0_p * etas_p * M12r_p + M21r_p + etas_p * M22r_p;
-        const denI_p =
-          eta0_p * M11i_p + eta0_p * etas_p * M12i_p + M21i_p + etas_p * M22i_p;
+        // η0_p = n0/cos(θ0) — real
+        const eta0_p = n0 / cosTheta0;
+        // etas_p = ns/cos(θ_sub) — complex if TIR
+        const cosSubMagSq_p = cosSubR * cosSubR + cosSubI * cosSubI;
+        const etasP_r = (ns * cosSubR) / cosSubMagSq_p;
+        const etasP_i = -(ns * cosSubI) / cosSubMagSq_p;
+        const h0hsM12_pr = eta0_p * (etasP_r * M12r_p - etasP_i * M12i_p);
+        const h0hsM12_pi = eta0_p * (etasP_r * M12i_p + etasP_i * M12r_p);
+        const hsM22_pr = etasP_r * M22r_p - etasP_i * M22i_p;
+        const hsM22_pi = etasP_r * M22i_p + etasP_i * M22r_p;
+        const numR_p = eta0_p * M11r_p + h0hsM12_pr - M21r_p - hsM22_pr;
+        const numI_p = eta0_p * M11i_p + h0hsM12_pi - M21i_p - hsM22_pi;
+        const denR_p = eta0_p * M11r_p + h0hsM12_pr + M21r_p + hsM22_pr;
+        const denI_p = eta0_p * M11i_p + h0hsM12_pi + M21i_p + hsM22_pi;
         const denMag_p = denR_p * denR_p + denI_p * denI_p;
         const rR_p = (numR_p * denR_p + numI_p * denI_p) / denMag_p;
         const rI_p = (numI_p * denR_p - numR_p * denI_p) / denMag_p;
         const Rp = rR_p * rR_p + rI_p * rI_p;
 
-        // Average s and p polarizations for unpolarized light
+        // Unpolarized = (Rs + Rp) / 2
         const R_avg = (Rs + Rp) / 2;
         if (phaseOut) {
           const phase_s = Math.atan2(rI_s, rR_s) * 180 / Math.PI;
