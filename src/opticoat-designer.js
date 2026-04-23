@@ -126,6 +126,302 @@ const FREE_TIER_LIMITS = {
 
 const admittanceColors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be185d", "#65a30d", "#7c3aed", "#d97706"];
 
+// Parse tabular n,k text (CSV/TSV/whitespace). Format per line: wavelength n [k]
+// Lines starting with # or // are ignored. Auto-detects μm vs nm (max wavelength < 20 → μm).
+function parseNkTable(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const rows = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    const parts = line.split(/[\s,;\t]+/).filter(Boolean).map(Number);
+    if (parts.length < 2 || parts.some(v => !Number.isFinite(v))) continue;
+    rows.push([parts[0], parts[1], parts[2] || 0]);
+  }
+  if (rows.length === 0) return [];
+  const maxWl = Math.max(...rows.map(r => r[0]));
+  if (maxWl < 20) { for (const r of rows) r[0] *= 1000; }
+  rows.sort((a, b) => a[0] - b[0]);
+  return rows;
+}
+
+// Linear interpolation of {n, k} at given wavelength (nm). Clamps at boundaries.
+function interpolateNk(data, wavelength) {
+  if (!data || data.length === 0) return { n: 1.5, k: 0 };
+  if (data.length === 1) return { n: data[0][1], k: data[0][2] };
+  if (wavelength <= data[0][0]) return { n: data[0][1], k: data[0][2] };
+  const last = data[data.length - 1];
+  if (wavelength >= last[0]) return { n: last[1], k: last[2] };
+  let lo = 0, hi = data.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (data[mid][0] <= wavelength) lo = mid; else hi = mid;
+  }
+  const a = data[lo], b = data[hi];
+  const t = (wavelength - a[0]) / (b[0] - a[0]);
+  return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
+}
+
+// Graded-index profile mapper — maps a normalized position [0,1] to an interpolation fraction [0,1]
+// based on the chosen gradient shape.
+function applyGradientProfile(x, profile) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  switch (profile) {
+    case 'cubic': return x * x * (3 - 2 * x);  // smoothstep
+    case 'sinusoidal': return 0.5 - 0.5 * Math.cos(Math.PI * x);
+    case 'quintic': return x * x * x * (x * (x * 6 - 15) + 10);
+    case 'linear':
+    default: return x;
+  }
+}
+
+// Expand graded-index layers into homogeneous sub-layer slices.
+// Each slice inherits the parent layer's iad/packingDensity/etc. Material n,k at each
+// slice is linearly interpolated between gradient.fromMaterial and gradient.toMaterial
+// using applyGradientProfile(fraction, gradient.profile).
+function expandGradedLayers(layerStack) {
+  const out = [];
+  for (let i = 0; i < layerStack.length; i++) {
+    const layer = layerStack[i];
+    const g = layer.gradient;
+    if (g && g.enabled && g.toMaterial && g.nSlices >= 2) {
+      const N = Math.max(2, Math.min(100, Math.floor(g.nSlices)));
+      const sliceT = layer.thickness / N;
+      for (let k = 0; k < N; k++) {
+        const frac = (k + 0.5) / N;
+        const t = applyGradientProfile(frac, g.profile || 'linear');
+        out.push({
+          ...layer,
+          thickness: sliceT,
+          _gradientT: t,
+          _gradientFrom: layer.material,
+          _gradientTo: g.toMaterial,
+        });
+      }
+    } else {
+      out.push(layer);
+    }
+  }
+  return out;
+}
+
+// Kramers-Kronig validation for tabular n,k data.
+// Computes the KK-predicted n(E) from k(E) via the causal integral and compares
+// against the user-supplied n. Uses trapezoidal rule with singularity skip.
+// Note: finite integration range truncates the true KK integral, so expect some
+// absolute offset even for perfectly consistent data. The *shape* is what matters —
+// we compare via Pearson correlation and relative RMS deviation.
+function validateKK(data) {
+  if (!data || data.length < 5) {
+    return { valid: false, message: 'Need ≥5 data points for KK validation', correlation: 0 };
+  }
+  // Use energy E (eV) — KK integrand is ω·k/(ω'²-ω²) (ω proportional to E)
+  const E = data.map(r => 1239.84 / r[0]);
+  const n = data.map(r => r[1]);
+  const k = data.map(r => r[2]);
+  // Compute KK-predicted n - 1 at each point
+  const predicted = new Array(data.length);
+  for (let i = 0; i < data.length; i++) {
+    const Ei = E[i];
+    let integral = 0;
+    for (let j = 0; j < data.length - 1; j++) {
+      if (j === i || j + 1 === i) continue;
+      const Ej = E[j], Ejp = E[j + 1];
+      const dE = Math.abs(Ejp - Ej);
+      if (dE === 0) continue;
+      const fj = (Ej * k[j]) / (Ej * Ej - Ei * Ei);
+      const fjp = (Ejp * k[j + 1]) / (Ejp * Ejp - Ei * Ei);
+      integral += 0.5 * (fj + fjp) * dE;
+    }
+    predicted[i] = 1 + (2 / Math.PI) * integral;
+  }
+  // Compare shapes: Pearson correlation between predicted and actual
+  const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const nMean = mean(n), pMean = mean(predicted);
+  let cov = 0, nVar = 0, pVar = 0;
+  for (let i = 0; i < n.length; i++) {
+    const dn = n[i] - nMean, dp = predicted[i] - pMean;
+    cov += dn * dp;
+    nVar += dn * dn;
+    pVar += dp * dp;
+  }
+  const corr = (nVar > 0 && pVar > 0) ? cov / Math.sqrt(nVar * pVar) : 0;
+  // Relative RMS: shape-match quality
+  const diffs = predicted.map((p, i) => (p - pMean) - (n[i] - nMean));
+  const rmsDiff = Math.sqrt(diffs.reduce((a, b) => a + b * b, 0) / diffs.length);
+  const nRMS = Math.sqrt(nVar / n.length);
+  const relErr = nRMS > 0 ? rmsDiff / nRMS : 0;
+  return { valid: true, correlation: corr, relativeError: relErr, predicted, meanActual: nMean, meanPredicted: pMean };
+}
+
+// Brendel-Bormann (1992) — Lorentz oscillators with Gaussian-broadened lineshapes.
+// Better than Lorentz-Drude for noble metals in the visible (smoother peaks).
+// Each oscillator: {A, E0, gamma, sigma}. sigma = 0 → pure Lorentz (back-compat).
+// E0 = 0 → Drude (no Gaussian broadening applied — Drude is already monotonic).
+// Approximated via 5-point Gauss-Hermite quadrature of the Gaussian convolution
+// (exact for polynomials up to degree 9; ~10⁻⁴ accuracy for smooth Lorentzians).
+function brendelBormannNK(wavelength, params) {
+  const E = 1239.84 / wavelength;
+  const epsInf = params.epsInf != null ? params.epsInf : 1;
+  const oscillators = params.oscillators || [];
+  // Gauss-Hermite 5-point nodes and weights (for ∫ exp(-t²)·f(t) dt ≈ Σ wᵢ f(xᵢ))
+  const ghX = [-2.020183, -0.958572, 0, 0.958572, 2.020183];
+  const ghW = [0.019953, 0.393619, 0.945309, 0.393619, 0.019953];
+  const invSqrtPi = 0.5641895835477563;
+  let epsRe = epsInf;
+  let epsIm = 0;
+  for (let j = 0; j < oscillators.length; j++) {
+    const osc = oscillators[j];
+    const A = osc.A || 0, E0 = osc.E0 || 0, g = osc.gamma || 0, sigma = osc.sigma || 0;
+    if (A === 0) continue;
+    if (E0 === 0) {
+      // Drude term
+      const dn = E * E + g * g;
+      if (dn === 0) continue;
+      epsRe -= A / dn;
+      epsIm += (A * g) / (E * dn);
+    } else if (sigma === 0) {
+      // Pure Lorentz (fast path — no quadrature needed)
+      const delta = E0 * E0 - E * E;
+      const dn = delta * delta + g * g * E * E;
+      if (dn === 0) continue;
+      epsRe += (A * delta) / dn;
+      epsIm += (A * g * E) / dn;
+    } else {
+      // Gaussian-convolved Lorentz: sample over Ê = E0 + σ√2·xᵢ
+      for (let i = 0; i < 5; i++) {
+        const Ehat = E0 + sigma * Math.SQRT2 * ghX[i];
+        if (Ehat <= 0) continue;
+        const delta = Ehat * Ehat - E * E;
+        const dn = delta * delta + g * g * E * E;
+        if (dn === 0) continue;
+        const w = ghW[i] * invSqrtPi;
+        epsRe += w * (A * delta) / dn;
+        epsIm += w * (A * g * E) / dn;
+      }
+    }
+  }
+  const mag = Math.sqrt(epsRe * epsRe + epsIm * epsIm);
+  const n = Math.sqrt(Math.max(0, (mag + epsRe) / 2));
+  const k = Math.sqrt(Math.max(0, (mag - epsRe) / 2));
+  return { n, k };
+}
+
+// Cody-Lorentz dispersion — Tauc-Lorentz with an explicit Urbach tail below Eg.
+// Adds sub-bandgap absorption (defect/disorder states) that TL misses.
+// Best-in-class for HfO2, Ta2O5, Nb2O5, complex amorphous oxides.
+// Extra param: Eu (Urbach width, eV). When Eu → 0, reduces to Tauc-Lorentz.
+function codyLorentzNK(wavelength, params) {
+  const E = 1239.84 / wavelength;
+  const Eg = params.Eg;
+  const Eu = params.Eu || 0;
+  // TL base result (n and above-Eg k)
+  const tl = taucLorentzNK(wavelength, params);
+  if (E >= Eg || Eu <= 0) return tl;
+  // Urbach tail below Eg: k(E) = k_edge · exp((E - Eg)/Eu)
+  // Self-consistent edge value: evaluate TL k at Eg + Eu (one Urbach width above)
+  const edgeWl = 1239.84 / (Eg + Eu);
+  const tlEdge = taucLorentzNK(edgeWl, params);
+  const k = tlEdge.k * Math.exp((E - Eg) / Eu);
+  return { n: tl.n, k };
+}
+
+// Lorentz oscillator model (with optional Drude term for metals).
+// Returns {n, k} at given wavelength (nm) from:
+//   ε(E) = εInf + Σⱼ Aⱼ / (E₀ⱼ² - E² - i·γⱼ·E)
+// Set E₀ = 0 to make that oscillator a Drude (free-electron) term.
+// Params: { epsInf, oscillators: [{A, E0, gamma}, ...] } with A, E0, gamma in eV.
+function drudeLorentzNK(wavelength, params) {
+  const E = 1239.84 / wavelength;
+  const epsInf = params.epsInf != null ? params.epsInf : 1;
+  const oscillators = params.oscillators || [];
+  let epsRe = epsInf;
+  let epsIm = 0;
+  for (let i = 0; i < oscillators.length; i++) {
+    const osc = oscillators[i];
+    const A = osc.A || 0, E0 = osc.E0 || 0, g = osc.gamma || 0;
+    if (A === 0) continue;
+    if (E0 === 0) {
+      // Drude term: ε = -A / (E² + i·γ·E)
+      const dn = E * E + g * g;
+      if (dn === 0) continue;
+      epsRe -= A / dn;
+      epsIm += (A * g) / (E * dn);
+    } else {
+      // Lorentz oscillator: ε = A / (E₀² - E² - i·γ·E)
+      const delta = E0 * E0 - E * E;
+      const dn = delta * delta + g * g * E * E;
+      if (dn === 0) continue;
+      epsRe += (A * delta) / dn;
+      epsIm += (A * g * E) / dn;
+    }
+  }
+  const mag = Math.sqrt(epsRe * epsRe + epsIm * epsIm);
+  const n = Math.sqrt(Math.max(0, (mag + epsRe) / 2));
+  const k = Math.sqrt(Math.max(0, (mag - epsRe) / 2));
+  return { n, k };
+}
+
+// Incoherent back-surface reflectance correction.
+// Models a substrate with the coating on front and bare back-surface (default air).
+// R_back = Fresnel reflectance at substrate/back-medium interface.
+// R_total = R_front + (1-R_front)²·R_back / (1 - R_front·R_back)  (infinite-series incoherent sum)
+// Previous code used R_front + (1-R_front)²·R_front — physically wrong (assumes back = front coating).
+function applyBackSurfaceCorrection(R_front, nSubstrate, nBackMedium = 1.0) {
+  if (!(R_front > 0)) return R_front;
+  const dn = nSubstrate - nBackMedium;
+  const sn = nSubstrate + nBackMedium;
+  const R_back = (dn * dn) / (sn * sn);
+  const denom = 1 - R_front * R_back;
+  if (denom <= 0) return R_front;
+  return R_front + Math.pow(1 - R_front, 2) * R_back / denom;
+}
+
+// Tauc-Lorentz dispersion (Jellison-Modine 1996, Appl. Phys. Lett. 69, 371).
+// Standard for amorphous oxides (TiO2, HfO2, Ta2O5, Nb2O5). Returns {n, k} at wavelength (nm).
+// Params: A (eV amplitude), E0 (eV peak), C (eV broadening), Eg (eV bandgap), epsInf (high-freq ε).
+function taucLorentzNK(wavelength, params) {
+  const A = params.A, E0 = params.E0, C = params.C, Eg = params.Eg;
+  const epsInf = params.epsInf != null ? params.epsInf : 1;
+  const E = 1239.84 / wavelength;
+
+  // ε₂ (imaginary part) — zero below bandgap
+  let eps2 = 0;
+  if (E > Eg) {
+    const num = A * E0 * C * (E - Eg) * (E - Eg);
+    const den = (Math.pow(E * E - E0 * E0, 2) + C * C * E * E) * E;
+    eps2 = num / den;
+  }
+
+  // ε₁ (real part) — Jellison-Modine closed-form Kramers-Kronig integral
+  const alpha2 = 4 * E0 * E0 - C * C;
+  const alpha = Math.sqrt(Math.max(1e-20, alpha2));
+  const gamma2 = E0 * E0 - C * C / 2;
+  const zeta4 = Math.pow(E * E - gamma2, 2) + alpha2 * C * C / 4;
+  const a_ln = (Eg * Eg - E0 * E0) * E * E + Eg * Eg * C * C - E0 * E0 * (E0 * E0 + 3 * Eg * Eg);
+  const a_atan = (E * E - E0 * E0) * (E0 * E0 + Eg * Eg) + Eg * Eg * C * C;
+  const EminusEg = Math.abs(E - Eg) + 1e-12;
+  const EplusEg = E + Eg;
+
+  const t1 = (A * C * a_ln) / (2 * Math.PI * zeta4 * alpha * E0)
+    * Math.log((E0 * E0 + Eg * Eg + alpha * Eg) / Math.max(1e-20, E0 * E0 + Eg * Eg - alpha * Eg));
+  const t2 = -(A * a_atan) / (Math.PI * zeta4 * E0)
+    * (Math.PI - Math.atan((2 * Eg + alpha) / C) + Math.atan((alpha - 2 * Eg) / C));
+  const t3 = (4 * A * E0 * Eg * (E * E - gamma2)) / (Math.PI * zeta4 * alpha)
+    * (Math.PI / 2 + Math.atan((2 * (gamma2 - Eg * Eg)) / (alpha * C)));
+  const t4 = -(A * E0 * C * (E * E + Eg * Eg)) / (Math.PI * zeta4 * E)
+    * Math.log(EminusEg / EplusEg);
+  const t5 = (2 * A * E0 * C * Eg) / (Math.PI * zeta4)
+    * Math.log((EminusEg * EplusEg) / Math.sqrt(Math.pow(E0 * E0 - Eg * Eg, 2) + Eg * Eg * C * C));
+
+  const eps1 = epsInf + t1 + t2 + t3 + t4 + t5;
+  const mag = Math.sqrt(eps1 * eps1 + eps2 * eps2);
+  const n = Math.sqrt(Math.max(0, (mag + eps1) / 2));
+  const k = Math.sqrt(Math.max(0, (mag - eps1) / 2));
+  return { n, k };
+}
+
 const materialDispersion = {
   SiO2: {
     type: "sellmeier",
@@ -138,6 +434,24 @@ const materialDispersion = {
     color: "#E8F4F8",
     iadIncrease: 3.0,
     stress: -50,
+    kType: "none",
+  },
+  // Thin-film SiO2, e-beam deposition (no ion assist) — n≈1.45 @ 550nm
+  SiO2_ebeam: {
+    type: "cauchy",
+    A: 1.438, B: 0.00420, C: 0,
+    color: "#E8F4F8",
+    iadIncrease: 1.5,
+    stress: -80,
+    kType: "none",
+  },
+  // Thin-film SiO2, ion-assisted deposition — n≈1.465 @ 550nm (close to bulk)
+  SiO2_IAD: {
+    type: "cauchy",
+    A: 1.453, B: 0.00375, C: 0,
+    color: "#D5EBF2",
+    iadIncrease: 0.5,
+    stress: -40,
     kType: "none",
   },
   SiO: {
@@ -165,6 +479,42 @@ const materialDispersion = {
     k0: 0.15,
     kEdge: 380,
     kDecay: 0.025,
+  },
+  // Thin-film TiO2, e-beam (no ion assist) — n≈2.42 @ 550nm, Tauc-Lorentz
+  TiO2_ebeam: {
+    type: "tauc-lorentz",
+    A: 95, E0: 4.3, C: 2.3, Eg: 3.3, epsInf: 2.10,
+    color: "#FFE8CC",
+    iadIncrease: 3.0,
+    stress: 100,
+    kType: "tauc-lorentz",
+  },
+  // Thin-film TiO2, ion-assisted — n≈2.52 @ 550nm, Tauc-Lorentz (denser, amorphous)
+  TiO2_IAD: {
+    type: "tauc-lorentz",
+    A: 115, E0: 4.1, C: 2.0, Eg: 3.3, epsInf: 2.30,
+    color: "#FFD9B3",
+    iadIncrease: 1.0,
+    stress: 200,
+    kType: "tauc-lorentz",
+  },
+  // Thin-film TiO2, magnetron sputter — n≈2.48 @ 550nm, Tauc-Lorentz
+  TiO2_sputter: {
+    type: "tauc-lorentz",
+    A: 108, E0: 4.2, C: 2.1, Eg: 3.3, epsInf: 2.25,
+    color: "#FFDCC2",
+    iadIncrease: 1.5,
+    stress: 170,
+    kType: "tauc-lorentz",
+  },
+  // Thin-film TiO2, atomic layer deposition — n≈2.40 @ 550nm, lowest loss
+  TiO2_ALD: {
+    type: "tauc-lorentz",
+    A: 90, E0: 4.4, C: 2.4, Eg: 3.35, epsInf: 2.05,
+    color: "#FFF0DD",
+    iadIncrease: 0.5,
+    stress: 80,
+    kType: "tauc-lorentz",
   },
   Al2O3: {
     type: "sellmeier",
@@ -256,6 +606,107 @@ const materialDispersion = {
     k0: 0.03,
     kEdge: 320,
     kDecay: 0.02,
+  },
+  // Metals — Rakic 1998 Lorentz-Drude fits (ε∞=1, A = f·ωₚ² with ωₚ from fit)
+  // Silver — ωₚ = 9.01 eV
+  Ag: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 68.61, E0: 0,      gamma: 0.048 },  // Drude
+      { A: 5.28,  E0: 0.816,  gamma: 3.886 },
+      { A: 10.07, E0: 4.481,  gamma: 0.452 },
+      { A: 0.893, E0: 8.185,  gamma: 0.065 },
+      { A: 68.21, E0: 9.083,  gamma: 0.916 },
+      { A: 458.5, E0: 20.29,  gamma: 2.419 },
+    ],
+    color: "#C0C0C0",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
+  },
+  // Gold — ωₚ = 9.03 eV
+  Au: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 61.98,  E0: 0,      gamma: 0.053 },  // Drude
+      { A: 1.958,  E0: 0.415,  gamma: 0.241 },
+      { A: 0.816,  E0: 0.830,  gamma: 0.345 },
+      { A: 5.789,  E0: 2.969,  gamma: 0.870 },
+      { A: 49.00,  E0: 4.304,  gamma: 2.494 },
+      { A: 357.51, E0: 13.32,  gamma: 2.214 },
+    ],
+    color: "#D4AF37",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
+  },
+  // Aluminum — ωₚ = 14.98 eV
+  Al: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 117.35, E0: 0,      gamma: 0.047 },  // Drude
+      { A: 50.93,  E0: 0.162,  gamma: 0.333 },
+      { A: 11.22,  E0: 1.544,  gamma: 0.312 },
+      { A: 37.25,  E0: 1.808,  gamma: 1.351 },
+      { A: 6.73,   E0: 3.473,  gamma: 3.382 },
+    ],
+    color: "#A8A9AD",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
+  },
+  // Copper — ωₚ = 10.83 eV
+  Cu: {
+    type: "lorentz",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 69.72,  E0: 0,      gamma: 0.030 },  // Drude
+      { A: 7.12,   E0: 0.291,  gamma: 0.378 },
+      { A: 4.92,   E0: 2.957,  gamma: 1.056 },
+      { A: 122.67, E0: 5.300,  gamma: 3.213 },
+      { A: 133.86, E0: 11.18,  gamma: 4.305 },
+    ],
+    color: "#B87333",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "lorentz",
+  },
+  // Silver — Brendel-Bormann fit (Rakic 1998) — smoother visible-range peaks
+  Ag_BB: {
+    type: "brendel-bormann",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 66.65,  E0: 0,      gamma: 0.049, sigma: 0     },  // Drude
+      { A: 4.059,  E0: 2.025,  gamma: 0.189, sigma: 1.894 },
+      { A: 10.80,  E0: 5.185,  gamma: 0.067, sigma: 0.665 },
+      { A: 4.140,  E0: 4.343,  gamma: 0.019, sigma: 0.189 },
+      { A: 37.91,  E0: 9.809,  gamma: 0.117, sigma: 1.170 },
+      { A: 324.72, E0: 18.56,  gamma: 0.052, sigma: 0.516 },
+    ],
+    color: "#D3D3D3",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "brendel-bormann",
+  },
+  // Gold — Brendel-Bormann fit (Rakic 1998)
+  Au_BB: {
+    type: "brendel-bormann",
+    epsInf: 1.0,
+    oscillators: [
+      { A: 62.78,  E0: 0,      gamma: 0.050, sigma: 0     },  // Drude
+      { A: 4.403,  E0: 0.218,  gamma: 0.074, sigma: 0.742 },
+      { A: 4.077,  E0: 2.885,  gamma: 0.035, sigma: 0.349 },
+      { A: 25.43,  E0: 4.069,  gamma: 0.083, sigma: 0.830 },
+      { A: 58.62,  E0: 6.137,  gamma: 0.125, sigma: 1.246 },
+      { A: 134.38, E0: 27.97,  gamma: 0.179, sigma: 1.795 },
+    ],
+    color: "#FFD700",
+    iadIncrease: 0,
+    stress: 0,
+    kType: "brendel-bormann",
   },
 };
 
@@ -1139,6 +1590,19 @@ const ThinFilmDesigner = () => {
     color: '#E0E0E0',
     iadIncrease: 2.0,
     stress: 0,
+    // Tabular n,k mode
+    tabularText: '',
+    tabularData: [],
+    tabularError: '',
+    // Tauc-Lorentz params (typical TiO2 defaults)
+    tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
+    // Lorentz / Drude-Lorentz params
+    lzEpsInf: 1.0,
+    lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
+    // Cody-Lorentz adds Urbach width Eu to TL params (typical HfO2: Eu=0.1 eV)
+    clA: 110, clE0: 6.0, clC: 3.0, clEg: 5.5, clEpsInf: 2.0, clEu: 0.1,
+    // Last-run KK validation result (transient, not persisted)
+    kkResult: null,
   });
 
   const [layerStacks, setLayerStacks] = useState([
@@ -1170,6 +1634,7 @@ const ThinFilmDesigner = () => {
   const [autoYAxis, setAutoYAxis] = useState(false);
   const [displayMode, setDisplayMode] = useState("reflectivity"); // 'reflectivity' or 'transmission'
   const [doubleSidedAR, setDoubleSidedAR] = useState(true); // Account for backside reflection (no black backing)
+  const [surfaceRoughness, setSurfaceRoughness] = useState(0); // RMS surface roughness in nm (Davies-Bennett scalar scattering)
   const [selectedIlluminant, setSelectedIlluminant] = useState("D65");
   const [chartHeight, setChartHeight] = useState(65);
   const [isDragging, setIsDragging] = useState(false);
@@ -1189,6 +1654,8 @@ const ThinFilmDesigner = () => {
   const [showTargetsModal, setShowTargetsModal] = useState(false);
   const [showIADModal, setShowIADModal] = useState(false);
   const [currentIADLayer, setCurrentIADLayer] = useState(null);
+  const [showGradientModal, setShowGradientModal] = useState(false);
+  const [currentGradientLayer, setCurrentGradientLayer] = useState(null);
   const [targets, setTargets] = useState([]);
   const [recipes, setRecipes] = useState([
     { id: 1, name: "Default Recipe", targets: [] },
@@ -1844,6 +2311,31 @@ const ThinFilmDesigner = () => {
     const data = allMaterials[material];
     if (!data) return 0;
 
+    // Tabular n,k materials: k comes directly from the table, independent of kType.
+    if (data.type === "tabular") {
+      return interpolateNk(data.data, wavelength).k;
+    }
+
+    // Tauc-Lorentz: absorption is built into the dispersion model.
+    if (data.type === "tauc-lorentz") {
+      return taucLorentzNK(wavelength, data).k;
+    }
+
+    // Lorentz / Drude / Drude-Lorentz: built-in k.
+    if (data.type === "lorentz") {
+      return drudeLorentzNK(wavelength, data).k;
+    }
+
+    // Cody-Lorentz: TL + Urbach tail below bandgap.
+    if (data.type === "cody-lorentz") {
+      return codyLorentzNK(wavelength, data).k;
+    }
+
+    // Brendel-Bormann: Gaussian-broadened Lorentz oscillators.
+    if (data.type === "brendel-bormann") {
+      return brendelBormannNK(wavelength, data).k;
+    }
+
     if (data.kType === "none") return 0;
 
     if (data.kType === "constant") return data.kValue || 0;
@@ -1868,7 +2360,17 @@ const ThinFilmDesigner = () => {
       const lambdaMicrons = wavelength / 1000;
 
       let baseN;
-      if (data.type === "sellmeier") {
+      if (data.type === "tabular") {
+        baseN = interpolateNk(data.data, wavelength).n;
+      } else if (data.type === "tauc-lorentz") {
+        baseN = taucLorentzNK(wavelength, data).n;
+      } else if (data.type === "lorentz") {
+        baseN = drudeLorentzNK(wavelength, data).n;
+      } else if (data.type === "cody-lorentz") {
+        baseN = codyLorentzNK(wavelength, data).n;
+      } else if (data.type === "brendel-bormann") {
+        baseN = brendelBormannNK(wavelength, data).n;
+      } else if (data.type === "sellmeier") {
         const { B1, B2, B3, C1, C2, C3 } = data;
         const lambda2 = lambdaMicrons * lambdaMicrons;
         const nSquared =
@@ -1914,6 +2416,24 @@ const ThinFilmDesigner = () => {
         const machine = machines.find((m) => m.id === stack?.machineId);
         const toolingFactors = machine?.toolingFactors || {};
 
+        // Expand graded-index layers into homogeneous slices up front — the matrix
+        // loops below treat every element as a discrete layer.
+        layerStack = expandGradedLayers(layerStack);
+
+        // Helpers that honor the gradient interpolation flag on a slice (if present).
+        const getLayerN = (layer) => {
+          const base = getRefractiveIndex(layer.material, lambda, layer.iad, layer.packingDensity || 1.0);
+          if (layer._gradientT == null) return base;
+          const toN = getRefractiveIndex(layer._gradientTo, lambda, layer.iad, layer.packingDensity || 1.0);
+          return base + layer._gradientT * (toN - base);
+        };
+        const getLayerK = (layer) => {
+          const base = getExtinctionCoefficient(layer.material, lambda);
+          if (layer._gradientT == null) return base;
+          const toK = getExtinctionCoefficient(layer._gradientTo, lambda);
+          return base + layer._gradientT * (toK - base);
+        };
+
         // Normal incidence (angle = 0) - with complex refractive index support
         if (angle === 0) {
           let M11r = 1,
@@ -1926,14 +2446,9 @@ const ThinFilmDesigner = () => {
             M22i = 0;
 
           for (let i = layerStack.length - 1; i >= 0; i--) {
-            // Get real part of refractive index (n)
-            const nr = getRefractiveIndex(
-              layerStack[i].material,
-              lambda,
-              layerStack[i].iad,
-              layerStack[i].packingDensity || 1.0
-            );
-            const ni = getExtinctionCoefficient(layerStack[i].material, lambda);
+            // Get real and imag parts of refractive index (honors gradient slicing)
+            const nr = getLayerN(layerStack[i]);
+            const ni = getLayerK(layerStack[i]);
             
             const toolingFactor = toolingFactors[layerStack[i].material] || 1.0;
             const d = layerStack[i].thickness * toolingFactor;
@@ -2020,194 +2535,197 @@ const ThinFilmDesigner = () => {
           const rI = (numI * denR - numR * denI) / denMag;
           const R = rR * rR + rI * rI;
           if (phaseOut) phaseOut.phase = Math.atan2(rI, rR) * 180 / Math.PI;
-          return Math.min(Math.max(R, 0), 1);
+          // Davies-Bennett scalar scattering loss (normal incidence: cosθ = 1)
+          let Rout = R;
+          if (surfaceRoughness > 0) {
+            const arg = (4 * Math.PI * surfaceRoughness) / lambda;
+            Rout = R * Math.exp(-arg * arg);
+          }
+          return Math.min(Math.max(Rout, 0), 1);
         }
 
-        // Oblique incidence - calculate using Snell's law for each layer
+        // Oblique incidence — full complex transfer matrix.
+        // Uses complex refractive index N = nr - i·ni throughout (including
+        // complex Snell's law and complex cos θ). This preserves absorption
+        // at angles, which the previous real-n approximation dropped.
         const angleRad = (angle * Math.PI) / 180;
-        const theta0 = angleRad;
+        const sinTheta0 = Math.sin(angleRad);
+        const cosTheta0 = Math.cos(angleRad);
+        const q = n0 * sinTheta0;  // n0·sin(θ0) — real (incident medium lossless)
 
-        const angles = [theta0];
-        const ns_array = [n0];
-
-        for (let i = layerStack.length - 1; i >= 0; i--) {
-          const n = getRefractiveIndex(
-              layerStack[i].material,
-              lambda,
-              layerStack[i].iad,
-              layerStack[i].packingDensity || 1.0
-            );
-          ns_array.push(n);
-          const sinTheta = (n0 * Math.sin(theta0)) / n;
-          if (sinTheta > 1) return 0; // Total internal reflection
-          angles.push(Math.asin(sinTheta));
+        // Precompute per-layer [nr, ni, cosR, cosI]
+        const layerData = new Array(layerStack.length);
+        for (let i = 0; i < layerStack.length; i++) {
+          const nr = getLayerN(layerStack[i]);
+          const ni = getLayerK(layerStack[i]);
+          // sin(θ_layer) = q / N = q·(nr + i·ni)/|N|²
+          const magSq = nr * nr + ni * ni;
+          const sinR = (q * nr) / magSq;
+          const sinI = (q * ni) / magSq;
+          // sin²(θ_layer)
+          const sin2R = sinR * sinR - sinI * sinI;
+          const sin2I = 2 * sinR * sinI;
+          // cos²(θ_layer) = 1 - sin²
+          const cos2R = 1 - sin2R;
+          const cos2I = -sin2I;
+          // cos(θ_layer) = sqrt(cos²) — principal branch (preserves Im sign)
+          let cosR, cosI;
+          if (cos2I === 0) {
+            if (cos2R >= 0) { cosR = Math.sqrt(cos2R); cosI = 0; }
+            else { cosR = 0; cosI = Math.sqrt(-cos2R); }
+          } else {
+            const mag = Math.hypot(cos2R, cos2I);
+            cosR = Math.sqrt((mag + cos2R) / 2);
+            cosI = (cos2I >= 0 ? 1 : -1) * Math.sqrt((mag - cos2R) / 2);
+          }
+          layerData[i] = [nr, ni, cosR, cosI];
         }
 
-        ns_array.push(ns);
-        const sinThetaS = (n0 * Math.sin(theta0)) / ns;
-        if (sinThetaS > 1) return 0;
-        angles.push(Math.asin(sinThetaS));
+        // Substrate cos(θ) — substrate index is real (OptiCoat doesn't track substrate k)
+        const sinThetaS = q / ns;
+        let cosSubR, cosSubI;
+        const cos2Sub = 1 - sinThetaS * sinThetaS;
+        if (cos2Sub >= 0) { cosSubR = Math.sqrt(cos2Sub); cosSubI = 0; }
+        else { cosSubR = 0; cosSubI = Math.sqrt(-cos2Sub); }  // TIR → evanescent
 
-        // Calculate s-polarization (TE mode)
-        let M11r_s = 1,
-          M11i_s = 0,
-          M12r_s = 0,
-          M12i_s = 0,
-          M21r_s = 0,
-          M21i_s = 0,
-          M22r_s = 1,
-          M22i_s = 0;
+        // ─── s-polarization (TE) — η = N·cos(θ) ───
+        let M11r_s = 1, M11i_s = 0, M12r_s = 0, M12i_s = 0;
+        let M21r_s = 0, M21i_s = 0, M22r_s = 1, M22i_s = 0;
 
         for (let i = layerStack.length - 1; i >= 0; i--) {
-          const n = getRefractiveIndex(
-            layerStack[i].material,
-            lambda,
-            layerStack[i].iad,
-            layerStack[i].packingDensity || 1.0
-          );
+          const [nr, ni, cR, cI] = layerData[i];
           const toolingFactor = toolingFactors[layerStack[i].material] || 1.0;
           const d = layerStack[i].thickness * toolingFactor;
-          const theta = angles[angles.length - 2 - i];
-          const cosTheta = Math.cos(theta);
-          const delta = (2 * Math.PI * n * d * cosTheta) / lambda;
-          const cosD = Math.cos(delta);
-          const sinD = Math.sin(delta);
-          const eta = n * cosTheta;
-
-          const L11r = cosD,
-            L11i = 0,
-            L12r = 0,
-            L12i = sinD / eta,
-            L21r = 0,
-            L21i = eta * sinD,
-            L22r = cosD,
-            L22i = 0;
-          const newM11r =
-            M11r_s * L11r - M11i_s * L11i + M12r_s * L21r - M12i_s * L21i;
-          const newM11i =
-            M11r_s * L11i + M11i_s * L11r + M12r_s * L21i + M12i_s * L21r;
-          const newM12r =
-            M11r_s * L12r - M11i_s * L12i + M12r_s * L22r - M12i_s * L22i;
-          const newM12i =
-            M11r_s * L12i + M11i_s * L12r + M12r_s * L22i + M12i_s * L22r;
-          const newM21r =
-            M21r_s * L11r - M21i_s * L11i + M22r_s * L21r - M22i_s * L21i;
-          const newM21i =
-            M21r_s * L11i + M21i_s * L11r + M22r_s * L21i + M22i_s * L21r;
-          const newM22r =
-            M21r_s * L12r - M21i_s * L12i + M22r_s * L22r - M22i_s * L22i;
-          const newM22i =
-            M21r_s * L12i + M21i_s * L12r + M22r_s * L22i + M22i_s * L22r;
-
-          M11r_s = newM11r;
-          M11i_s = newM11i;
-          M12r_s = newM12r;
-          M12i_s = newM12i;
-          M21r_s = newM21r;
-          M21i_s = newM21i;
-          M22r_s = newM22r;
-          M22i_s = newM22i;
+          const factor = (2 * Math.PI * d) / lambda;
+          // δ = factor · N · cos(θ) = factor · (nr - i·ni)(cR + i·cI)
+          const deltaR = factor * (nr * cR + ni * cI);
+          const deltaI = factor * (nr * cI - ni * cR);
+          // cos(δR + i·δI) = cos(δR)cosh(δI) - i·sin(δR)sinh(δI)
+          const cdR = Math.cos(deltaR), cdI_sh = Math.sin(deltaR);
+          const coshDI = Math.cosh(deltaI), sinhDI = Math.sinh(deltaI);
+          const cosDR = cdR * coshDI;
+          const cosDI = -cdI_sh * sinhDI;
+          const sinDR = cdI_sh * coshDI;
+          const sinDI = cdR * sinhDI;
+          // η_s = N·cos(θ) = (nr - i·ni)(cR + i·cI)
+          const etaR = nr * cR + ni * cI;
+          const etaI = nr * cI - ni * cR;
+          // L11 = L22 = cos(δ)
+          const L11r = cosDR, L11i = cosDI, L22r = cosDR, L22i = cosDI;
+          // L12 = i·sin(δ)/η   and   L21 = i·η·sin(δ)
+          const etaMagSq = etaR * etaR + etaI * etaI;
+          const sOverEta_r = (sinDR * etaR + sinDI * etaI) / etaMagSq;
+          const sOverEta_i = (sinDI * etaR - sinDR * etaI) / etaMagSq;
+          const L12r = -sOverEta_i, L12i = sOverEta_r;
+          const etaSin_r = etaR * sinDR - etaI * sinDI;
+          const etaSin_i = etaR * sinDI + etaI * sinDR;
+          const L21r = -etaSin_i, L21i = etaSin_r;
+          // M = M · L
+          const nM11r = M11r_s * L11r - M11i_s * L11i + M12r_s * L21r - M12i_s * L21i;
+          const nM11i = M11r_s * L11i + M11i_s * L11r + M12r_s * L21i + M12i_s * L21r;
+          const nM12r = M11r_s * L12r - M11i_s * L12i + M12r_s * L22r - M12i_s * L22i;
+          const nM12i = M11r_s * L12i + M11i_s * L12r + M12r_s * L22i + M12i_s * L22r;
+          const nM21r = M21r_s * L11r - M21i_s * L11i + M22r_s * L21r - M22i_s * L21i;
+          const nM21i = M21r_s * L11i + M21i_s * L11r + M22r_s * L21i + M22i_s * L21r;
+          const nM22r = M21r_s * L12r - M21i_s * L12i + M22r_s * L22r - M22i_s * L22i;
+          const nM22i = M21r_s * L12i + M21i_s * L12r + M22r_s * L22i + M22i_s * L22r;
+          M11r_s = nM11r; M11i_s = nM11i; M12r_s = nM12r; M12i_s = nM12i;
+          M21r_s = nM21r; M21i_s = nM21i; M22r_s = nM22r; M22i_s = nM22i;
         }
 
-        const eta0_s = n0 * Math.cos(theta0);
-        const etas_s = ns * Math.cos(angles[angles.length - 1]);
-        const numR_s =
-          eta0_s * M11r_s + eta0_s * etas_s * M12r_s - M21r_s - etas_s * M22r_s;
-        const numI_s =
-          eta0_s * M11i_s + eta0_s * etas_s * M12i_s - M21i_s - etas_s * M22i_s;
-        const denR_s =
-          eta0_s * M11r_s + eta0_s * etas_s * M12r_s + M21r_s + etas_s * M22r_s;
-        const denI_s =
-          eta0_s * M11i_s + eta0_s * etas_s * M12i_s + M21i_s + etas_s * M22i_s;
+        // η0_s = n0·cos(θ0) — real (lossless incident)
+        const eta0_s = n0 * cosTheta0;
+        // etas_s = ns·cos(θ_sub) — possibly complex (TIR)
+        const etasS_r = ns * cosSubR, etasS_i = ns * cosSubI;
+        // num = η0·M11 + η0·ηs·M12 - M21 - ηs·M22   (each term complex)
+        const h0hsM12_r = eta0_s * (etasS_r * M12r_s - etasS_i * M12i_s);
+        const h0hsM12_i = eta0_s * (etasS_r * M12i_s + etasS_i * M12r_s);
+        const hsM22_r = etasS_r * M22r_s - etasS_i * M22i_s;
+        const hsM22_i = etasS_r * M22i_s + etasS_i * M22r_s;
+        const numR_s = eta0_s * M11r_s + h0hsM12_r - M21r_s - hsM22_r;
+        const numI_s = eta0_s * M11i_s + h0hsM12_i - M21i_s - hsM22_i;
+        const denR_s = eta0_s * M11r_s + h0hsM12_r + M21r_s + hsM22_r;
+        const denI_s = eta0_s * M11i_s + h0hsM12_i + M21i_s + hsM22_i;
         const denMag_s = denR_s * denR_s + denI_s * denI_s;
         const rR_s = (numR_s * denR_s + numI_s * denI_s) / denMag_s;
         const rI_s = (numI_s * denR_s - numR_s * denI_s) / denMag_s;
         const Rs = rR_s * rR_s + rI_s * rI_s;
 
-        // Calculate p-polarization (TM mode)
-        let M11r_p = 1,
-          M11i_p = 0,
-          M12r_p = 0,
-          M12i_p = 0,
-          M21r_p = 0,
-          M21i_p = 0,
-          M22r_p = 1,
-          M22i_p = 0;
+        // ─── p-polarization (TM) — η = N/cos(θ) ───
+        let M11r_p = 1, M11i_p = 0, M12r_p = 0, M12i_p = 0;
+        let M21r_p = 0, M21i_p = 0, M22r_p = 1, M22i_p = 0;
 
         for (let i = layerStack.length - 1; i >= 0; i--) {
-          const n = getRefractiveIndex(
-            layerStack[i].material,
-            lambda,
-            layerStack[i].iad,
-            layerStack[i].packingDensity || 1.0
-          );
+          const [nr, ni, cR, cI] = layerData[i];
           const toolingFactor = toolingFactors[layerStack[i].material] || 1.0;
           const d = layerStack[i].thickness * toolingFactor;
-          const theta = angles[angles.length - 2 - i];
-          const cosTheta = Math.cos(theta);
-          const delta = (2 * Math.PI * n * d * cosTheta) / lambda;
-          const cosD = Math.cos(delta);
-          const sinD = Math.sin(delta);
-          const eta = n / cosTheta;
-
-          const L11r = cosD,
-            L11i = 0,
-            L12r = 0,
-            L12i = sinD / eta,
-            L21r = 0,
-            L21i = eta * sinD,
-            L22r = cosD,
-            L22i = 0;
-          const newM11r =
-            M11r_p * L11r - M11i_p * L11i + M12r_p * L21r - M12i_p * L21i;
-          const newM11i =
-            M11r_p * L11i + M11i_p * L11r + M12r_p * L21i + M12i_p * L21r;
-          const newM12r =
-            M11r_p * L12r - M11i_p * L12i + M12r_p * L22r - M12i_p * L22i;
-          const newM12i =
-            M11r_p * L12i + M11i_p * L12r + M12r_p * L22i + M12i_p * L22r;
-          const newM21r =
-            M21r_p * L11r - M21i_p * L11i + M22r_p * L21r - M22i_p * L21i;
-          const newM21i =
-            M21r_p * L11i + M21i_p * L11r + M22r_p * L21i + M22i_p * L21r;
-          const newM22r =
-            M21r_p * L12r - M21i_p * L12i + M22r_p * L22r - M22i_p * L22i;
-          const newM22i =
-            M21r_p * L12i + M21i_p * L12r + M22r_p * L22i + M22i_p * L22r;
-
-          M11r_p = newM11r;
-          M11i_p = newM11i;
-          M12r_p = newM12r;
-          M12i_p = newM12i;
-          M21r_p = newM21r;
-          M21i_p = newM21i;
-          M22r_p = newM22r;
-          M22i_p = newM22i;
+          const factor = (2 * Math.PI * d) / lambda;
+          // δ same as s-pol (depends only on N·cos(θ))
+          const deltaR = factor * (nr * cR + ni * cI);
+          const deltaI = factor * (nr * cI - ni * cR);
+          const cdR = Math.cos(deltaR), cdI_sh = Math.sin(deltaR);
+          const coshDI = Math.cosh(deltaI), sinhDI = Math.sinh(deltaI);
+          const cosDR = cdR * coshDI;
+          const cosDI = -cdI_sh * sinhDI;
+          const sinDR = cdI_sh * coshDI;
+          const sinDI = cdR * sinhDI;
+          // η_p = N/cos(θ) = (nr - i·ni)·conj(cos)/|cos|² = (nr - i·ni)(cR - i·cI)/(cR²+cI²)
+          const cosMagSq = cR * cR + cI * cI;
+          const etaR = (nr * cR - ni * cI) / cosMagSq;
+          const etaI = -(nr * cI + ni * cR) / cosMagSq;
+          const L11r = cosDR, L11i = cosDI, L22r = cosDR, L22i = cosDI;
+          const etaMagSq = etaR * etaR + etaI * etaI;
+          const sOverEta_r = (sinDR * etaR + sinDI * etaI) / etaMagSq;
+          const sOverEta_i = (sinDI * etaR - sinDR * etaI) / etaMagSq;
+          const L12r = -sOverEta_i, L12i = sOverEta_r;
+          const etaSin_r = etaR * sinDR - etaI * sinDI;
+          const etaSin_i = etaR * sinDI + etaI * sinDR;
+          const L21r = -etaSin_i, L21i = etaSin_r;
+          const nM11r = M11r_p * L11r - M11i_p * L11i + M12r_p * L21r - M12i_p * L21i;
+          const nM11i = M11r_p * L11i + M11i_p * L11r + M12r_p * L21i + M12i_p * L21r;
+          const nM12r = M11r_p * L12r - M11i_p * L12i + M12r_p * L22r - M12i_p * L22i;
+          const nM12i = M11r_p * L12i + M11i_p * L12r + M12r_p * L22i + M12i_p * L22r;
+          const nM21r = M21r_p * L11r - M21i_p * L11i + M22r_p * L21r - M22i_p * L21i;
+          const nM21i = M21r_p * L11i + M21i_p * L11r + M22r_p * L21i + M22i_p * L21r;
+          const nM22r = M21r_p * L12r - M21i_p * L12i + M22r_p * L22r - M22i_p * L22i;
+          const nM22i = M21r_p * L12i + M21i_p * L12r + M22r_p * L22i + M22i_p * L22r;
+          M11r_p = nM11r; M11i_p = nM11i; M12r_p = nM12r; M12i_p = nM12i;
+          M21r_p = nM21r; M21i_p = nM21i; M22r_p = nM22r; M22i_p = nM22i;
         }
 
-        const eta0_p = n0 / Math.cos(theta0);
-        const etas_p = ns / Math.cos(angles[angles.length - 1]);
-        const numR_p =
-          eta0_p * M11r_p + eta0_p * etas_p * M12r_p - M21r_p - etas_p * M22r_p;
-        const numI_p =
-          eta0_p * M11i_p + eta0_p * etas_p * M12i_p - M21i_p - etas_p * M22i_p;
-        const denR_p =
-          eta0_p * M11r_p + eta0_p * etas_p * M12r_p + M21r_p + etas_p * M22r_p;
-        const denI_p =
-          eta0_p * M11i_p + eta0_p * etas_p * M12i_p + M21i_p + etas_p * M22i_p;
+        // η0_p = n0/cos(θ0) — real
+        const eta0_p = n0 / cosTheta0;
+        // etas_p = ns/cos(θ_sub) — complex if TIR
+        const cosSubMagSq_p = cosSubR * cosSubR + cosSubI * cosSubI;
+        const etasP_r = (ns * cosSubR) / cosSubMagSq_p;
+        const etasP_i = -(ns * cosSubI) / cosSubMagSq_p;
+        const h0hsM12_pr = eta0_p * (etasP_r * M12r_p - etasP_i * M12i_p);
+        const h0hsM12_pi = eta0_p * (etasP_r * M12i_p + etasP_i * M12r_p);
+        const hsM22_pr = etasP_r * M22r_p - etasP_i * M22i_p;
+        const hsM22_pi = etasP_r * M22i_p + etasP_i * M22r_p;
+        const numR_p = eta0_p * M11r_p + h0hsM12_pr - M21r_p - hsM22_pr;
+        const numI_p = eta0_p * M11i_p + h0hsM12_pi - M21i_p - hsM22_pi;
+        const denR_p = eta0_p * M11r_p + h0hsM12_pr + M21r_p + hsM22_pr;
+        const denI_p = eta0_p * M11i_p + h0hsM12_pi + M21i_p + hsM22_pi;
         const denMag_p = denR_p * denR_p + denI_p * denI_p;
         const rR_p = (numR_p * denR_p + numI_p * denI_p) / denMag_p;
         const rI_p = (numI_p * denR_p - numR_p * denI_p) / denMag_p;
         const Rp = rR_p * rR_p + rI_p * rI_p;
 
-        // Average s and p polarizations for unpolarized light
+        // Unpolarized = (Rs + Rp) / 2
         const R_avg = (Rs + Rp) / 2;
         if (phaseOut) {
           const phase_s = Math.atan2(rI_s, rR_s) * 180 / Math.PI;
           const phase_p = Math.atan2(rI_p, rR_p) * 180 / Math.PI;
           phaseOut.phase = (phase_s + phase_p) / 2;
         }
-        return Math.min(Math.max(R_avg, 0), 1);
+        // Davies-Bennett scalar scattering loss (angle-dependent: cosθ factor)
+        let Rout2 = R_avg;
+        if (surfaceRoughness > 0) {
+          const arg = (4 * Math.PI * surfaceRoughness * cosTheta0) / lambda;
+          Rout2 = R_avg * Math.exp(-arg * arg);
+        }
+        return Math.min(Math.max(Rout2, 0), 1);
       } catch (e) {
         if (phaseOut) phaseOut.phase = 0;
         return 0;
@@ -2221,6 +2739,7 @@ const ThinFilmDesigner = () => {
       layerStacks,
       machines,
       currentStackId,
+      surfaceRoughness,
     ]
   );
 
@@ -3310,7 +3829,7 @@ const ThinFilmDesigner = () => {
                 // Total reflection = front surface + transmitted light × back surface × transmitted back
                 // For symmetric coating: R_total = R + (1-R)² × R
                 if (doubleSidedAR) {
-                  R = R + Math.pow(1 - R, 2) * R;
+                  R = applyBackSurfaceCorrection(R, substrate.n);
                 }
 
                 const key =
@@ -5621,6 +6140,20 @@ const ThinFilmDesigner = () => {
         kValue: newMaterialForm.k,
         isCustom: true,
       };
+    } else if (newMaterialForm.mode === 'tabular') {
+      if (!newMaterialForm.tabularData || newMaterialForm.tabularData.length < 2) {
+        showToast('Tabular material requires at least 2 data points. Upload or paste n,k data first.', 'error');
+        return;
+      }
+      materialData = {
+        type: 'tabular',
+        data: newMaterialForm.tabularData,
+        color: newMaterialForm.color,
+        iadIncrease: newMaterialForm.iadIncrease,
+        stress: newMaterialForm.stress,
+        kType: 'tabular',
+        isCustom: true,
+      };
     } else {
       materialData = {
         isCustom: true,
@@ -5634,6 +6167,33 @@ const ThinFilmDesigner = () => {
         materialData.A = newMaterialForm.A;
         materialData.B = newMaterialForm.B;
         materialData.C = newMaterialForm.C;
+      } else if (newMaterialForm.dispersionType === 'tauc-lorentz') {
+        materialData.type = 'tauc-lorentz';
+        materialData.A = newMaterialForm.tlA;
+        materialData.E0 = newMaterialForm.tlE0;
+        materialData.C = newMaterialForm.tlC;
+        materialData.Eg = newMaterialForm.tlEg;
+        materialData.epsInf = newMaterialForm.tlEpsInf;
+        // TL has built-in absorption; override kType
+        materialData.kType = 'tauc-lorentz';
+      } else if (newMaterialForm.dispersionType === 'cody-lorentz') {
+        materialData.type = 'cody-lorentz';
+        materialData.A = newMaterialForm.clA;
+        materialData.E0 = newMaterialForm.clE0;
+        materialData.C = newMaterialForm.clC;
+        materialData.Eg = newMaterialForm.clEg;
+        materialData.epsInf = newMaterialForm.clEpsInf;
+        materialData.Eu = newMaterialForm.clEu;
+        materialData.kType = 'cody-lorentz';
+      } else if (newMaterialForm.dispersionType === 'lorentz') {
+        if (!newMaterialForm.lzOscillators || newMaterialForm.lzOscillators.length === 0) {
+          showToast('Lorentz material requires at least 1 oscillator.', 'error');
+          return;
+        }
+        materialData.type = 'lorentz';
+        materialData.epsInf = newMaterialForm.lzEpsInf;
+        materialData.oscillators = newMaterialForm.lzOscillators.map(o => ({ A: o.A, E0: o.E0, gamma: o.gamma }));
+        materialData.kType = 'lorentz';
       } else {
         materialData.type = 'sellmeier';
         materialData.B1 = newMaterialForm.B1;
@@ -5643,13 +6203,15 @@ const ThinFilmDesigner = () => {
         materialData.C2 = newMaterialForm.C2;
         materialData.C3 = newMaterialForm.C3;
       }
-      if (newMaterialForm.kType === 'constant') {
-        materialData.kValue = newMaterialForm.kValue;
-      }
-      if (newMaterialForm.kType === 'urbach') {
-        materialData.k0 = newMaterialForm.k0;
-        materialData.kEdge = newMaterialForm.kEdge;
-        materialData.kDecay = newMaterialForm.kDecay;
+      if (newMaterialForm.dispersionType !== 'tauc-lorentz' && newMaterialForm.dispersionType !== 'lorentz' && newMaterialForm.dispersionType !== 'cody-lorentz') {
+        if (newMaterialForm.kType === 'constant') {
+          materialData.kValue = newMaterialForm.kValue;
+        }
+        if (newMaterialForm.kType === 'urbach') {
+          materialData.k0 = newMaterialForm.k0;
+          materialData.kEdge = newMaterialForm.kEdge;
+          materialData.kDecay = newMaterialForm.kDecay;
+        }
       }
     }
 
@@ -5660,6 +6222,11 @@ const ThinFilmDesigner = () => {
       B1: 0.6, B2: 0.4, B3: 0.9, C1: 0.07, C2: 0.12, C3: 10.0,
       kType: 'none', kValue: 0, k0: 0.05, kEdge: 350, kDecay: 0.02,
       color: '#E0E0E0', iadIncrease: 2.0, stress: 0,
+      tabularText: '', tabularData: [], tabularError: '',
+      tlA: 100, tlE0: 4.2, tlC: 2.2, tlEg: 3.2, tlEpsInf: 2.2,
+      lzEpsInf: 1.0, lzOscillators: [{ A: 1.0, E0: 4.0, gamma: 0.5 }],
+      clA: 110, clE0: 6.0, clC: 3.0, clEg: 5.5, clEpsInf: 2.0, clEu: 0.1,
+      kkResult: null,
     });
   };
 
@@ -5971,7 +6538,7 @@ const ThinFilmDesigner = () => {
 
         // Apply double-sided calculation if enabled
         if (doubleSidedAR) {
-          R = R + Math.pow(1 - R, 2) * R;
+          R = applyBackSurfaceCorrection(R, substrate.n);
         }
 
         data.push({
@@ -5991,7 +6558,7 @@ const ThinFilmDesigner = () => {
 
         // Apply double-sided calculation if enabled
         if (doubleSidedAR) {
-          R = R + Math.pow(1 - R, 2) * R;
+          R = applyBackSurfaceCorrection(R, substrate.n);
         }
 
         const shiftedR = Math.max(0, Math.min(100, R * 100 + shift));
@@ -6396,7 +6963,7 @@ const ThinFilmDesigner = () => {
       reverseEngineerData.forEach((dataPoint) => {
         let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
         if (doubleSidedAR) {
-          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+          calcR = applyBackSurfaceCorrection(calcR, substrate.n);
         }
         calcR = calcR * 100;
         const deviation = Math.abs(calcR - dataPoint.reflectivity);
@@ -6551,7 +7118,7 @@ const ThinFilmDesigner = () => {
       reverseEngineerData.forEach((dataPoint) => {
         let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
         if (doubleSidedAR) {
-          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+          calcR = applyBackSurfaceCorrection(calcR, substrate.n);
         }
         calcR = calcR * 100;
         const deviation = Math.abs(calcR - dataPoint.reflectivity);
@@ -6677,7 +7244,7 @@ const ThinFilmDesigner = () => {
         const dataPoint = reverseEngineerData[i];
         let calcR = calculateReflectivityAtWavelength(dataPoint.wavelength, testLayers);
         if (doubleSidedAR) {
-          calcR = calcR + Math.pow(1 - calcR, 2) * calcR;
+          calcR = applyBackSurfaceCorrection(calcR, substrate.n);
         }
         calcR = calcR * 100;
         const deviation = Math.abs(calcR - dataPoint.reflectivity);
@@ -7340,7 +7907,7 @@ const ThinFilmDesigner = () => {
         for (let i = 0; i < lmEvalPoints.length; i++) {
           let calcR = calculateReflectivityAtWavelength(lmEvalPoints[i].wavelength, lmLayers);
           if (reverseEngineerMode && doubleSidedAR) {
-            calcR = calcR + (1 - calcR) * (1 - calcR) * calcR;
+            calcR = applyBackSurfaceCorrection(calcR, substrate.n);
           }
           r[i] = calcR * 100 - lmEvalPoints[i].target;
         }
@@ -7618,7 +8185,7 @@ const ThinFilmDesigner = () => {
         for (let i = 0; i < lmEvalPointsFinal.length; i++) {
           let calcR = calculateReflectivityAtWavelength(lmEvalPointsFinal[i].wavelength, lmLayers);
           if (reverseEngineerMode && doubleSidedAR) {
-            calcR = calcR + (1 - calcR) * (1 - calcR) * calcR;
+            calcR = applyBackSurfaceCorrection(calcR, substrate.n);
           }
           r[i] = calcR * 100 - lmEvalPointsFinal[i].target;
         }
@@ -8586,14 +9153,26 @@ const ThinFilmDesigner = () => {
                 </div>
                 <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
                   <label className="flex items-center gap-1 cursor-pointer" title="Enable if measured without black backing (includes backside reflection)">
-                    <input 
-                      type="checkbox" 
-                      checked={doubleSidedAR} 
+                    <input
+                      type="checkbox"
+                      checked={doubleSidedAR}
                       onChange={(e) => setDoubleSidedAR(e.target.checked)}
                       className="cursor-pointer"
                     />
                     <span className="text-xs">+Backside</span>
                   </label>
+                </div>
+                <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0" title="Davies-Bennett scalar scattering loss: R_specular = R·exp(-(4πσ·cosθ/λ)²). Set 0 to disable. Typical values: 2–5nm (IAD), 5–15nm (e-beam), 20–50nm (rough sputter).">
+                  <span className="text-xs text-gray-600">σ:</span>
+                  <input
+                    type="number"
+                    value={surfaceRoughness === 0 ? "" : surfaceRoughness}
+                    placeholder="0"
+                    onChange={(e) => setSurfaceRoughness(parseFloat(e.target.value) || 0)}
+                    className="w-10 px-1 py-0 border rounded text-xs"
+                    step="1" min="0" max="200"
+                  />
+                  <span className="text-xs text-gray-500">nm</span>
                 </div>
                 <div className="bg-white px-2 py-1 rounded shadow flex items-center gap-1 flex-shrink-0">
                   <span className="text-gray-600">Y: </span>
@@ -8966,7 +9545,22 @@ const ThinFilmDesigner = () => {
                                       const k400 = getExtinctionCoefficient(layer.material, 400);
                                       const k550 = getExtinctionCoefficient(layer.material, 550);
                                       let kInfo = "";
-                                      if (mat.kType === "none") {
+                                      if (mat.type === "tabular") {
+                                        const pts = mat.data ? mat.data.length : 0;
+                                        const range = mat.data && mat.data.length > 0 ? `${mat.data[0][0].toFixed(0)}-${mat.data[mat.data.length-1][0].toFixed(0)}nm` : "";
+                                        kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "tauc-lorentz") {
+                                        kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "cody-lorentz") {
+                                        kInfo = `Cody-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf}, Eu=${mat.Eu})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "lorentz") {
+                                        const nosc = (mat.oscillators || []).length;
+                                        const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
+                                        kInfo = `${hasDrude ? 'Drude-Lorentz' : 'Lorentz'} (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.type === "brendel-bormann") {
+                                        const nosc = (mat.oscillators || []).length;
+                                        kInfo = `Brendel-Bormann (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''}, Gaussian-broadened)\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                      } else if (mat.kType === "none") {
                                         kInfo = "No absorption (transparent)";
                                       } else if (mat.kType === "constant") {
                                         kInfo = `k = ${mat.kValue || 0} (constant)`;
@@ -9051,6 +9645,19 @@ const ThinFilmDesigner = () => {
                                     title="IAD Settings"
                                   >
                                     <Zap size={10} />
+                                  </button>
+                                )}
+                                {!(isPhone || isTablet) && (
+                                  <button
+                                    onClick={() => { setCurrentGradientLayer(layer.id); setShowGradientModal(true); }}
+                                    className={`p-0.5 rounded transition-colors text-[10px] font-bold ${
+                                      layer.gradient && layer.gradient.enabled
+                                        ? "bg-cyan-100 text-cyan-700"
+                                        : "text-gray-400"
+                                    }`}
+                                    title="Graded-index Settings"
+                                  >
+                                    ∇
                                   </button>
                                 )}
                                 <button
@@ -10169,7 +10776,22 @@ const ThinFilmDesigner = () => {
                                     const k400 = getExtinctionCoefficient(layer.material, 400);
                                     const k550 = getExtinctionCoefficient(layer.material, 550);
                                     let kInfo = "";
-                                    if (mat.kType === "none") {
+                                    if (mat.type === "tabular") {
+                                      const pts = mat.data ? mat.data.length : 0;
+                                      const range = mat.data && mat.data.length > 0 ? `${mat.data[0][0].toFixed(0)}-${mat.data[mat.data.length-1][0].toFixed(0)}nm` : "";
+                                      kInfo = `Tabular n,k data (${pts} points, ${range})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "tauc-lorentz") {
+                                      kInfo = `Tauc-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "cody-lorentz") {
+                                      kInfo = `Cody-Lorentz (A=${mat.A}, E₀=${mat.E0}, C=${mat.C}, Eg=${mat.Eg}, ε∞=${mat.epsInf}, Eu=${mat.Eu})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "lorentz") {
+                                      const nosc = (mat.oscillators || []).length;
+                                      const hasDrude = (mat.oscillators || []).some(o => o.E0 === 0);
+                                      kInfo = `${hasDrude ? 'Drude-Lorentz' : 'Lorentz'} (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''})\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.type === "brendel-bormann") {
+                                      const nosc = (mat.oscillators || []).length;
+                                      kInfo = `Brendel-Bormann (ε∞=${mat.epsInf}, ${nosc} oscillator${nosc !== 1 ? 's' : ''}, Gaussian-broadened)\nk@400nm: ${k400.toExponential(2)}\nk@550nm: ${k550.toExponential(2)}`;
+                                    } else if (mat.kType === "none") {
                                       kInfo = "No absorption (transparent)";
                                     } else if (mat.kType === "constant") {
                                       kInfo = `k = ${mat.kValue || 0} (constant)`;
@@ -10201,6 +10823,7 @@ const ThinFilmDesigner = () => {
                                 <button onClick={() => setLayers(layers.map(l => l.id === layer.id ? { ...l, locked: !l.locked } : l))} className={`p-0.5 rounded transition-colors ${layer.locked ? "bg-red-100 text-red-600" : "text-gray-300 hover:text-gray-500"}`} title={layer.locked ? "Unlock layer (allow shift/factor)" : "Lock layer (exclude from shift/factor)"}><Lock size={12} /></button>
                                 <button onClick={() => { setLayers(layers.map(l => l.id === layer.id ? { ...l, originalThickness: l.originalThickness ? undefined : l.thickness } : l)); }} className={`p-0.5 rounded ${layer.originalThickness ? "bg-green-100 text-green-600 hover:bg-red-100 hover:text-red-600" : "hover:bg-green-100 text-gray-400"}`} title={layer.originalThickness ? "Click to clear original" : "Save as original thickness"}>{"\uD83D\uDCCC"}</button>
                                 <button onClick={() => openIADModal(layer.id)} className={`p-0.5 rounded transition-colors ${layer.iad && layer.iad.enabled ? "bg-yellow-100 text-yellow-600 hover:bg-yellow-200" : "hover:bg-gray-100 text-gray-400"}`} title="IAD Settings"><Zap size={12} /></button>
+                                <button onClick={() => { setCurrentGradientLayer(layer.id); setShowGradientModal(true); }} className={`p-0.5 rounded transition-colors text-xs font-bold ${layer.gradient && layer.gradient.enabled ? "bg-cyan-100 text-cyan-700 hover:bg-cyan-200" : "hover:bg-gray-100 text-gray-400"}`} title="Graded-index Settings">∇</button>
                                 <button onClick={() => removeLayer(layer.id)} className="p-0.5 hover:bg-red-100 rounded text-red-600" disabled={layers.length === 1}><Trash2 size={12} /></button>
                               </div>
                             )}
@@ -14202,6 +14825,83 @@ const ThinFilmDesigner = () => {
       {/* IAD Modal */}
       {showIADModal && <IADModal />}
 
+      {/* ========== GRADIENT (GRADED-INDEX) MODAL ========== */}
+      {showGradientModal && currentGradientLayer != null && (() => {
+        const layer = layers.find(l => l.id === currentGradientLayer);
+        if (!layer) return null;
+        const g = layer.gradient || { enabled: false, toMaterial: layer.material, profile: 'linear', nSlices: 20 };
+        const update = (patch) => {
+          const nextG = { ...g, ...patch };
+          setLayers(layers.map(l => l.id === layer.id ? { ...l, gradient: nextG } : l));
+          setLayerStacks(prev => prev.map(stack =>
+            stack.id === currentStackId ? { ...stack, layers: stack.layers.map(l => l.id === layer.id ? { ...l, gradient: nextG } : l) } : stack
+          ));
+        };
+        const fromN = getRefractiveIndex(layer.material, 550, layer.iad, layer.packingDensity || 1.0);
+        const toN = g.toMaterial ? getRefractiveIndex(g.toMaterial, 550, layer.iad, layer.packingDensity || 1.0) : fromN;
+        return (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-5">
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="text-lg font-bold text-gray-800">Graded-Index Layer — {layer.material}</h3>
+                <button onClick={() => setShowGradientModal(false)} className="text-gray-500 hover:text-gray-700 text-2xl leading-none">×</button>
+              </div>
+              <p className="text-xs text-gray-600 mb-3">
+                Model a continuous index transition across this layer by slicing it into homogeneous sub-layers. From-material: the layer's current material. To-material: the target. Transfer matrix handles each slice normally.
+              </p>
+              <label className="flex items-center gap-2 mb-3 cursor-pointer">
+                <input type="checkbox" checked={!!g.enabled} onChange={(e) => update({ enabled: e.target.checked, toMaterial: g.toMaterial || layer.material, profile: g.profile || 'linear', nSlices: g.nSlices || 20 })} />
+                <span className="text-sm font-medium">Enable graded index for this layer</span>
+              </label>
+              {g.enabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">From material (n@550 = {fromN.toFixed(3)})</label>
+                      <input type="text" value={layer.material} disabled className="w-full px-2 py-1 border rounded bg-gray-50 text-xs" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">To material (n@550 = {toN.toFixed(3)})</label>
+                      <select value={g.toMaterial} onChange={(e) => update({ toMaterial: e.target.value })} className="w-full px-2 py-1 border rounded bg-white text-xs">
+                        {Object.keys(allMaterials).map((mat) => (<option key={mat} value={mat}>{mat}</option>))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Profile</label>
+                      <select value={g.profile} onChange={(e) => update({ profile: e.target.value })} className="w-full px-2 py-1 border rounded bg-white text-xs">
+                        <option value="linear">Linear</option>
+                        <option value="cubic">Smoothstep (cubic)</option>
+                        <option value="quintic">Smoothstep (quintic)</option>
+                        <option value="sinusoidal">Sinusoidal</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1" title="Number of homogeneous sub-layers. More slices = smoother gradient but slower.">Slices (2–100)</label>
+                      <input type="number" value={g.nSlices} onChange={(e) => update({ nSlices: Math.max(2, Math.min(100, parseInt(e.target.value) || 20)) })} className="w-full px-2 py-1 border rounded text-xs" min="2" max="100" step="1" />
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 mb-3">
+                    Δn @ 550nm: {(toN - fromN).toFixed(3)} across {g.nSlices} slices of {(layer.thickness / (g.nSlices || 1)).toFixed(2)} nm each.
+                  </div>
+                </>
+              )}
+              <div className="flex gap-2">
+                {g.enabled && (
+                  <button onClick={() => { update({ enabled: false }); setShowGradientModal(false); }} className="flex-1 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-red-700 text-sm">
+                    Disable gradient
+                  </button>
+                )}
+                <button onClick={() => setShowGradientModal(false)} className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-sm font-semibold">
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ========== COLOR COMPARISON MODAL ========== */}
       {showColorCompareModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowColorCompareModal(false)}>
@@ -14462,6 +15162,7 @@ const ThinFilmDesigner = () => {
                       >
                         <option value="simple">Simple (constant n, k)</option>
                         <option value="advanced">Advanced (dispersion)</option>
+                        <option value="tabular">Tabular n,k (measured data)</option>
                       </select>
                     </div>
                   </div>
@@ -14503,19 +15204,29 @@ const ThinFilmDesigner = () => {
                           >
                             <option value="cauchy">Cauchy</option>
                             <option value="sellmeier">Sellmeier</option>
+                            <option value="tauc-lorentz">Tauc-Lorentz (amorphous oxides)</option>
+                            <option value="cody-lorentz">Cody-Lorentz (TL + Urbach tail)</option>
+                            <option value="lorentz">Lorentz / Drude-Lorentz (metals)</option>
                           </select>
                         </div>
                         <div>
                           <label className="block text-xs text-gray-600 mb-0.5">Absorption Model</label>
-                          <select
-                            value={newMaterialForm.kType}
-                            onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kType: e.target.value })}
-                            className="w-full px-2 py-1 border rounded text-xs bg-white"
-                          >
-                            <option value="none">None (transparent)</option>
-                            <option value="constant">Constant k</option>
-                            <option value="urbach">Urbach Tail</option>
-                          </select>
+                          {(() => {
+                            const builtIn = newMaterialForm.dispersionType === 'tauc-lorentz' || newMaterialForm.dispersionType === 'lorentz' || newMaterialForm.dispersionType === 'cody-lorentz';
+                            return (
+                              <select
+                                value={builtIn ? 'builtin' : newMaterialForm.kType}
+                                onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kType: e.target.value })}
+                                className="w-full px-2 py-1 border rounded text-xs bg-white"
+                                disabled={builtIn}
+                              >
+                                {builtIn && <option value="builtin">Built-in (model includes k)</option>}
+                                <option value="none">None (transparent)</option>
+                                <option value="constant">Constant k</option>
+                                <option value="urbach">Urbach Tail</option>
+                              </select>
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -14565,6 +15276,159 @@ const ThinFilmDesigner = () => {
                         </div>
                       )}
 
+                      {newMaterialForm.dispersionType === 'tauc-lorentz' && (
+                        <>
+                          <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                            Jellison-Modine Tauc-Lorentz (1996). Industry standard for amorphous oxides (TiO2, HfO2, Ta2O5, Nb2O5). Absorption is built-in. Typical TiO2: A=100, E₀=4.2, C=2.2, Eg=3.2, ε∞=2.2.
+                          </div>
+                          <div className="grid grid-cols-5 gap-1">
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Oscillator amplitude (eV)">A (eV)</label>
+                              <input type="number" value={newMaterialForm.tlA} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlA: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Peak energy (eV)">E₀ (eV)</label>
+                              <input type="number" value={newMaterialForm.tlE0} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlE0: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.1" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Broadening (eV)">C (eV)</label>
+                              <input type="number" value={newMaterialForm.tlC} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlC: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.01" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Bandgap (eV)">Eg (eV)</label>
+                              <input type="number" value={newMaterialForm.tlEg} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlEg: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="High-frequency dielectric constant">ε∞</label>
+                              <input type="number" value={newMaterialForm.tlEpsInf} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, tlEpsInf: parseFloat(e.target.value) || 1 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="1" />
+                            </div>
+                          </div>
+                          {(() => {
+                            const preview = taucLorentzNK(550, { A: newMaterialForm.tlA, E0: newMaterialForm.tlE0, C: newMaterialForm.tlC, Eg: newMaterialForm.tlEg, epsInf: newMaterialForm.tlEpsInf });
+                            return (
+                              <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                                Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+
+                      {newMaterialForm.dispersionType === 'cody-lorentz' && (
+                        <>
+                          <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                            Cody-Lorentz extends Tauc-Lorentz with an Urbach tail below Eg. Best for HfO2, Ta2O5, Nb2O5 where sub-gap defect absorption matters. Eu=0 reduces to Tauc-Lorentz. Typical Eu: 0.05–0.2 eV.
+                          </div>
+                          <div className="grid grid-cols-6 gap-1">
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Oscillator amplitude (eV)">A</label>
+                              <input type="number" value={newMaterialForm.clA} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clA: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Peak energy (eV)">E₀</label>
+                              <input type="number" value={newMaterialForm.clE0} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clE0: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.1" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Broadening (eV)">C</label>
+                              <input type="number" value={newMaterialForm.clC} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clC: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0.01" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Bandgap (eV)">Eg</label>
+                              <input type="number" value={newMaterialForm.clEg} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clEg: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="High-frequency ε">ε∞</label>
+                              <input type="number" value={newMaterialForm.clEpsInf} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clEpsInf: parseFloat(e.target.value) || 1 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="1" />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-0.5" title="Urbach width (eV)">Eu</label>
+                              <input type="number" value={newMaterialForm.clEu} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, clEu: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.01" min="0" />
+                            </div>
+                          </div>
+                          {(() => {
+                            const preview = codyLorentzNK(550, { A: newMaterialForm.clA, E0: newMaterialForm.clE0, C: newMaterialForm.clC, Eg: newMaterialForm.clEg, epsInf: newMaterialForm.clEpsInf, Eu: newMaterialForm.clEu });
+                            return (
+                              <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                                Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+
+                      {newMaterialForm.dispersionType === 'lorentz' && (
+                        <>
+                          <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                            Multi-oscillator Lorentz model. For a <b>Drude</b> (free-electron) term, set E₀ = 0. Standard for metals (Au, Ag, Al) and materials with known absorption peaks. Oscillator: A/(E₀² − E² − i·γ·E).
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-24">
+                              <label className="block text-xs text-gray-600 mb-0.5">ε∞</label>
+                              <input type="number" value={newMaterialForm.lzEpsInf} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, lzEpsInf: parseFloat(e.target.value) || 1 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="1" />
+                            </div>
+                            <button
+                              onClick={() => {
+                                if (newMaterialForm.lzOscillators.length >= 8) return;
+                                setNewMaterialForm({ ...newMaterialForm, lzOscillators: [...newMaterialForm.lzOscillators, { A: 1.0, E0: 4.0, gamma: 0.5 }] });
+                              }}
+                              className="ml-auto px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700"
+                              disabled={newMaterialForm.lzOscillators.length >= 8}
+                            >
+                              + Add oscillator
+                            </button>
+                          </div>
+                          <div className="space-y-1">
+                            {newMaterialForm.lzOscillators.map((osc, idx) => (
+                              <div key={idx} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1 items-end">
+                                <div>
+                                  {idx === 0 && <label className="block text-[10px] text-gray-600">A (eV²)</label>}
+                                  <input type="number" value={osc.A} onChange={(e) => {
+                                    const next = [...newMaterialForm.lzOscillators];
+                                    next[idx] = { ...next[idx], A: parseFloat(e.target.value) || 0 };
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: next });
+                                  }} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" />
+                                </div>
+                                <div>
+                                  {idx === 0 && <label className="block text-[10px] text-gray-600">E₀ (eV, 0=Drude)</label>}
+                                  <input type="number" value={osc.E0} onChange={(e) => {
+                                    const next = [...newMaterialForm.lzOscillators];
+                                    next[idx] = { ...next[idx], E0: parseFloat(e.target.value) || 0 };
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: next });
+                                  }} className="w-full px-1.5 py-1 border rounded text-xs" step="0.1" min="0" />
+                                </div>
+                                <div>
+                                  {idx === 0 && <label className="block text-[10px] text-gray-600">γ (eV)</label>}
+                                  <input type="number" value={osc.gamma} onChange={(e) => {
+                                    const next = [...newMaterialForm.lzOscillators];
+                                    next[idx] = { ...next[idx], gamma: parseFloat(e.target.value) || 0 };
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: next });
+                                  }} className="w-full px-1.5 py-1 border rounded text-xs" step="0.01" min="0" />
+                                </div>
+                                <button
+                                  onClick={() => {
+                                    if (newMaterialForm.lzOscillators.length <= 1) return;
+                                    setNewMaterialForm({ ...newMaterialForm, lzOscillators: newMaterialForm.lzOscillators.filter((_, i) => i !== idx) });
+                                  }}
+                                  className="p-1 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-red-600 text-xs disabled:opacity-30"
+                                  disabled={newMaterialForm.lzOscillators.length <= 1}
+                                  title="Remove oscillator"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                          {(() => {
+                            const preview = drudeLorentzNK(550, { epsInf: newMaterialForm.lzEpsInf, oscillators: newMaterialForm.lzOscillators });
+                            return (
+                              <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                                Preview at 550nm: n = {preview.n.toFixed(3)}, k = {preview.k.toExponential(2)}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+
                       {newMaterialForm.kType === 'constant' && (
                         <div className="w-1/3">
                           <label className="block text-xs text-gray-600 mb-0.5">k value</label>
@@ -14586,6 +15450,124 @@ const ThinFilmDesigner = () => {
                             <label className="block text-xs text-gray-600 mb-0.5">Decay</label>
                             <input type="number" value={newMaterialForm.kDecay} onChange={(e) => setNewMaterialForm({ ...newMaterialForm, kDecay: parseFloat(e.target.value) || 0 })} className="w-full px-1.5 py-1 border rounded text-xs" step="0.001" min="0" />
                           </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {newMaterialForm.mode === 'tabular' && (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+                        Paste or upload measured n,k data. Format: <code>wavelength n k</code> per line (comma, tab, or space separated). Wavelength in nm (or μm — auto-detected). Lines starting with <code>#</code> are ignored (YAML headers, CSV headers OK).
+                      </div>
+                      <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 flex items-center gap-2">
+                        <span className="font-semibold">Need data?</span>
+                        <a
+                          href="https://refractiveindex.info/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-indigo-600 hover:text-indigo-800 underline"
+                        >
+                          Browse RefractiveIndex.info →
+                        </a>
+                        <span className="text-gray-500">Open a material page, click <em>Tabulated Data</em> → <em>Download</em>, then paste the file contents below.</span>
+                      </div>
+                      <div className="flex gap-2 items-center">
+                        <label className="flex-1 cursor-pointer inline-flex items-center justify-center gap-1 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700 font-medium">
+                          <Upload size={12} />
+                          Upload file (.csv, .txt, .nk, .dat)
+                          <input
+                            type="file"
+                            accept=".csv,.txt,.nk,.dat,.tsv"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const reader = new FileReader();
+                              reader.onload = (ev) => {
+                                const text = String(ev.target?.result || '');
+                                const parsed = parseNkTable(text);
+                                setNewMaterialForm(prev => ({
+                                  ...prev,
+                                  tabularText: text,
+                                  tabularData: parsed,
+                                  tabularError: parsed.length === 0 ? 'No valid data rows found. Check format.' : '',
+                                  kkResult: null,
+                                }));
+                              };
+                              reader.readAsText(file);
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
+                        <button
+                          onClick={() => {
+                            setNewMaterialForm(prev => ({ ...prev, tabularText: '', tabularData: [], tabularError: '', kkResult: null }));
+                          }}
+                          className="px-2 py-1 bg-gray-100 hover:bg-gray-200 border rounded text-xs text-gray-700"
+                          disabled={newMaterialForm.tabularData.length === 0}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <textarea
+                        value={newMaterialForm.tabularText}
+                        onChange={(e) => {
+                          const text = e.target.value;
+                          const parsed = parseNkTable(text);
+                          setNewMaterialForm(prev => ({
+                            ...prev,
+                            tabularText: text,
+                            tabularData: parsed,
+                            tabularError: text.trim() && parsed.length === 0 ? 'No valid data rows found. Check format.' : '',
+                            kkResult: null,
+                          }));
+                        }}
+                        className="w-full px-2 py-1 border rounded text-[11px] font-mono"
+                        rows={6}
+                        placeholder={"# wavelength(nm)  n       k\n380  2.601  0.0012\n400  2.552  0.0008\n450  2.480  0.0003\n500  2.430  0.0001\n550  2.395  0.00005\n600  2.370  0.00002"}
+                      />
+                      {newMaterialForm.tabularError && (
+                        <div className="text-xs text-red-600">{newMaterialForm.tabularError}</div>
+                      )}
+                      {newMaterialForm.tabularData.length > 0 && (
+                        <div className="text-[11px] text-gray-700 bg-green-50 border border-green-200 rounded px-2 py-1.5">
+                          <span className="font-semibold text-green-700">✓ Parsed {newMaterialForm.tabularData.length} points.</span>
+                          {' '}Range: {newMaterialForm.tabularData[0][0].toFixed(1)}–{newMaterialForm.tabularData[newMaterialForm.tabularData.length-1][0].toFixed(1)} nm.
+                          {' '}n@550: {interpolateNk(newMaterialForm.tabularData, 550).n.toFixed(3)},
+                          {' '}k@550: {interpolateNk(newMaterialForm.tabularData, 550).k.toExponential(2)}
+                        </div>
+                      )}
+                      {newMaterialForm.tabularData.length >= 5 && (
+                        <div className="flex items-start gap-2">
+                          <button
+                            onClick={() => {
+                              const result = validateKK(newMaterialForm.tabularData);
+                              setNewMaterialForm(prev => ({ ...prev, kkResult: result }));
+                            }}
+                            className="px-2 py-1 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded text-xs text-amber-800 font-medium"
+                            title="Check whether the n and k columns are Kramers-Kronig consistent (i.e., physically causal)."
+                          >
+                            Check KK consistency
+                          </button>
+                          {newMaterialForm.kkResult && newMaterialForm.kkResult.valid && (() => {
+                            const { correlation, relativeError } = newMaterialForm.kkResult;
+                            const ok = correlation > 0.9 && relativeError < 0.3;
+                            const warn = correlation > 0.7 && correlation <= 0.9;
+                            const bg = ok ? 'bg-green-50 border-green-200 text-green-800' : warn ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-800';
+                            const label = ok ? '✓ KK-consistent' : warn ? '⚠ Borderline' : '✗ Likely inconsistent';
+                            return (
+                              <div className={`flex-1 text-[11px] border rounded px-2 py-1 ${bg}`}>
+                                <div><b>{label}</b> — shape correlation: {(correlation * 100).toFixed(1)}%, relative RMS error: {(relativeError * 100).toFixed(1)}%</div>
+                                <div className="text-[10px] mt-0.5 opacity-80">Absolute-offset mismatch is normal due to finite wavelength range. Correlation &gt; 90% means n and k shapes are causally linked.</div>
+                              </div>
+                            );
+                          })()}
+                          {newMaterialForm.kkResult && !newMaterialForm.kkResult.valid && (
+                            <div className="flex-1 text-[11px] bg-gray-50 border border-gray-200 rounded px-2 py-1 text-gray-700">
+                              {newMaterialForm.kkResult.message}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
