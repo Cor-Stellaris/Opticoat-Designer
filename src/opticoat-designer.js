@@ -162,6 +162,53 @@ function interpolateNk(data, wavelength) {
   return { n: a[1] + t * (b[1] - a[1]), k: a[2] + t * (b[2] - a[2]) };
 }
 
+// Interpolate a {wavelength, reflectivity} curve at an arbitrary wavelength (linear).
+// Returns null if the wavelength is outside the data range (no extrapolation).
+function interpolateCurve(data, wavelength) {
+  if (!data || data.length === 0) return null;
+  if (data.length === 1) return data[0].reflectivity;
+  if (wavelength < data[0].wavelength || wavelength > data[data.length - 1].wavelength) return null;
+  let lo = 0, hi = data.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (data[mid].wavelength <= wavelength) lo = mid; else hi = mid;
+  }
+  const a = data[lo], b = data[hi];
+  if (a.wavelength === b.wavelength) return a.reflectivity;
+  const t = (wavelength - a.wavelength) / (b.wavelength - a.wavelength);
+  return a.reflectivity + t * (b.reflectivity - a.reflectivity);
+}
+
+// Find the wavelength shift (nm) that best aligns `measured` to `modeled`.
+// Returns Δλ such that measured(λ + Δλ) ≈ modeled(λ). Positive Δλ means measured
+// is shifted to the right of modeled (its peak is at larger wavelengths).
+// Uses coarse then fine sweep. modeled, measured: arrays of {wavelength, reflectivity}.
+function findBestWavelengthShift(modeled, measured, maxShift = 150, coarseStep = 2, fineStep = 0.25) {
+  if (!modeled || !measured || modeled.length < 3 || measured.length < 3) return 0;
+  const score = (shift) => {
+    let sum = 0, count = 0;
+    for (let i = 0; i < modeled.length; i++) {
+      const m = modeled[i];
+      const interp = interpolateCurve(measured, m.wavelength + shift);
+      if (interp == null) continue;
+      const d = interp - m.reflectivity;
+      sum += d * d;
+      count++;
+    }
+    return count > 0 ? sum / count : Infinity;
+  };
+  let bestShift = 0, bestScore = Infinity;
+  for (let s = -maxShift; s <= maxShift; s += coarseStep) {
+    const sc = score(s);
+    if (sc < bestScore) { bestScore = sc; bestShift = s; }
+  }
+  for (let s = bestShift - coarseStep; s <= bestShift + coarseStep; s += fineStep) {
+    const sc = score(s);
+    if (sc < bestScore) { bestScore = sc; bestShift = s; }
+  }
+  return bestShift;
+}
+
 // Graded-index profile mapper — maps a normalized position [0,1] to an interpolation fraction [0,1]
 // based on the chosen gradient shape.
 function applyGradientProfile(x, profile) {
@@ -1649,6 +1696,10 @@ const ThinFilmDesigner = () => {
   const [angleColorData, setAngleColorData] = useState(null); // Store color data at different angles
   const [experimentalColorData, setExperimentalColorData] = useState(null);
   const [experimentalData, setExperimentalData] = useState(null);
+  // Shift-sync state: links the measurement overlay to layer-driven modeled curve.
+  // null = no sync. When set: { direction, deltaLambda, modeledAtSync: [{wavelength, reflectivity}], stackId }
+  const [syncState, setSyncState] = useState(null);
+  const [showSyncOriginal, setShowSyncOriginal] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [showToolingModal, setShowToolingModal] = useState(false);
   const [showTargetsModal, setShowTargetsModal] = useState(false);
@@ -3891,6 +3942,39 @@ const ThinFilmDesigner = () => {
         data.push(dataPoint);
       }
 
+      // Shift-sync post-processing: replaces dataPoint.experimental with shifted version
+      // (forward mode) or adds dataPoint.modeled_synced (reverse mode).
+      if (syncState && experimentalData && syncState.modeledAtSync && syncState.modeledAtSync.length > 0) {
+        const dLambda = syncState.deltaLambda;
+        const modeledSyncKey = `stack_${syncState.stackId}`;
+        // Snapshot of the CURRENT modeled curve (after any layer changes)
+        const modeledNewCurve = data
+          .filter(p => p[modeledSyncKey] != null)
+          .map(p => ({ wavelength: p.wavelength, reflectivity: p[modeledSyncKey] }));
+        const expAsCurve = experimentalData.map(d => ({ wavelength: d.wavelength, reflectivity: d.reflectivity }));
+        for (const point of data) {
+          const lambda = point.wavelength;
+          if (syncState.direction === 'forward') {
+            // display_measured(λ) = measured(λ) + modeled_new(λ − Δλ) − modeled_sync(λ − Δλ)
+            const mHere = interpolateCurve(expAsCurve, lambda);
+            const mNewShifted = interpolateCurve(modeledNewCurve, lambda - dLambda);
+            const mSyncShifted = interpolateCurve(syncState.modeledAtSync, lambda - dLambda);
+            if (mHere != null && mNewShifted != null && mSyncShifted != null) {
+              const shiftedR = Math.max(0, Math.min(100, mHere + (mNewShifted - mSyncShifted)));
+              point.experimental_original = mHere;  // dotted line reference
+              point.experimental = shiftedR;         // replaces main experimental line
+              point.experimental_transmission = 100 - shiftedR;
+            }
+          } else if (syncState.direction === 'reverse') {
+            // display_modeled_synced(λ) = modeled_new(λ − Δλ)
+            const mNewShifted = interpolateCurve(modeledNewCurve, lambda - dLambda);
+            if (mNewShifted != null) {
+              point.modeled_synced = Math.max(0, Math.min(100, mNewShifted));
+            }
+          }
+        }
+      }
+
       setReflectivityData(data);
 
       // Calculate reflected color for current stack only (for backward compatibility)
@@ -4008,6 +4092,7 @@ const ThinFilmDesigner = () => {
     calculateReflectivityAtWavelength,
     getExtinctionCoefficient,
     experimentalData,
+    syncState,
     autoYAxis,
     currentStackId,
     calculateReflectedColor,
@@ -4382,6 +4467,40 @@ const ThinFilmDesigner = () => {
   const clearExperimentalData = () => {
     setExperimentalData(null);
     setSuggestions([]);
+    setSyncState(null);
+    setShowSyncOriginal(false);
+  };
+
+  // Shift-sync: captures the wavelength offset between the uploaded experimental
+  // curve and the current modeled curve at sync time, so that subsequent layer
+  // changes can propagate the same shift to the display.
+  const syncToCurrentLayers = (direction) => {
+    if (!experimentalData || experimentalData.length < 3) {
+      showToast('Upload experimental data first.', 'error');
+      return;
+    }
+    const modeledKey = `stack_${currentStackId}`;
+    const modeledCurve = reflectivityData
+      .filter(p => p[modeledKey] != null)
+      .map(p => ({ wavelength: p.wavelength, reflectivity: p[modeledKey] }));
+    if (modeledCurve.length < 3) {
+      showToast('No modeled curve to sync against.', 'error');
+      return;
+    }
+    const deltaLambda = findBestWavelengthShift(modeledCurve, experimentalData);
+    setSyncState({
+      direction,
+      deltaLambda,
+      modeledAtSync: modeledCurve,
+      stackId: currentStackId,
+    });
+    setShowSyncOriginal(false);
+    showToast(`Synced (${direction === 'forward' ? 'measured follows layers' : 'modeled follows measured'}). Δλ = ${deltaLambda.toFixed(1)} nm.`, 'success');
+  };
+
+  const unsync = () => {
+    setSyncState(null);
+    setShowSyncOriginal(false);
   };
 
   // Recipe Tracking Functions
@@ -9279,8 +9398,50 @@ const ThinFilmDesigner = () => {
                       />}
                     </label>
                   ) : (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 text-xs">
                       <span className="text-green-600">✓ Exp Data</span>
+                      {!syncState && (
+                        <>
+                          <button
+                            onClick={() => syncToCurrentLayers('forward')}
+                            className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-indigo-700"
+                            title="Sync: measured curve follows layer changes (forward). Captures current offset between curves."
+                          >
+                            Sync →
+                          </button>
+                          <button
+                            onClick={() => syncToCurrentLayers('reverse')}
+                            className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-indigo-700"
+                            title="Sync: modeled curve follows measurement (reverse). Displays modeled shifted into measurement frame."
+                          >
+                            Sync ←
+                          </button>
+                        </>
+                      )}
+                      {syncState && (
+                        <>
+                          <span
+                            className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded border border-indigo-300"
+                            title={syncState.direction === 'forward' ? 'Measured follows layers (forward)' : 'Modeled follows measured (reverse)'}
+                          >
+                            {syncState.direction === 'forward' ? '→' : '←'} Δλ {syncState.deltaLambda >= 0 ? '+' : ''}{syncState.deltaLambda.toFixed(1)}nm
+                          </span>
+                          <button
+                            onClick={() => setShowSyncOriginal(v => !v)}
+                            className={`px-1.5 py-0.5 border rounded ${showSyncOriginal ? 'bg-gray-200 text-gray-700 border-gray-400' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-100'}`}
+                            title="Toggle dotted original (pre-shift) curve"
+                          >
+                            Orig
+                          </button>
+                          <button
+                            onClick={unsync}
+                            className="px-1.5 py-0.5 bg-red-50 hover:bg-red-100 border border-red-200 rounded text-red-700"
+                            title="Unsync (restore raw uploaded curve)"
+                          >
+                            Unsync
+                          </button>
+                        </>
+                      )}
                       {suggestions.map((s, i) => (
                         <span key={i} className="text-blue-600">
                           {s.message}
@@ -10577,7 +10738,14 @@ const ThinFilmDesigner = () => {
                           })}
                           {layerStacks.filter((s) => s.visible && s.layers.length > 0).map((stack) => {
                             const dataKey = displayMode === "transmission" ? `stack_${stack.id}_transmission` : displayMode === "absorption" ? `stack_${stack.id}_absorption` : `stack_${stack.id}`;
-                            return (<Line key={stack.id} yAxisId="left" type="monotone" dataKey={dataKey} stroke={stack.color} strokeWidth={stack.id === currentStackId ? 3 : 2} dot={false} name={getStackDisplayName(stack)} isAnimationActive={false} />);
+                            // In reverse-sync mode, the current stack's line represents the "original" modeled at its natural position.
+                            // Toggle off → hide it. Toggle on → show it dotted.
+                            const isReverseSyncCurrent = syncState && syncState.direction === 'reverse' && stack.id === syncState.stackId;
+                            if (isReverseSyncCurrent && !showSyncOriginal) return null;
+                            const dashArray = isReverseSyncCurrent ? "3 3" : undefined;
+                            const opacity = isReverseSyncCurrent ? 0.5 : 1;
+                            const displayName = isReverseSyncCurrent ? `${getStackDisplayName(stack)} (original)` : getStackDisplayName(stack);
+                            return (<Line key={stack.id} yAxisId="left" type="monotone" dataKey={dataKey} stroke={stack.color} strokeWidth={stack.id === currentStackId ? 3 : 2} strokeDasharray={dashArray} strokeOpacity={opacity} dot={false} name={displayName} isAnimationActive={false} />);
                           })}
                           {showFactorPreview && factorPreviewData.length > 0 && (
                             <Line yAxisId="left" type="monotone" data={factorPreviewData} dataKey={displayMode === "transmission" ? "preview_transmission" : "preview"} stroke={layerStacks.find((s) => s.id === currentStackId)?.color || "#4f46e5"} strokeWidth={2} strokeOpacity={0.4} strokeDasharray="5 5" dot={false} name="Factor Preview" isAnimationActive={false} />
@@ -10586,7 +10754,15 @@ const ThinFilmDesigner = () => {
                             <Line yAxisId="left" type="monotone" data={shiftPreviewData} dataKey={displayMode === "transmission" ? "shiftPreview_transmission" : "shiftPreview"} stroke={layerStacks.find((s) => s.id === currentStackId)?.color || "#4f46e5"} strokeWidth={2} strokeOpacity={0.3} strokeDasharray="3 3" dot={false} name="Shift Preview" isAnimationActive={false} />
                           )}
                           {experimentalData && (
-                            <Line yAxisId="left" type="monotone" dataKey={displayMode === "transmission" ? "experimental_transmission" : "experimental"} stroke="#ef4444" strokeWidth={2} dot={false} name="Experimental" isAnimationActive={false} />
+                            <Line yAxisId="left" type="monotone" dataKey={displayMode === "transmission" ? "experimental_transmission" : "experimental"} stroke="#ef4444" strokeWidth={2} dot={false} name={syncState && syncState.direction === 'forward' ? "Measured (synced)" : "Experimental"} isAnimationActive={false} />
+                          )}
+                          {/* Forward-sync dotted: raw experimental at its original position */}
+                          {experimentalData && syncState && syncState.direction === 'forward' && showSyncOriginal && displayMode !== "transmission" && (
+                            <Line yAxisId="left" type="monotone" dataKey="experimental_original" stroke="#ef4444" strokeWidth={1.5} strokeDasharray="3 3" strokeOpacity={0.5} dot={false} name="Measured (original)" isAnimationActive={false} />
+                          )}
+                          {/* Reverse-sync: modeled shown in measurement frame */}
+                          {experimentalData && syncState && syncState.direction === 'reverse' && displayMode !== "transmission" && (
+                            <Line yAxisId="left" type="monotone" dataKey="modeled_synced" stroke="#7c3aed" strokeWidth={2} dot={false} name="Modeled (synced)" isAnimationActive={false} />
                           )}
                           {/* Multi-Angle Lines for Current Stack */}
                           {currentStackId && layerStacks.find((s) => s.id === currentStackId)?.visible && [
@@ -15079,7 +15255,7 @@ const ThinFilmDesigner = () => {
       {/* ========== MATERIAL LIBRARY MODAL ========== */}
       {showMaterialLibrary && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-4 w-[420px] max-h-[80vh] flex flex-col">
+          <div className="bg-white rounded-lg shadow-xl p-4 w-[420px] max-w-[420px] max-h-[80vh] flex flex-col">
             <div className="flex justify-between items-center mb-3 flex-shrink-0">
               <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                 <Library size={18} /> Material Library
@@ -15089,7 +15265,7 @@ const ThinFilmDesigner = () => {
               </button>
             </div>
 
-            <div className="overflow-y-auto flex-1 space-y-2 min-h-0">
+            <div className="overflow-y-auto overflow-x-hidden flex-1 space-y-2 min-h-0">
               {/* Built-in Materials — collapsed by default */}
               <details className="border rounded">
                 <summary className="px-3 py-2 cursor-pointer select-none text-sm font-semibold text-gray-600 hover:bg-gray-50 rounded">
@@ -15456,12 +15632,12 @@ const ThinFilmDesigner = () => {
                   )}
 
                   {newMaterialForm.mode === 'tabular' && (
-                    <div className="space-y-2">
-                      <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
-                        Paste or upload measured n,k data. Format: <code>wavelength n k</code> per line (comma, tab, or space separated). Wavelength in nm (or μm — auto-detected). Lines starting with <code>#</code> are ignored (YAML headers, CSV headers OK).
+                    <div className="space-y-2 min-w-0">
+                      <div className="text-[11px] text-gray-600 bg-blue-50 border border-blue-200 rounded px-2 py-1.5 break-words">
+                        Paste or upload measured n,k data. One row per wavelength: <code>wavelength n k</code> (comma, tab, or space separated). Lines starting with <code>#</code> are ignored.
                       </div>
-                      <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 flex items-center gap-2">
-                        <span className="font-semibold">Need data?</span>
+                      <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded px-2 py-1.5 break-words">
+                        <span className="font-semibold">Need data?</span>{' '}
                         <a
                           href="https://refractiveindex.info/"
                           target="_blank"
@@ -15469,13 +15645,13 @@ const ThinFilmDesigner = () => {
                           className="text-indigo-600 hover:text-indigo-800 underline"
                         >
                           Browse RefractiveIndex.info →
-                        </a>
-                        <span className="text-gray-500">Open a material page, click <em>Tabulated Data</em> → <em>Download</em>, then paste the file contents below.</span>
+                        </a>{' '}
+                        <span className="text-gray-500">Open a material page → Tabulated Data → Download, then paste below.</span>
                       </div>
-                      <div className="flex gap-2 items-center">
-                        <label className="flex-1 cursor-pointer inline-flex items-center justify-center gap-1 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700 font-medium">
+                      <div className="flex gap-2 items-center min-w-0">
+                        <label className="flex-1 min-w-0 cursor-pointer inline-flex items-center justify-center gap-1 px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded text-xs text-indigo-700 font-medium truncate">
                           <Upload size={12} />
-                          Upload file (.csv, .txt, .nk, .dat)
+                          Upload CSV / TXT
                           <input
                             type="file"
                             accept=".csv,.txt,.nk,.dat,.tsv"
@@ -15523,9 +15699,11 @@ const ThinFilmDesigner = () => {
                             kkResult: null,
                           }));
                         }}
-                        className="w-full px-2 py-1 border rounded text-[11px] font-mono"
+                        className="block w-full max-w-full px-2 py-1 border rounded text-[11px] font-mono box-border"
+                        style={{ width: '100%' }}
                         rows={6}
-                        placeholder={"# wavelength(nm)  n       k\n380  2.601  0.0012\n400  2.552  0.0008\n450  2.480  0.0003\n500  2.430  0.0001\n550  2.395  0.00005\n600  2.370  0.00002"}
+                        cols={20}
+                        placeholder={"380 2.601 0.0012\n400 2.552 0.0008\n450 2.480 0.0003"}
                       />
                       {newMaterialForm.tabularError && (
                         <div className="text-xs text-red-600">{newMaterialForm.tabularError}</div>
@@ -15539,7 +15717,7 @@ const ThinFilmDesigner = () => {
                         </div>
                       )}
                       {newMaterialForm.tabularData.length >= 5 && (
-                        <div className="flex items-start gap-2">
+                        <div className="space-y-1 min-w-0">
                           <button
                             onClick={() => {
                               const result = validateKK(newMaterialForm.tabularData);
@@ -15557,14 +15735,14 @@ const ThinFilmDesigner = () => {
                             const bg = ok ? 'bg-green-50 border-green-200 text-green-800' : warn ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-800';
                             const label = ok ? '✓ KK-consistent' : warn ? '⚠ Borderline' : '✗ Likely inconsistent';
                             return (
-                              <div className={`flex-1 text-[11px] border rounded px-2 py-1 ${bg}`}>
-                                <div><b>{label}</b> — shape correlation: {(correlation * 100).toFixed(1)}%, relative RMS error: {(relativeError * 100).toFixed(1)}%</div>
-                                <div className="text-[10px] mt-0.5 opacity-80">Absolute-offset mismatch is normal due to finite wavelength range. Correlation &gt; 90% means n and k shapes are causally linked.</div>
+                              <div className={`text-[11px] border rounded px-2 py-1 break-words ${bg}`}>
+                                <div><b>{label}</b> — corr: {(correlation * 100).toFixed(1)}%, RMS: {(relativeError * 100).toFixed(1)}%</div>
+                                <div className="text-[10px] mt-0.5 opacity-80">Offset mismatch is expected (finite λ range). Correlation &gt; 90% = causally linked.</div>
                               </div>
                             );
                           })()}
                           {newMaterialForm.kkResult && !newMaterialForm.kkResult.valid && (
-                            <div className="flex-1 text-[11px] bg-gray-50 border border-gray-200 rounded px-2 py-1 text-gray-700">
+                            <div className="text-[11px] bg-gray-50 border border-gray-200 rounded px-2 py-1 text-gray-700 break-words">
                               {newMaterialForm.kkResult.message}
                             </div>
                           )}
